@@ -10,6 +10,7 @@ import Protolude hiding (moduleName)
 import Control.Concurrent.STM (TVar)
 import Control.Lens (Getting, Traversal', makeLenses)
 import Control.Monad.Fail (fail)
+import Control.Monad.Trans.Control (MonadBaseControl)
 import Data.Aeson (ToJSON, FromJSON, (.=))
 import Data.Aeson qualified as Aeson
 import Data.IORef (IORef)
@@ -173,7 +174,7 @@ data IdeEnvironment =
   , ideCacheDbTimestamp :: IORef (Maybe UTCTime)
   }
 
-type Ide m = (MonadIO m, MonadReader IdeEnvironment m)
+type Ide m = (MonadIO m, MonadReader IdeEnvironment m, MonadBaseControl IO m)
 
 data IdeState = IdeState
   { ideFileState :: IdeFileState
