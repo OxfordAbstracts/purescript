@@ -2,9 +2,9 @@ name: "CI"
 
 on:
   push:
-    branches: [ "master" ]
+    branches: [ "master", "oa-fork" ]
   pull_request:
-    branches: [ "master" ]
+    branches: [ "master", "oa-fork" ]
     paths:
       - .github/workflows/**/*.yml
       - app/**/*
