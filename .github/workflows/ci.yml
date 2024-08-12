@@ -30,7 +30,7 @@ defaults:
     shell: "bash"
 
 env:
-  CI_PRERELEASE: "${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}"
+  CI_PRERELEASE: "${{ github.event_name == 'push' && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/oa-fork') }}"
   CI_RELEASE: "${{ github.event_name == 'release' }}"
   STACK_VERSION: "2.15.1"
 
