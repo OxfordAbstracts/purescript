@@ -8,6 +8,7 @@ import Data.Text qualified as T
 import System.FilePath.Glob (glob)
 import System.IO (hPutStrLn, stderr)
 import System.IO.UTF8 (readUTF8FileT)
+import Control.Concurrent.Async.Lifted.Safe (mapConcurrently)
 
 data PSCGlobs = PSCGlobs
   { pscInputGlobs :: [FilePath]
@@ -25,7 +26,7 @@ toInputGlobs (PSCGlobs {..}) = do
 
 inputGlobsFromFile :: Maybe FilePath -> IO [FilePath]
 inputGlobsFromFile globsFromFile = do
-  mbInputsFromFile <- traverse readUTF8FileT globsFromFile
+  mbInputsFromFile <- mapConcurrently readUTF8FileT globsFromFile
   let
     excludeBlankLines = not . T.null . T.strip
     excludeComments = not . T.isPrefixOf "#"

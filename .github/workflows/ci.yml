@@ -2,9 +2,9 @@ name: "CI"
 
 on:
   push:
-    branches: [ "master", "oa-fork" ]
+    branches: [ "master", "oa-fork", "oa-fork-2" ]
   pull_request:
-    branches: [ "master", "oa-fork" ]
+    branches: [ "master", "oa-fork", "oa-fork-2" ]
     paths:
       - .github/workflows/**/*.yml
       - app/**/*
@@ -53,13 +53,13 @@ jobs:
       fail-fast: false # do not cancel builds for other OSes if one fails
       matrix:
         include:
-          - # If upgrading the Haskell image, also upgrade it in the lint job below
-            os: ["ubuntu-latest"]
-            image: haskell:9.2.8@sha256:b3b2f3909c7381bb96b8f18766f9407a3d6f61e0f07ea95e812583ac4f442cbb
+          # - # If upgrading the Haskell image, also upgrade it in the lint job below
+          #   os: ["ubuntu-latest"]
+          #   image: haskell:9.2.8@sha256:b3b2f3909c7381bb96b8f18766f9407a3d6f61e0f07ea95e812583ac4f442cbb
           - os: ["macOS-14"]
-          - os: ["windows-2019"]
-          - os: ["self-hosted", "macos", "ARM64"]
-          - os: ["self-hosted", "Linux", "ARM64"]
+          # - os: ["windows-2019"]
+          # - os: ["self-hosted", "macos", "ARM64"]
+          # - os: ["self-hosted", "Linux", "ARM64"]
 
     runs-on: "${{ matrix.os }}"
     container: "${{ matrix.image }}"
@@ -286,18 +286,18 @@ jobs:
           artifacts: "*-bundle/*"
           prerelease: true
           body: "This is an automated preview release. Get the latest stable release [here](https://github.com/purescript/purescript/releases/latest)."
-      - uses: "actions/checkout@v3"
-      - uses: "actions/setup-node@v3"
-        with:
-          node-version: "16.x"
-          registry-url: "https://registry.npmjs.org"
-      - name: "Publish npm package"
-        working-directory: "npm-package"
-        env:
-          BUILD_VERSION: "${{ needs.build.outputs.version }}"
-          NODE_AUTH_TOKEN: "${{ secrets.NPM_TOKEN }}"
-        run: |
-          src_version=$(node -pe 'require("./package.json").version')
-          npm version --allow-same-version "$BUILD_VERSION"
-          sed -i -e "s/--purs-ver=${src_version//./\\.}/--purs-ver=$BUILD_VERSION/" package.json
-          npm publish --tag next
+      # - uses: "actions/checkout@v3"
+      # - uses: "actions/setup-node@v3"
+      #   with:
+      #     node-version: "16.x"
+      #     registry-url: "https://registry.npmjs.org"
+      # - name: "Publish npm package"
+      #   working-directory: "npm-package"
+      #   env:
+      #     BUILD_VERSION: "${{ needs.build.outputs.version }}"
+      #     NODE_AUTH_TOKEN: "${{ secrets.NPM_TOKEN }}"
+      #   run: |
+      #     src_version=$(node -pe 'require("./package.json").version')
+      #     npm version --allow-same-version "$BUILD_VERSION"
+      #     sed -i -e "s/--purs-ver=${src_version//./\\.}/--purs-ver=$BUILD_VERSION/" package.json
+      #     npm publish --tag next
