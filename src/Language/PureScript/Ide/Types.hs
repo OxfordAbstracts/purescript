@@ -32,43 +32,43 @@ data IdeDeclaration
   | IdeDeclValueOperator IdeValueOperator
   | IdeDeclTypeOperator IdeTypeOperator
   | IdeDeclModule P.ModuleName
-  deriving (Show, Eq, Ord, Generic, NFData)
+  deriving (Show, Eq, Ord)
 
 data IdeValue = IdeValue
   { _ideValueIdent :: P.Ident
   , _ideValueType :: P.SourceType
-  } deriving (Show, Eq, Ord, Generic, NFData)
+  } deriving (Show, Eq, Ord)
 
 data IdeType = IdeType
  { _ideTypeName :: P.ProperName 'P.TypeName
  , _ideTypeKind :: P.SourceType
  , _ideTypeDtors :: [(P.ProperName 'P.ConstructorName, P.SourceType)]
- } deriving (Show, Eq, Ord, Generic, NFData)
+ } deriving (Show, Eq, Ord)
 
 data IdeTypeSynonym = IdeTypeSynonym
   { _ideSynonymName :: P.ProperName 'P.TypeName
   , _ideSynonymType :: P.SourceType
   , _ideSynonymKind :: P.SourceType
-  } deriving (Show, Eq, Ord, Generic, NFData)
+  } deriving (Show, Eq, Ord)
 
 data IdeDataConstructor = IdeDataConstructor
   { _ideDtorName :: P.ProperName 'P.ConstructorName
   , _ideDtorTypeName :: P.ProperName 'P.TypeName
   , _ideDtorType :: P.SourceType
-  } deriving (Show, Eq, Ord, Generic, NFData)
+  } deriving (Show, Eq, Ord)
 
 data IdeTypeClass = IdeTypeClass
   { _ideTCName :: P.ProperName 'P.ClassName
   , _ideTCKind :: P.SourceType
   , _ideTCInstances :: [IdeInstance]
-  } deriving (Show, Eq, Ord, Generic, NFData)
+  } deriving (Show, Eq, Ord)
 
 data IdeInstance = IdeInstance
   { _ideInstanceModule :: P.ModuleName
   , _ideInstanceName :: P.Ident
   , _ideInstanceTypes :: [P.SourceType]
   , _ideInstanceConstraints :: Maybe [P.SourceConstraint]
-  } deriving (Show, Eq, Ord, Generic, NFData)
+  } deriving (Show, Eq, Ord)
 
 data IdeValueOperator = IdeValueOperator
   { _ideValueOpName :: P.OpName 'P.ValueOpName
@@ -76,7 +76,7 @@ data IdeValueOperator = IdeValueOperator
   , _ideValueOpPrecedence :: P.Precedence
   , _ideValueOpAssociativity :: P.Associativity
   , _ideValueOpType :: Maybe P.SourceType
-  } deriving (Show, Eq, Ord, Generic, NFData)
+  } deriving (Show, Eq, Ord)
 
 data IdeTypeOperator = IdeTypeOperator
   { _ideTypeOpName :: P.OpName 'P.TypeOpName
@@ -84,7 +84,7 @@ data IdeTypeOperator = IdeTypeOperator
   , _ideTypeOpPrecedence :: P.Precedence
   , _ideTypeOpAssociativity :: P.Associativity
   , _ideTypeOpKind :: Maybe P.SourceType
-  } deriving (Show, Eq, Ord, Generic, NFData)
+  } deriving (Show, Eq, Ord)
 
 _IdeDeclValue :: Traversal' IdeDeclaration IdeValue
 _IdeDeclValue f (IdeDeclValue x) = map IdeDeclValue (f x)
@@ -132,7 +132,7 @@ makeLenses ''IdeTypeOperator
 data IdeDeclarationAnn = IdeDeclarationAnn
   { _idaAnnotation :: Annotation
   , _idaDeclaration :: IdeDeclaration
-  } deriving (Show, Eq, Ord, Generic, NFData)
+  } deriving (Show, Eq, Ord)
 
 data Annotation
   = Annotation
@@ -140,7 +140,7 @@ data Annotation
   , _annExportedFrom :: Maybe P.ModuleName
   , _annTypeAnnotation :: Maybe P.SourceType
   , _annDocumentation :: Maybe Text
-  } deriving (Show, Eq, Ord, Generic, NFData)
+  } deriving (Show, Eq, Ord)
 
 makeLenses ''Annotation
 makeLenses ''IdeDeclarationAnn
@@ -153,7 +153,7 @@ type TypeAnnotations = Map P.Ident P.SourceType
 newtype AstData a = AstData (ModuleMap (DefinitionSites a, TypeAnnotations))
   -- ^ SourceSpans for the definition sites of values and types as well as type
   -- annotations found in a module
-  deriving (Show, Eq, Ord, Generic, NFData, Functor, Foldable)
+  deriving (Show, Eq, Ord, Functor, Foldable)
 
 data IdeLogLevel = LogDebug | LogPerf | LogAll | LogDefault | LogNone
   deriving (Show, Eq)
@@ -326,7 +326,7 @@ encodeImport (P.runModuleName -> mn, importType, map P.runModuleName -> qualifie
 
 -- | Denotes the different namespaces a name in PureScript can reside in.
 data IdeNamespace = IdeNSValue | IdeNSType | IdeNSModule
-  deriving (Show, Eq, Ord, Generic, NFData)
+  deriving (Show, Eq, Ord)
 
 instance FromJSON IdeNamespace where
   parseJSON = Aeson.withText "Namespace" $ \case
@@ -337,4 +337,4 @@ instance FromJSON IdeNamespace where
 
 -- | A name tagged with a namespace
 data IdeNamespaced = IdeNamespaced IdeNamespace Text
-  deriving (Show, Eq, Ord, Generic, NFData)
+  deriving (Show, Eq, Ord)
