@@ -10,11 +10,13 @@ import Protolude hiding (moduleName)
 import Control.Concurrent.STM (TVar)
 import Control.Lens (Getting, Traversal', makeLenses)
 import Control.Monad.Fail (fail)
+import Control.Monad.Trans.Control (MonadBaseControl)
 import Data.Aeson (ToJSON, FromJSON, (.=))
 import Data.Aeson qualified as Aeson
 import Data.IORef (IORef)
 import Data.Time.Clock (UTCTime)
 import Data.Map.Lazy qualified as M
+import Data.Set qualified as S
 import Language.PureScript qualified as P
 import Language.PureScript.Errors.JSON qualified as P
 import Language.PureScript.Ide.Filter.Declaration (DeclarationType(..))
@@ -31,43 +33,43 @@ data IdeDeclaration
   | IdeDeclValueOperator IdeValueOperator
   | IdeDeclTypeOperator IdeTypeOperator
   | IdeDeclModule P.ModuleName
-  deriving (Show, Eq, Ord, Generic, NFData)
+  deriving (Show, Eq, Ord)
 
 data IdeValue = IdeValue
   { _ideValueIdent :: P.Ident
   , _ideValueType :: P.SourceType
-  } deriving (Show, Eq, Ord, Generic, NFData)
+  } deriving (Show, Eq, Ord)
 
 data IdeType = IdeType
  { _ideTypeName :: P.ProperName 'P.TypeName
  , _ideTypeKind :: P.SourceType
  , _ideTypeDtors :: [(P.ProperName 'P.ConstructorName, P.SourceType)]
- } deriving (Show, Eq, Ord, Generic, NFData)
+ } deriving (Show, Eq, Ord)
 
 data IdeTypeSynonym = IdeTypeSynonym
   { _ideSynonymName :: P.ProperName 'P.TypeName
   , _ideSynonymType :: P.SourceType
   , _ideSynonymKind :: P.SourceType
-  } deriving (Show, Eq, Ord, Generic, NFData)
+  } deriving (Show, Eq, Ord)
 
 data IdeDataConstructor = IdeDataConstructor
   { _ideDtorName :: P.ProperName 'P.ConstructorName
   , _ideDtorTypeName :: P.ProperName 'P.TypeName
   , _ideDtorType :: P.SourceType
-  } deriving (Show, Eq, Ord, Generic, NFData)
+  } deriving (Show, Eq, Ord)
 
 data IdeTypeClass = IdeTypeClass
   { _ideTCName :: P.ProperName 'P.ClassName
   , _ideTCKind :: P.SourceType
   , _ideTCInstances :: [IdeInstance]
-  } deriving (Show, Eq, Ord, Generic, NFData)
+  } deriving (Show, Eq, Ord)
 
 data IdeInstance = IdeInstance
   { _ideInstanceModule :: P.ModuleName
   , _ideInstanceName :: P.Ident
   , _ideInstanceTypes :: [P.SourceType]
   , _ideInstanceConstraints :: Maybe [P.SourceConstraint]
-  } deriving (Show, Eq, Ord, Generic, NFData)
+  } deriving (Show, Eq, Ord)
 
 data IdeValueOperator = IdeValueOperator
   { _ideValueOpName :: P.OpName 'P.ValueOpName
@@ -75,7 +77,7 @@ data IdeValueOperator = IdeValueOperator
   , _ideValueOpPrecedence :: P.Precedence
   , _ideValueOpAssociativity :: P.Associativity
   , _ideValueOpType :: Maybe P.SourceType
-  } deriving (Show, Eq, Ord, Generic, NFData)
+  } deriving (Show, Eq, Ord)
 
 data IdeTypeOperator = IdeTypeOperator
   { _ideTypeOpName :: P.OpName 'P.TypeOpName
@@ -83,7 +85,7 @@ data IdeTypeOperator = IdeTypeOperator
   , _ideTypeOpPrecedence :: P.Precedence
   , _ideTypeOpAssociativity :: P.Associativity
   , _ideTypeOpKind :: Maybe P.SourceType
-  } deriving (Show, Eq, Ord, Generic, NFData)
+  } deriving (Show, Eq, Ord)
 
 _IdeDeclValue :: Traversal' IdeDeclaration IdeValue
 _IdeDeclValue f (IdeDeclValue x) = map IdeDeclValue (f x)
@@ -131,7 +133,7 @@ makeLenses ''IdeTypeOperator
 data IdeDeclarationAnn = IdeDeclarationAnn
   { _idaAnnotation :: Annotation
   , _idaDeclaration :: IdeDeclaration
-  } deriving (Show, Eq, Ord, Generic, NFData)
+  } deriving (Show, Eq, Ord)
 
 data Annotation
   = Annotation
@@ -139,7 +141,7 @@ data Annotation
   , _annExportedFrom :: Maybe P.ModuleName
   , _annTypeAnnotation :: Maybe P.SourceType
   , _annDocumentation :: Maybe Text
-  } deriving (Show, Eq, Ord, Generic, NFData)
+  } deriving (Show, Eq, Ord)
 
 makeLenses ''Annotation
 makeLenses ''IdeDeclarationAnn
@@ -152,7 +154,7 @@ type TypeAnnotations = Map P.Ident P.SourceType
 newtype AstData a = AstData (ModuleMap (DefinitionSites a, TypeAnnotations))
   -- ^ SourceSpans for the definition sites of values and types as well as type
   -- annotations found in a module
-  deriving (Show, Eq, Ord, Generic, NFData, Functor, Foldable)
+  deriving (Show, Eq, Ord, Functor, Foldable)
 
 data IdeLogLevel = LogDebug | LogPerf | LogAll | LogDefault | LogNone
   deriving (Show, Eq)
@@ -173,16 +175,16 @@ data IdeEnvironment =
   , ideCacheDbTimestamp :: IORef (Maybe UTCTime)
   }
 
-type Ide m = (MonadIO m, MonadReader IdeEnvironment m)
+type Ide m = (MonadIO m, MonadBaseControl IO m, MonadReader IdeEnvironment m)
 
 data IdeState = IdeState
   { ideFileState :: IdeFileState
   , ideVolatileState :: IdeVolatileState
-  , ideModifierState :: IdeModifierState
+  , ideDurableState :: IdeDurableState
   } deriving (Show)
 
 emptyIdeState :: IdeState
-emptyIdeState = IdeState emptyFileState emptyVolatileState emptyModifierState
+emptyIdeState = IdeState emptyFileState emptyVolatileState emptyDurableState
 
 emptyFileState :: IdeFileState
 emptyFileState = IdeFileState M.empty M.empty
@@ -190,8 +192,8 @@ emptyFileState = IdeFileState M.empty M.empty
 emptyVolatileState :: IdeVolatileState
 emptyVolatileState = IdeVolatileState (AstData M.empty) M.empty Nothing
 
-emptyModifierState :: IdeModifierState
-emptyModifierState = IdeModifierState mempty
+emptyDurableState :: IdeDurableState
+emptyDurableState = IdeDurableState S.empty
 
 -- | @IdeFileState@ holds data that corresponds 1-to-1 to an entity on the
 -- filesystem. Externs correspond to the ExternsFiles the compiler emits into
@@ -216,8 +218,13 @@ data IdeVolatileState = IdeVolatileState
   , vsCachedRebuild :: Maybe (P.ModuleName, P.ExternsFile)
   } deriving (Show)
 
-data IdeModifierState = IdeModifierState
-  { mdFocusedModules :: Set P.ModuleName
+-- | @IdeDurableState@ holds data that persists across resets of the @IdeState@.
+-- This is particularly useful for configuration variables that can be modified
+-- during runtime. For instance, the module names for the "focus" feature are 
+-- stored in the drFocusedModules field, which the client populates using the
+-- @Focus@ command to specify only which modules to load.
+data IdeDurableState = IdeDurableState
+  { drFocusedModules :: Set P.ModuleName
   } deriving (Show)
 
 newtype Match a = Match (P.ModuleName, a)
@@ -320,7 +327,7 @@ encodeImport (P.runModuleName -> mn, importType, map P.runModuleName -> qualifie
 
 -- | Denotes the different namespaces a name in PureScript can reside in.
 data IdeNamespace = IdeNSValue | IdeNSType | IdeNSModule
-  deriving (Show, Eq, Ord, Generic, NFData)
+  deriving (Show, Eq, Ord)
 
 instance FromJSON IdeNamespace where
   parseJSON = Aeson.withText "Namespace" $ \case
@@ -331,4 +338,4 @@ instance FromJSON IdeNamespace where
 
 -- | A name tagged with a namespace
 data IdeNamespaced = IdeNamespaced IdeNamespace Text
-  deriving (Show, Eq, Ord, Generic, NFData)
+  deriving (Show, Eq, Ord)

@@ -20,6 +20,7 @@ module Language.PureScript.Ide
 
 import Protolude hiding (moduleName)
 
+import Control.Concurrent.Async.Lifted (mapConcurrently_)
 import "monad-logger" Control.Monad.Logger (MonadLogger, logWarnN)
 import Data.Map qualified as Map
 import Data.Set qualified as Set
@@ -231,7 +232,7 @@ loadModules moduleNames = do
     efPaths =
         map (\mn -> oDir </> toS (P.runModuleName mn) </> P.externsFileName) efModules
   efiles <- traverse readExternFile efPaths
-  traverse_ insertExterns efiles
+  mapConcurrently_ insertExterns efiles
 
   -- We parse all source files, log eventual parse failures and insert the
   -- successful parses into the state.
@@ -239,7 +240,7 @@ loadModules moduleNames = do
     partitionEithers <$> (parseModulesFromFiles =<< findAllSourceFiles)
   unless (null failures) $
     logWarnN ("Failed to parse: " <> show failures)
-  traverse_ insertModule allModules
+  mapConcurrently_ insertModule allModules
 
   pure (TextResult ("Loaded " <> show (length efiles) <> " modules and "
                     <> show (length allModules) <> " source files."))
