@@ -22,6 +22,8 @@ module Language.PureScript.Ide.SourceFile
 
 import Protolude
 
+import Control.Concurrent.Async.Lifted (mapConcurrently)
+import Control.Monad.Trans.Control (MonadBaseControl)
 import Control.Parallel.Strategies (withStrategy, parList, rseq)
 import Data.Map qualified as Map
 import Language.PureScript qualified as P
@@ -37,11 +39,11 @@ parseModule path file =
     Right m -> Right (path, m)
 
 parseModulesFromFiles
-  :: (MonadIO m, MonadError IdeError m)
+  :: (MonadIO m, MonadBaseControl IO m, MonadError IdeError m)
   => [FilePath]
   -> m [Either FilePath (FilePath, P.Module)]
 parseModulesFromFiles paths = do
-  files <- traverse ideReadFile paths
+  files <- mapConcurrently ideReadFile paths
   pure (inParallel (map (uncurry parseModule) files))
   where
     inParallel :: [Either e (k, a)] -> [Either e (k, a)]
