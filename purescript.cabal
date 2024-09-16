@@ -210,7 +210,9 @@ common defaults
     vector >=0.12.3.1 && <0.13,
     witherable >=0.4.2 && <0.5,
     lsp >=2.2.0 && <3.0,
-    lsp-types >=2.2.0 && <3.0
+    lsp-types >=2.2.0 && <3.0,
+    co-log-core >= 0.3.2.0 && < 0.4,
+    prettyprinter >= 1.7.0 && < 2.0
 
 library
   import: defaults
@@ -334,7 +336,7 @@ library
     Language.PureScript.Linter.Exhaustive
     Language.PureScript.Linter.Imports
     Language.PureScript.Linter.Wildcards
-    Language.PureScript.LSP
+    Language.PureScript.Lsp
     Language.PureScript.Make
     Language.PureScript.Make.Actions
     Language.PureScript.Make.BuildPlan
@@ -425,6 +427,7 @@ executable purs
     Command.Graph
     Command.Hierarchy
     Command.Ide
+    Command.Lsp
     Command.Publish
     Command.REPL
     SharedCLI
