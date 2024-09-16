@@ -178,6 +178,9 @@ command = Opts.helper <*> subcommands where
     "none" -> LogNone
     _ -> LogDefault
 
+
+-- runM env 
+
 startServer :: Network.PortNumber -> IdeEnvironment -> IO ()
 startServer port env = Network.withSocketsDo $ do
   sock <- listenOnLocalhost port

@@ -337,6 +337,7 @@ library
     Language.PureScript.Linter.Imports
     Language.PureScript.Linter.Wildcards
     Language.PureScript.Lsp
+    Language.PureScript.LspSimple
     Language.PureScript.Make
     Language.PureScript.Make.Actions
     Language.PureScript.Make.BuildPlan

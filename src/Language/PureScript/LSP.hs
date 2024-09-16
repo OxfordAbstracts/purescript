@@ -4,7 +4,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# OPTIONS_GHC -Wno-unticked-promoted-constructors #-}
 
-module Language.PureScript.Lsp where
+module Language.PureScript.Lsp (main) where
 
 import Colog.Core (LogAction (..), Severity (..), WithSeverity (..), (<&))
 import Colog.Core qualified as L
@@ -18,7 +18,6 @@ import Language.LSP.Logging (defaultClientLogger)
 import Language.LSP.Protocol.Lens qualified as LSP
 import Language.LSP.Protocol.Message qualified as LSP
 import Language.LSP.Protocol.Types qualified as LSP
-import Language.LSP.Server
 import Language.LSP.Server as LSP.Server
 import Language.LSP.VFS
 import Prettyprinter
@@ -202,7 +201,11 @@ handlers logger =
         let doc = msg ^. LSP.params . LSP.textDocument . LSP.uri
             fileName = LSP.uriToFilePath doc
         logger <& ("Processing DidOpenTextDocument for: " <> T.pack (show fileName)) `WithSeverity` Info
-        sendDiagnostics (LSP.toNormalizedUri doc) (Just 0),
+        case fileName of
+          Nothing -> logger <& "No filename found" `WithSeverity` Error
+          Just _path -> do
+            -- res <- _ $rebuildFileAsync path Nothing (Set.singleton JS)
+            sendDiagnostics (LSP.toNormalizedUri doc) (Just 0),
       notificationHandler LSP.SMethod_WorkspaceDidChangeConfiguration $ \msg -> do
         cfg <- getConfig
         logger L.<& ("Configuration changed: " <> T.pack (show (msg, cfg))) `WithSeverity` Info
@@ -288,18 +291,3 @@ handlers logger =
             update (ProgressAmount (Just (i * 10)) (Just "Doing stuff"))
             liftIO $ threadDelay (1 * 1000000)
     ]
-
--- ---------------------------------------------------------------------
--- main :: IO Int
--- main = do
---   runServer $
---     ServerDefinition
---       { parseConfig = const $ const $ Right (),
---         onConfigChange = const $ pure (),
---         defaultConfig = (),
---         configSection = "purescript-lsp",
---         doInitialize = \env _req -> pure $ Right env,
---         staticHandlers = \_caps -> handlers,
---         interpretHandler = \env -> Iso (runLspT env) liftIO,
---         options = defaultOptions
---       }
