@@ -20,8 +20,9 @@ import Language.LSP.Protocol.Types (Uri, toNormalizedUri)
 import Language.LSP.Protocol.Types qualified as Types
 import Language.LSP.Server (getConfig, publishDiagnostics)
 import Language.LSP.Server qualified as Server
-import Language.PureScript.Errors (ErrorMessage (ErrorMessage), MultipleErrors (runMultipleErrors), errorCode, errorDocUri, errorSpan, prettyPrintSingleError, noColorPPEOptions)
+import Language.PureScript.Errors (ErrorMessage (ErrorMessage), MultipleErrors (runMultipleErrors), errorCode, errorDocUri, errorSpan, noColorPPEOptions, prettyPrintSingleError)
 import Language.PureScript.Errors qualified as Errors
+import Language.PureScript.Ide (findAvailableExterns, loadModulesAsync)
 import Language.PureScript.Ide.Error (IdeError (RebuildError), textError)
 import Language.PureScript.Ide.Rebuild (rebuildFileAsync)
 import Language.PureScript.Ide.Types (IdeConfiguration (confLogLevel), IdeEnvironment (ideConfiguration), Success (RebuildSuccess, TextResult))
@@ -41,6 +42,7 @@ handlers :: Server.Handlers (HandlerM ())
 handlers =
   mconcat
     [ Server.notificationHandler Message.SMethod_Initialized $ \_not -> do
+        void $ runIde $ findAvailableExterns >>= loadModulesAsync
         log_ ("OA purs lsp server initialized" :: T.Text)
         sendInfoMsg "OA purs lsp server initialized",
       Server.notificationHandler Message.SMethod_TextDocumentDidOpen $ \msg -> do
@@ -69,34 +71,35 @@ handlers =
 
 rebuildFileFromMsg :: (LSP.HasParams s a1, LSP.HasTextDocument a1 a2, LSP.HasUri a2 Uri) => s -> HandlerM config ()
 rebuildFileFromMsg msg = do
-  let doc :: Uri
-      doc = getDocument msg
-      fileName = Types.uriToFilePath doc
+  let uri :: Uri
+      uri = getMsgUri msg
+      fileName = Types.uriToFilePath uri
   case fileName of
     Just file -> do
       res <- runIde $ rebuildFile file
-      sendDiagnostics doc res
+      sendDiagnostics uri res
     Nothing ->
-      sendInfoMsg $ "No file path for uri: " <> show doc
+      sendInfoMsg $ "No file path for uri: " <> show uri
 
 getFileDiagnotics :: (LSP.HasUri a2 Uri, LSP.HasTextDocument a1 a2, LSP.HasParams s a1) => s -> HandlerM config [Types.Diagnostic]
 getFileDiagnotics msg = do
-  let doc :: Uri
-      doc = getDocument msg
-      fileName = Types.uriToFilePath doc
+  let uri :: Uri
+      uri = getMsgUri msg
+      fileName = Types.uriToFilePath uri
   case fileName of
     Just file -> do
       res <- runIde $ rebuildFile file
-      getResultDiagnostics doc res
+      getResultDiagnostics uri res
     Nothing -> do
-      sendInfoMsg $ "No file path for uri: " <> show doc
+      sendInfoMsg $ "No file path for uri: " <> show uri
       pure []
 
 rebuildFile :: FilePath -> IdeM Success
-rebuildFile file = rebuildFileAsync file Nothing mempty
+rebuildFile file = do
+  rebuildFileAsync file Nothing mempty
 
-getDocument :: (LSP.HasParams s a1, LSP.HasTextDocument a1 a2, LSP.HasUri a2 a3) => s -> a3
-getDocument msg = msg ^. LSP.params . LSP.textDocument . LSP.uri
+getMsgUri :: (LSP.HasParams s a1, LSP.HasTextDocument a1 a2, LSP.HasUri a2 a3) => s -> a3
+getMsgUri msg = msg ^. LSP.params . LSP.textDocument . LSP.uri
 
 sendDiagnostics :: Uri -> Either IdeError Success -> HandlerM config ()
 sendDiagnostics uri res = do

@@ -17,6 +17,7 @@
 module Language.PureScript.Ide
        ( handleCommand
        , loadModulesAsync
+       , findAvailableExterns
        ) where
 
 import Protolude hiding (moduleName)
