@@ -3,7 +3,7 @@ module Command.Lsp (command) where
 import Control.Concurrent.STM (newTVarIO)
 import Data.IORef (newIORef)
 import Language.PureScript.Ide.Types (IdeConfiguration (..), IdeEnvironment (..), IdeLogLevel (..), emptyIdeState)
-import Language.PureScript.Lsp as Lsp
+import Language.PureScript.LspSimple as Lsp
 import Options.Applicative qualified as Opts
 import Protolude
 import SharedCLI qualified
@@ -81,5 +81,10 @@ command = Opts.helper <*> subcommands
       "none" -> LogNone
       _ -> LogDefault
 
-    startServer _ = do
-      Lsp.main
+    startServer env = do
+      code <- Lsp.main env
+      exitWith
+        ( case code of
+            0 -> ExitSuccess
+            _ -> ExitFailure code
+        )
