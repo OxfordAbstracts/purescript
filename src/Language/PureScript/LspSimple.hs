@@ -20,7 +20,7 @@ import Language.LSP.Protocol.Types (Uri, toNormalizedUri)
 import Language.LSP.Protocol.Types qualified as Types
 import Language.LSP.Server (getConfig, publishDiagnostics)
 import Language.LSP.Server qualified as Server
-import Language.PureScript.Errors (ErrorMessage (ErrorMessage), ErrorMessageHint, MultipleErrors (runMultipleErrors), defaultPPEOptions, errorCode, errorDocUri, errorSpan, prettyPrintSingleError)
+import Language.PureScript.Errors (ErrorMessage (ErrorMessage), MultipleErrors (runMultipleErrors), errorCode, errorDocUri, errorSpan, prettyPrintSingleError, noColorPPEOptions)
 import Language.PureScript.Errors qualified as Errors
 import Language.PureScript.Ide.Error (IdeError (RebuildError), textError)
 import Language.PureScript.Ide.Rebuild (rebuildFileAsync)
@@ -57,20 +57,14 @@ handlers =
         sendInfoMsg $ "Config changed: " <> show cfg,
       Server.notificationHandler Message.SMethod_SetTrace $ \msg -> do
         sendInfoMsg "SMethod_SetTrace",
-      --  Message.serverMethodJSON Message.SMethod_TextDocumentPublishDiagnostics _,
-      --  Message.regHelper Message.SMethod_TextDocumentPublishDiagnostics _,
-      --  $ \msg -> do
-      --   sendInfoMsg "SMethod_TextDocumentPublishDiagnostics",
       Server.requestHandler Message.SMethod_TextDocumentDiagnostic $ \msg res -> do
         sendInfoMsg "SMethod_TextDocumentDiagnostic"
-        diags <- getFileDiagnotics msg
+        diagnotics <- getFileDiagnotics msg
         res $
           Right $
             Types.DocumentDiagnosticReport $
               Types.InL $
-                Types.RelatedFullDocumentDiagnosticReport Types.AString Nothing diags Nothing
-                --  $ \msg -> do
-                --   sendInfoMsg "SMethod_TextDocumentDiagnostic"
+                Types.RelatedFullDocumentDiagnosticReport Types.AString Nothing diagnotics Nothing
     ]
 
 rebuildFileFromMsg :: (LSP.HasParams s a1, LSP.HasTextDocument a1 a2, LSP.HasUri a2 Uri) => s -> HandlerM config ()
@@ -129,9 +123,9 @@ getResultDiagnostics uri res = case res of
         (Just $ Types.InR $ errorCode msg)
         (Just $ Types.CodeDescription $ Types.Uri $ errorDocUri msg)
         (T.pack <$> spanName)
-        (T.pack $ render $ prettyPrintSingleError defaultPPEOptions msg)
+        (T.pack $ render $ prettyPrintSingleError noColorPPEOptions msg)
         Nothing
-        (Just $ hintToRelated <$> hints)
+        Nothing
         Nothing
       where
         notFound = Types.Position 0 0
@@ -146,20 +140,6 @@ getResultDiagnostics uri res = case res of
                 Types.Position (fromIntegral $ startLine - 1) (fromIntegral $ startCol - 1),
                 Types.Position (fromIntegral $ endLine - 1) (fromIntegral $ endCol - 1)
               )
-
-        hintToRelated :: Errors.ErrorMessageHint -> Types.DiagnosticRelatedInformation
-        hintToRelated hint =
-          Types.DiagnosticRelatedInformation
-            (Types.Location uri (Types.Range hintStart hintEnd))
-            (show hint)
-          where
-            (_, hintStart, hintEnd) = fromMaybe (Nothing, start, end) $ getPositionsMb $ getHintSpans hint
-
-getHintSpans :: ErrorMessageHint -> Maybe (NEL.NonEmpty Errors.SourceSpan)
-getHintSpans hint = case hint of
-  Errors.PositionedError span -> Just span
-  Errors.RelatedPositions span -> Just span
-  _ -> Nothing
 
 sendError :: IdeError -> HandlerM config ()
 sendError err =

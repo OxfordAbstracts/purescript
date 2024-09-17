@@ -625,6 +625,16 @@ defaultPPEOptions = PPEOptions
   , ppeRelativeDirectory = mempty
   , ppeFileContents      = []
   }
+  
+noColorPPEOptions :: PPEOptions
+noColorPPEOptions = PPEOptions
+  { ppeCodeColor         = Nothing
+  , ppeFull              = False
+  , ppeLevel             = Error
+  , ppeShowDocs          = True
+  , ppeRelativeDirectory = mempty
+  , ppeFileContents      = []
+  }
 
 -- | Pretty print a single error, simplifying if necessary
 prettyPrintSingleError :: PPEOptions -> ErrorMessage -> Box.Box
