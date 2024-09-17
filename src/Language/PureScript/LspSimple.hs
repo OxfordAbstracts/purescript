@@ -110,19 +110,19 @@ getResultDiagnostics :: Uri -> Either IdeError Success -> HandlerM config [Types
 getResultDiagnostics uri res = case res of
   Right success ->
     case success of
-      RebuildSuccess errs -> pure $ errorMessageDiagnostic <$> runMultipleErrors errs
+      RebuildSuccess errs -> pure $ errorMessageDiagnostic Types.DiagnosticSeverity_Warning <$> runMultipleErrors errs
       TextResult _ -> pure []
       _ -> pure []
-  Left (RebuildError _ errs) -> pure $ errorMessageDiagnostic <$> runMultipleErrors errs
+  Left (RebuildError _ errs) -> pure $ errorMessageDiagnostic Types.DiagnosticSeverity_Error <$> runMultipleErrors errs
   Left err -> do
     sendError err
     pure []
   where
-    errorMessageDiagnostic :: ErrorMessage -> Types.Diagnostic
-    errorMessageDiagnostic msg@((ErrorMessage hints _)) =
+    errorMessageDiagnostic :: Types.DiagnosticSeverity -> ErrorMessage -> Types.Diagnostic
+    errorMessageDiagnostic severity msg@((ErrorMessage hints _)) =
       Types.Diagnostic
         (Types.Range start end)
-        (Just Types.DiagnosticSeverity_Error)
+        (Just severity)
         (Just $ Types.InR $ errorCode msg)
         (Just $ Types.CodeDescription $ Types.Uri $ errorDocUri msg)
         (T.pack <$> spanName)
