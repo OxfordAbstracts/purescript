@@ -143,8 +143,8 @@ getResultDiagnostics uri res = case res of
           let (Errors.SourceSpan name (Errors.SourcePos startLine startCol) (Errors.SourcePos endLine endCol)) =
                 NEL.head spans
            in ( Just name,
-                Types.Position (fromIntegral startLine) (fromIntegral startCol),
-                Types.Position (fromIntegral endLine) (fromIntegral endCol)
+                Types.Position (fromIntegral $ startLine - 1) (fromIntegral $ startCol - 1),
+                Types.Position (fromIntegral $ endLine - 1) (fromIntegral $ endCol - 1)
               )
 
         hintToRelated :: Errors.ErrorMessageHint -> Types.DiagnosticRelatedInformation
