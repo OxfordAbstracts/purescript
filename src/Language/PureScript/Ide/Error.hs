@@ -15,6 +15,7 @@
 module Language.PureScript.Ide.Error
        ( IdeError(..)
        , prettyPrintTypeSingleLine
+       , textError
        ) where
 
 import Data.Aeson (KeyValue(..), ToJSON(..), Value, object)
