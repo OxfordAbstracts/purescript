@@ -56,6 +56,8 @@ import System.Console.ANSI qualified as ANSI
 import System.FilePath (makeRelative)
 import Text.PrettyPrint.Boxes qualified as Box
 import Witherable (wither)
+import Codec.Serialise (Serialise)
+import Codec.Serialise.Class (Serialise(encode, decode))
 
 -- | A type of error messages
 data SimpleErrorMessage
@@ -199,12 +201,16 @@ data SimpleErrorMessage
   | CannotDeriveInvalidConstructorArg (Qualified (ProperName 'ClassName)) [Qualified (ProperName 'ClassName)] Bool
   | CannotSkipTypeApplication SourceType
   | CannotApplyExpressionOfTypeOnType SourceType SourceType
-  deriving (Show, Generic, NFData)
+  deriving (Show, Generic, Serialise, NFData)
 
 data ErrorMessage = ErrorMessage
   [ErrorMessageHint]
   SimpleErrorMessage
-  deriving (Show, Generic, NFData)
+  deriving (Show, Generic, Serialise, NFData)
+  
+-- instance Serialise ErrorMessage where
+--   encode = genericEncode
+--   decode = _
 
 newtype ErrorSuggestion = ErrorSuggestion Text
 

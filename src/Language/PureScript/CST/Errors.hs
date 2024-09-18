@@ -20,6 +20,8 @@ import Language.PureScript.CST.Layout (LayoutStack)
 import Language.PureScript.CST.Print (printToken)
 import Language.PureScript.CST.Types (SourcePos(..), SourceRange(..), SourceToken(..), Token(..))
 import Text.Printf (printf)
+import Codec.Serialise (Serialise)
+import Codec.Serialise qualified as S
 
 data ParserErrorType
   = ErrWildcardInType
@@ -59,7 +61,7 @@ data ParserErrorType
   | ErrConstraintInForeignImportSyntax
   | ErrEof
   | ErrCustom String
-  deriving (Show, Eq, Ord, Generic, NFData)
+  deriving (Show, Eq, Ord, Generic, S.Serialise, NFData)
 
 data ParserWarningType
   = WarnDeprecatedRowSyntax
@@ -67,7 +69,7 @@ data ParserWarningType
   | WarnDeprecatedKindImportSyntax
   | WarnDeprecatedKindExportSyntax
   | WarnDeprecatedCaseOfOffsideSyntax
-  deriving (Show, Eq, Ord, Generic, NFData)
+  deriving (Show, Eq, Ord, Generic, Serialise, NFData)
 
 data ParserErrorInfo a = ParserErrorInfo
   { errRange :: SourceRange
@@ -75,6 +77,8 @@ data ParserErrorInfo a = ParserErrorInfo
   , errStack :: LayoutStack
   , errType :: a
   } deriving (Show, Eq, Generic, NFData)
+
+instance Serialise a => Serialise (ParserErrorInfo a)
 
 type ParserError = ParserErrorInfo ParserErrorType
 type ParserWarning = ParserErrorInfo ParserWarningType

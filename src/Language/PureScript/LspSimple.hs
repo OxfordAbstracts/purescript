@@ -30,6 +30,12 @@ import Language.PureScript.Ide.Util (runLogger)
 import Protolude
 import Text.PrettyPrint.Boxes (render)
 import "monad-logger" Control.Monad.Logger (LoggingT, mapLoggingT)
+import Codec.Serialise (serialise)
+import Data.Aeson (ToJSON(toJSON))
+import Data.Text.Lazy qualified as TL
+import Data.Text.Encoding qualified as T
+import Data.ByteArray qualified as B
+import Data.ByteString.Lazy qualified as BL
 
 type HandlerM config = Server.LspT config (ReaderT IdeEnvironment (LoggingT IO))
 
@@ -66,8 +72,43 @@ handlers =
           Right $
             Types.DocumentDiagnosticReport $
               Types.InL $
-                Types.RelatedFullDocumentDiagnosticReport Types.AString Nothing diagnotics Nothing
+                Types.RelatedFullDocumentDiagnosticReport Types.AString Nothing diagnotics Nothing,
+      Server.requestHandler Message.SMethod_TextDocumentCodeAction $ \req res -> do
+        sendInfoMsg "SMethod_TextDocumentCodeAction"
+        let params = req ^. LSP.params
+            doc = params ^. LSP.textDocument
+            diags = params ^. LSP.context . LSP.diagnostics
+        -- pure _
+        -- diagnotics <- getFileDiagnotics msg
+        res $
+          Right $
+            Types.InL $
+              [ Types.InR $
+                  Types.CodeAction
+                    "Fix all"
+                    Nothing
+                    (Just diags)
+                    Nothing
+                    Nothing
+                    Nothing
+                    Nothing
+                    Nothing
+              ]
     ]
+
+--     { _title       :: Text -- ^ A short, human-readable, title for this code action.
+-- , _kind        :: Maybe CodeActionKind -- ^ The kind of the code action. Used to filter code actions.
+-- , _diagnostics :: Maybe (List Diagnostic) -- ^ The diagnostics that this code action resolves.
+-- , _edit        :: Maybe WorkspaceEdit -- ^ The workspace edit this code action performs.
+-- , _command     :: Maybe Command -- ^ A command this code action executes. If a code action
+--                                 -- provides an edit and a command, first the edit is
+--                                 -- executed and then the command.
+-- , _isPreferred :: Maybe Bool -- ^ Marks this as a preferred action.
+--                           -- Preferred actions are used by the `auto fix` command and can be targeted by keybindings.
+--                           -- A quick fix should be marked preferred if it properly addresses the underlying error.
+--                           -- A refactoring should be marked preferred if it is the most reasonable choice of actions to take.
+-- , _disabled    :: Maybe Reason -- ^ Marks that the code action cannot currently be applied.
+-- }
 
 rebuildFileFromMsg :: (LSP.HasParams s a1, LSP.HasTextDocument a1 a2, LSP.HasUri a2 Uri) => s -> HandlerM config ()
 rebuildFileFromMsg msg = do
@@ -129,7 +170,7 @@ getResultDiagnostics uri res = case res of
         (T.pack $ render $ prettyPrintSingleError noColorPPEOptions msg)
         Nothing
         Nothing
-        Nothing
+        (Just $ toJSON $ T.decodeUtf8 $ B.concat $ BL.toChunks $ serialise msg)
       where
         notFound = Types.Position 0 0
         (spanName, start, end) = getPositions $ errorSpan msg
