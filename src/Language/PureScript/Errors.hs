@@ -57,7 +57,6 @@ import System.FilePath (makeRelative)
 import Text.PrettyPrint.Boxes qualified as Box
 import Witherable (wither)
 import Codec.Serialise (Serialise)
-import Codec.Serialise.Class (Serialise(encode, decode))
 
 -- | A type of error messages
 data SimpleErrorMessage
