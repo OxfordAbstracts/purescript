@@ -5,14 +5,20 @@
 {-# LANGUAGE PackageImports #-}
 {-# LANGUAGE UndecidableInstances #-}
 {-# OPTIONS_GHC -Wno-unused-matches #-}
+{-# OPTIONS_GHC -Wno-unused-top-binds #-}
 
 module Language.PureScript.LspSimple (main) where
 
+import Codec.Serialise (serialise, deserialise)
 import Control.Lens ((^.))
 import Control.Monad.IO.Unlift
 import Control.Monad.Reader (mapReaderT)
+import Data.Aeson qualified as A
+import Data.ByteArray qualified as B
+import Data.ByteString.Lazy qualified as BL
 import Data.List.NonEmpty qualified as NEL
 import Data.Text qualified as T
+import Data.Text.Encoding qualified as TE
 import Language.LSP.Diagnostics (partitionBySource)
 import Language.LSP.Protocol.Lens qualified as LSP
 import Language.LSP.Protocol.Message qualified as Message
@@ -30,12 +36,6 @@ import Language.PureScript.Ide.Util (runLogger)
 import Protolude
 import Text.PrettyPrint.Boxes (render)
 import "monad-logger" Control.Monad.Logger (LoggingT, mapLoggingT)
-import Codec.Serialise (serialise)
-import Data.Aeson (ToJSON(toJSON))
-import Data.Text.Lazy qualified as TL
-import Data.Text.Encoding qualified as T
-import Data.ByteArray qualified as B
-import Data.ByteString.Lazy qualified as BL
 
 type HandlerM config = Server.LspT config (ReaderT IdeEnvironment (LoggingT IO))
 
@@ -76,7 +76,7 @@ handlers =
       Server.requestHandler Message.SMethod_TextDocumentCodeAction $ \req res -> do
         sendInfoMsg "SMethod_TextDocumentCodeAction"
         let params = req ^. LSP.params
-            doc = params ^. LSP.textDocument
+            -- doc = params ^. LSP.textDocument
             diags = params ^. LSP.context . LSP.diagnostics
         -- pure _
         -- diagnotics <- getFileDiagnotics msg
@@ -86,11 +86,11 @@ handlers =
               [ Types.InR $
                   Types.CodeAction
                     "Fix all"
-                    Nothing
+                    (Just Types.CodeActionKind_QuickFix)
                     (Just diags)
-                    Nothing
-                    Nothing
-                    Nothing
+                    (Just True)
+                    Nothing -- disabled
+                    (Just $ Types.WorkspaceEdit Nothing Nothing Nothing)
                     Nothing
                     Nothing
               ]
@@ -170,7 +170,8 @@ getResultDiagnostics uri res = case res of
         (T.pack $ render $ prettyPrintSingleError noColorPPEOptions msg)
         Nothing
         Nothing
-        (Just $ toJSON $ T.decodeUtf8 $ B.concat $ BL.toChunks $ serialise msg)
+        -- (Just $ encodeErrorMessage msg)
+        Nothing
       where
         notFound = Types.Position 0 0
         (spanName, start, end) = getPositions $ errorSpan msg
@@ -195,6 +196,20 @@ sendError err =
 
 sendInfoMsg :: (Server.MonadLsp config f) => Text -> f ()
 sendInfoMsg msg = Server.sendNotification Message.SMethod_WindowShowMessage (Types.ShowMessageParams Types.MessageType_Info msg)
+
+encodeErrorMessage :: ErrorMessage -> A.Value
+encodeErrorMessage msg = A.toJSON $ TE.decodeUtf8 $ B.concat $ BL.toChunks $ serialise msg
+
+decodeErrorMessage :: A.Value -> Either Text ErrorMessage
+decodeErrorMessage json = do
+  fromJson :: Text <- case A.fromJSON json of
+    A.Success a -> Right a
+    A.Error err -> Left $ T.pack err
+  deserialise $ toUtf8Lazy fromJson
+
+  -- Left ""
+
+--  fromJSON json & TE.encodeUtf8  & _ & BL.fromChunks $ _
 
 main :: IdeEnvironment -> IO Int
 main ideEnv =
