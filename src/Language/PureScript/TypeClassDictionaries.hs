@@ -9,7 +9,6 @@ import Data.Text (Text, pack)
 import Language.PureScript.AST.Declarations.ChainId (ChainId)
 import Language.PureScript.Names (Ident, ProperName(..), ProperNameType(..), Qualified, disqualify)
 import Language.PureScript.Types (SourceConstraint, SourceType)
-import Codec.Serialise (Serialise)
 
 --
 -- Data representing a type class dictionary which is in scope
@@ -41,7 +40,6 @@ data TypeClassDictionaryInScope v
     deriving (Show, Functor, Foldable, Traversable, Generic)
 
 instance NFData v => NFData (TypeClassDictionaryInScope v)
-instance Serialise v => Serialise (TypeClassDictionaryInScope v)
 
 type NamedDict = TypeClassDictionaryInScope (Qualified Ident)
 

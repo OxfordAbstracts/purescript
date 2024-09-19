@@ -1,4 +1,3 @@
-{-# LANGUAGE DeriveAnyClass #-}
 module Language.PureScript.Environment where
 
 import Prelude
@@ -46,7 +45,7 @@ data Environment = Environment
   -- scope (ie dictionaries brought in by a constrained type).
   , typeClasses :: M.Map (Qualified (ProperName 'ClassName)) TypeClassData
   -- ^ Type classes
-  } deriving (Show, Generic, Serialise)
+  } deriving (Show, Generic)
 
 instance NFData Environment
 
@@ -72,7 +71,7 @@ data TypeClassData = TypeClassData
   -- ^ A sets of arguments that can be used to infer all other arguments.
   , typeClassIsEmpty :: Bool
   -- ^ Whether or not dictionaries for this type class are necessarily empty.
-  } deriving (Show, Generic, Serialise)
+  } deriving (Show, Generic)
 
 instance NFData TypeClassData
 

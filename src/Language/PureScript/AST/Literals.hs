@@ -8,7 +8,6 @@ import Prelude
 import Control.DeepSeq (NFData)
 import GHC.Generics (Generic)
 import Language.PureScript.PSString (PSString)
-import Codec.Serialise.Class qualified as S
 
 -- |
 -- Data type for literal values. Parameterised so it can be used for Exprs and
@@ -39,4 +38,4 @@ data Literal a
   -- An object literal
   --
   | ObjectLiteral [(PSString, a)]
-  deriving (Eq, Ord, Show, Functor, Generic, S.Serialise, NFData)
+  deriving (Eq, Ord, Show, Functor, Generic, NFData)

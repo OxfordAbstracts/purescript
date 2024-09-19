@@ -12,19 +12,14 @@
 
 module Language.PureScript.LspSimple (main) where
 
-import Codec.Serialise (deserialise, serialise)
 import Control.Lens ((^.))
 import Control.Monad.IO.Unlift
 import Control.Monad.Reader (mapReaderT)
-import Data.Aeson qualified as A
-import Data.ByteArray qualified as B
-import Data.ByteString.Lazy qualified as BL
 import Data.IORef (IORef, modifyIORef, newIORef, readIORef)
 import Data.List.NonEmpty qualified as NEL
 import Data.Map qualified as Map
 import Data.Set qualified as Set
 import Data.Text qualified as T
-import Data.Text.Encoding qualified as TE
 import Language.LSP.Protocol.Lens qualified as LSP
 import Language.LSP.Protocol.Message qualified as Message
 import Language.LSP.Protocol.Types (Diagnostic, Uri)
@@ -140,7 +135,7 @@ handlers diagErrs =
                             Types.WorkspaceEdit
                               (Just $ Map.singleton uri textEdits)
                               Nothing
-                              (Just _)
+                              Nothing
                         )
                         Nothing
                         Nothing
@@ -220,16 +215,6 @@ rebuildFile file = do
 
 sendInfoMsg :: (Server.MonadLsp config f) => Text -> f ()
 sendInfoMsg msg = Server.sendNotification Message.SMethod_WindowShowMessage (Types.ShowMessageParams Types.MessageType_Info msg)
-
-encodeErrorMessage :: ErrorMessage -> A.Value
-encodeErrorMessage msg = A.toJSON $ TE.decodeUtf8 $ B.concat $ BL.toChunks $ serialise msg
-
-decodeErrorMessage :: A.Value -> Either Text ErrorMessage
-decodeErrorMessage json = do
-  fromJson :: Text <- case A.fromJSON json of
-    A.Success a -> Right a
-    A.Error err -> Left $ T.pack err
-  deserialise $ toUtf8Lazy fromJson
 
 main :: IdeEnvironment -> IO Int
 main ideEnv = do

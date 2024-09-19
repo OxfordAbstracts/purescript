@@ -3,50 +3,54 @@
 
 -- |
 -- Data types for modules and declarations
+--
 module Language.PureScript.AST.Declarations where
+
+import Prelude
+import Protolude.Exceptions (hush)
 
 import Codec.Serialise (Serialise)
 import Control.DeepSeq (NFData)
-import Data.Aeson.TH (Options (..), SumEncoding (..), defaultOptions, deriveJSON)
-import Data.Functor.Identity (Identity (..))
-import Data.List.NonEmpty qualified as NEL
+import Data.Functor.Identity (Identity(..))
+
+import Data.Aeson.TH (Options(..), SumEncoding(..), defaultOptions, deriveJSON)
 import Data.Map qualified as M
 import Data.Text (Text)
+import Data.List.NonEmpty qualified as NEL
 import GHC.Generics (Generic)
+
 import Language.PureScript.AST.Binders (Binder)
-import Language.PureScript.AST.Declarations.ChainId (ChainId)
-import Language.PureScript.AST.Literals (Literal (..))
+import Language.PureScript.AST.Literals (Literal(..))
 import Language.PureScript.AST.Operators (Fixity)
 import Language.PureScript.AST.SourcePos (SourceAnn, SourceSpan)
-import Language.PureScript.Comments (Comment)
-import Language.PureScript.Constants.Prim qualified as C
-import Language.PureScript.Environment (DataDeclType, Environment, FunctionalDependency, NameKind)
-import Language.PureScript.Label (Label)
-import Language.PureScript.Names (Ident (..), ModuleName (..), Name (..), OpName, OpNameType (..), ProperName, ProperNameType (..), Qualified (..), QualifiedBy (..), toMaybeModuleName, pattern ByNullSourcePos)
+import Language.PureScript.AST.Declarations.ChainId (ChainId)
+import Language.PureScript.Types (SourceConstraint, SourceType)
 import Language.PureScript.PSString (PSString)
+import Language.PureScript.Label (Label)
+import Language.PureScript.Names (pattern ByNullSourcePos, Ident(..), ModuleName(..), Name(..), OpName, OpNameType(..), ProperName, ProperNameType(..), Qualified(..), QualifiedBy(..), toMaybeModuleName)
 import Language.PureScript.Roles (Role)
 import Language.PureScript.TypeClassDictionaries (NamedDict)
-import Language.PureScript.Types (SourceConstraint, SourceType)
-import Protolude.Exceptions (hush)
-import Prelude
+import Language.PureScript.Comments (Comment)
+import Language.PureScript.Environment (DataDeclType, Environment, FunctionalDependency, NameKind)
+import Language.PureScript.Constants.Prim qualified as C
 
 -- | A map of locally-bound names in scope.
 type Context = [(Ident, SourceType)]
 
 -- | Holds the data necessary to do type directed search for typed holes
 data TypeSearch
-  = -- | An Environment captured for later consumption by type directed search
-    TSBefore Environment
-  | -- | Results of applying type directed search to the previously captured
-    -- Environment
-    TSAfter
-      { -- | The identifiers that fully satisfy the subsumption check
-        tsAfterIdentifiers :: [(Qualified Text, SourceType)],
-        -- | Record fields that are available on the first argument to the typed
-        -- hole
-        tsAfterRecordFields :: Maybe [(Label, SourceType)]
-      }
-  deriving (Show, Generic, Serialise, NFData)
+  = TSBefore Environment
+  -- ^ An Environment captured for later consumption by type directed search
+  | TSAfter
+  -- ^ Results of applying type directed search to the previously captured
+  -- Environment
+    { tsAfterIdentifiers :: [(Qualified Text, SourceType)]
+    -- ^ The identifiers that fully satisfy the subsumption check
+    , tsAfterRecordFields :: Maybe [(Label, SourceType)]
+    -- ^ Record fields that are available on the first argument to the typed
+    -- hole
+    }
+  deriving (Show, Generic, NFData)
 
 onTypeSearchTypes :: (SourceType -> SourceType) -> TypeSearch -> TypeSearch
 onTypeSearchTypes f = runIdentity . onTypeSearchTypesM (Identity . f)
@@ -86,7 +90,7 @@ data ErrorMessageHint
   | MissingConstructorImportForCoercible (Qualified (ProperName 'ConstructorName))
   | PositionedError (NEL.NonEmpty SourceSpan)
   | RelatedPositions (NEL.NonEmpty SourceSpan)
-  deriving (Show, Generic, Serialise, NFData)
+  deriving (Show, Generic, NFData)
 
 -- | Categories of hints
 data HintCategory
@@ -108,12 +112,13 @@ data UnknownsHint
   = NoUnknowns
   | Unknowns
   | UnknownsWithVtaRequiringArgs (NEL.NonEmpty (Qualified Ident, [[Text]]))
-  deriving (Show, Generic, Serialise, NFData)
+  deriving (Show, Generic, NFData)
 
 -- |
 -- A module declaration, consisting of comments about the module, a module name,
 -- a list of declarations, and a list of the declarations that are
 -- explicitly exported. If the export list is Nothing, everything is exported.
+--
 data Module = Module SourceSpan [Comment] ModuleName [Declaration] (Maybe [DeclarationRef])
   deriving (Show)
 
@@ -134,60 +139,71 @@ getModuleDeclarations (Module _ _ _ declarations _) = declarations
 --
 -- Will not import an unqualified module if that module has already been imported qualified.
 -- (See #2197)
+--
 addDefaultImport :: Qualified ModuleName -> Module -> Module
 addDefaultImport (Qualified toImportAs toImport) m@(Module ss coms mn decls exps) =
-  if isExistingImport `any` decls || mn == toImport
-    then m
-    else Module ss coms mn (ImportDeclaration (ss, []) toImport Implicit toImportAs' : decls) exps
+  if isExistingImport `any` decls || mn == toImport then m
+  else Module ss coms mn (ImportDeclaration (ss, []) toImport Implicit toImportAs' : decls) exps
   where
-    toImportAs' = toMaybeModuleName toImportAs
+  toImportAs' = toMaybeModuleName toImportAs
 
-    isExistingImport (ImportDeclaration _ mn' _ as')
-      | mn' == toImport =
-          case toImportAs' of
-            Nothing -> True
-            _ -> as' == toImportAs'
-    isExistingImport _ = False
+  isExistingImport (ImportDeclaration _ mn' _ as')
+    | mn' == toImport =
+        case toImportAs' of
+          Nothing -> True
+          _ -> as' == toImportAs'
+  isExistingImport _ = False
 
 -- | Adds import declarations to a module for an implicit Prim import and Prim
 -- | qualified as Prim, as necessary.
 importPrim :: Module -> Module
 importPrim =
-  let primModName = C.M_Prim
-   in addDefaultImport (Qualified (ByModuleName primModName) primModName)
-        . addDefaultImport (Qualified ByNullSourcePos primModName)
+  let
+    primModName = C.M_Prim
+  in
+    addDefaultImport (Qualified (ByModuleName primModName) primModName)
+      . addDefaultImport (Qualified ByNullSourcePos primModName)
 
 data NameSource = UserNamed | CompilerNamed
   deriving (Show, Generic, NFData, Serialise)
 
 -- |
 -- An item in a list of explicit imports or exports
+--
 data DeclarationRef
-  = -- |
-    -- A type class
-    TypeClassRef SourceSpan (ProperName 'ClassName)
-  | -- |
-    -- A type operator
-    TypeOpRef SourceSpan (OpName 'TypeOpName)
-  | -- |
-    -- A type constructor with data constructors
-    TypeRef SourceSpan (ProperName 'TypeName) (Maybe [ProperName 'ConstructorName])
-  | -- |
-    -- A value
-    ValueRef SourceSpan Ident
-  | -- |
-    -- A value-level operator
-    ValueOpRef SourceSpan (OpName 'ValueOpName)
-  | -- |
-    -- A type class instance, created during typeclass desugaring
-    TypeInstanceRef SourceSpan Ident NameSource
-  | -- |
-    -- A module, in its entirety
-    ModuleRef SourceSpan ModuleName
-  | -- |
-    -- A value re-exported from another module. These will be inserted during
-    -- elaboration in name desugaring.
-    ReExportRef SourceSpan ExportSource DeclarationRef
+  -- |
+  -- A type class
+  --
+  = TypeClassRef SourceSpan (ProperName 'ClassName)
+  -- |
+  -- A type operator
+  --
+  | TypeOpRef SourceSpan (OpName 'TypeOpName)
+  -- |
+  -- A type constructor with data constructors
+  --
+  | TypeRef SourceSpan (ProperName 'TypeName) (Maybe [ProperName 'ConstructorName])
+  -- |
+  -- A value
+  --
+  | ValueRef SourceSpan Ident
+  -- |
+  -- A value-level operator
+  --
+  | ValueOpRef SourceSpan (OpName 'ValueOpName)
+  -- |
+  -- A type class instance, created during typeclass desugaring
+  --
+  | TypeInstanceRef SourceSpan Ident NameSource
+  -- |
+  -- A module, in its entirety
+  --
+  | ModuleRef SourceSpan ModuleName
+  -- |
+  -- A value re-exported from another module. These will be inserted during
+  -- elaboration in name desugaring.
+  --
+  | ReExportRef SourceSpan ExportSource DeclarationRef
   deriving (Show, Generic, NFData, Serialise)
 
 instance Eq DeclarationRef where
@@ -212,20 +228,21 @@ instance Ord DeclarationRef where
   ReExportRef _ mn ref `compare` ReExportRef _ mn' ref' = compare mn mn' <> compare ref ref'
   compare ref ref' =
     compare (orderOf ref) (orderOf ref')
-    where
-      orderOf :: DeclarationRef -> Int
-      orderOf TypeClassRef {} = 0
-      orderOf TypeOpRef {} = 1
-      orderOf TypeRef {} = 2
-      orderOf ValueRef {} = 3
-      orderOf ValueOpRef {} = 4
-      orderOf TypeInstanceRef {} = 5
-      orderOf ModuleRef {} = 6
-      orderOf ReExportRef {} = 7
+      where
+        orderOf :: DeclarationRef -> Int
+        orderOf TypeClassRef{} = 0
+        orderOf TypeOpRef{} = 1
+        orderOf TypeRef{} = 2
+        orderOf ValueRef{} = 3
+        orderOf ValueOpRef{} = 4
+        orderOf TypeInstanceRef{} = 5
+        orderOf ModuleRef{} = 6
+        orderOf ReExportRef{} = 7
 
-data ExportSource = ExportSource
-  { exportSourceImportedFrom :: Maybe ModuleName,
-    exportSourceDefinedIn :: ModuleName
+data ExportSource =
+  ExportSource
+  { exportSourceImportedFrom :: Maybe ModuleName
+  , exportSourceDefinedIn :: ModuleName
   }
   deriving (Eq, Ord, Show, Generic, NFData, Serialise)
 
@@ -270,21 +287,25 @@ getTypeClassRef (TypeClassRef _ name) = Just name
 getTypeClassRef _ = Nothing
 
 isModuleRef :: DeclarationRef -> Bool
-isModuleRef ModuleRef {} = True
+isModuleRef ModuleRef{} = True
 isModuleRef _ = False
 
 -- |
 -- The data type which specifies type of import declaration
+--
 data ImportDeclarationType
-  = -- |
-    -- An import with no explicit list: `import M`.
-    Implicit
-  | -- |
-    -- An import with an explicit list of references to import: `import M (foo)`
-    Explicit [DeclarationRef]
-  | -- |
-    -- An import with a list of references to hide: `import M hiding (foo)`
-    Hiding [DeclarationRef]
+  -- |
+  -- An import with no explicit list: `import M`.
+  --
+  = Implicit
+  -- |
+  -- An import with an explicit list of references to import: `import M (foo)`
+  --
+  | Explicit [DeclarationRef]
+  -- |
+  -- An import with a list of references to hide: `import M hiding (foo)`
+  --
+  | Hiding [DeclarationRef]
   deriving (Eq, Show, Generic, Serialise, NFData)
 
 isExplicit :: ImportDeclarationType -> Bool
@@ -299,11 +320,10 @@ isExplicit _ = False
 -- In this example, @T@ is the identifier and @[representational, phantom]@ is
 -- the list of roles (@T@ presumably having two parameters).
 data RoleDeclarationData = RoleDeclarationData
-  { rdeclSourceAnn :: !SourceAnn,
-    rdeclIdent :: !(ProperName 'TypeName),
-    rdeclRoles :: ![Role]
-  }
-  deriving (Show, Eq, Generic, Serialise, NFData)
+  { rdeclSourceAnn :: !SourceAnn
+  , rdeclIdent :: !(ProperName 'TypeName)
+  , rdeclRoles :: ![Role]
+  } deriving (Show, Eq, Generic, NFData)
 
 -- | A type declaration assigns a type to an identifier, eg:
 --
@@ -311,11 +331,10 @@ data RoleDeclarationData = RoleDeclarationData
 --
 -- In this example @identity@ is the identifier and @forall a. a -> a@ the type.
 data TypeDeclarationData = TypeDeclarationData
-  { tydeclSourceAnn :: !SourceAnn,
-    tydeclIdent :: !Ident,
-    tydeclType :: !SourceType
-  }
-  deriving (Show, Eq, Generic, Serialise, NFData)
+  { tydeclSourceAnn :: !SourceAnn
+  , tydeclIdent :: !Ident
+  , tydeclType :: !SourceType
+  } deriving (Show, Eq, Generic, NFData)
 
 getTypeDeclaration :: Declaration -> Maybe TypeDeclarationData
 getTypeDeclaration (TypeDeclaration d) = Just d
@@ -330,97 +349,109 @@ unwrapTypeDeclaration td = (tydeclIdent td, tydeclType td)
 --
 -- In this example @double@ is the identifier, @x@ is a binder and @x + x@ is the expression.
 data ValueDeclarationData a = ValueDeclarationData
-  { valdeclSourceAnn :: !SourceAnn,
-    -- | The declared value's name
-    valdeclIdent :: !Ident,
-    -- | Whether or not this value is exported/visible
-    valdeclName :: !NameKind,
-    valdeclBinders :: ![Binder],
-    valdeclExpression :: !a
-  }
-  deriving (Show, Functor, Generic, Serialise, NFData, Foldable, Traversable)
+  { valdeclSourceAnn :: !SourceAnn
+  , valdeclIdent :: !Ident
+  -- ^ The declared value's name
+  , valdeclName :: !NameKind
+  -- ^ Whether or not this value is exported/visible
+  , valdeclBinders :: ![Binder]
+  , valdeclExpression :: !a
+  } deriving (Show, Functor, Generic, NFData, Foldable, Traversable)
 
 getValueDeclaration :: Declaration -> Maybe (ValueDeclarationData [GuardedExpr])
 getValueDeclaration (ValueDeclaration d) = Just d
 getValueDeclaration _ = Nothing
 
 pattern ValueDecl :: SourceAnn -> Ident -> NameKind -> [Binder] -> [GuardedExpr] -> Declaration
-pattern ValueDecl sann ident name binders expr =
-  ValueDeclaration (ValueDeclarationData sann ident name binders expr)
+pattern ValueDecl sann ident name binders expr
+  = ValueDeclaration (ValueDeclarationData sann ident name binders expr)
 
 data DataConstructorDeclaration = DataConstructorDeclaration
-  { dataCtorAnn :: !SourceAnn,
-    dataCtorName :: !(ProperName 'ConstructorName),
-    dataCtorFields :: ![(Ident, SourceType)]
-  }
-  deriving (Show, Eq, Generic, Serialise, NFData)
+  { dataCtorAnn :: !SourceAnn
+  , dataCtorName :: !(ProperName 'ConstructorName)
+  , dataCtorFields :: ![(Ident, SourceType)]
+  } deriving (Show, Eq, Generic, NFData)
 
 mapDataCtorFields :: ([(Ident, SourceType)] -> [(Ident, SourceType)]) -> DataConstructorDeclaration -> DataConstructorDeclaration
-mapDataCtorFields f DataConstructorDeclaration {..} = DataConstructorDeclaration {dataCtorFields = f dataCtorFields, ..}
+mapDataCtorFields f DataConstructorDeclaration{..} = DataConstructorDeclaration { dataCtorFields = f dataCtorFields, .. }
 
-traverseDataCtorFields :: (Monad m) => ([(Ident, SourceType)] -> m [(Ident, SourceType)]) -> DataConstructorDeclaration -> m DataConstructorDeclaration
-traverseDataCtorFields f DataConstructorDeclaration {..} = DataConstructorDeclaration dataCtorAnn dataCtorName <$> f dataCtorFields
+traverseDataCtorFields :: Monad m => ([(Ident, SourceType)] -> m [(Ident, SourceType)]) -> DataConstructorDeclaration -> m DataConstructorDeclaration
+traverseDataCtorFields f DataConstructorDeclaration{..} = DataConstructorDeclaration dataCtorAnn dataCtorName <$> f dataCtorFields
 
 -- |
 -- The data type of declarations
+--
 data Declaration
-  = -- |
-    -- A data type declaration (data or newtype, name, arguments, data constructors)
-    DataDeclaration SourceAnn DataDeclType (ProperName 'TypeName) [(Text, Maybe SourceType)] [DataConstructorDeclaration]
-  | -- |
-    -- A minimal mutually recursive set of data type declarations
-    DataBindingGroupDeclaration (NEL.NonEmpty Declaration)
-  | -- |
-    -- A type synonym declaration (name, arguments, type)
-    TypeSynonymDeclaration SourceAnn (ProperName 'TypeName) [(Text, Maybe SourceType)] SourceType
-  | -- |
-    -- A kind signature declaration
-    KindDeclaration SourceAnn KindSignatureFor (ProperName 'TypeName) SourceType
-  | -- |
-    -- A role declaration (name, roles)
-    RoleDeclaration {-# UNPACK #-} !RoleDeclarationData
-  | -- |
-    -- A type declaration for a value (name, ty)
-    TypeDeclaration {-# UNPACK #-} !TypeDeclarationData
-  | -- |
-    -- A value declaration (name, top-level binders, optional guard, value)
-    ValueDeclaration {-# UNPACK #-} !(ValueDeclarationData [GuardedExpr])
-  | -- |
-    -- A declaration paired with pattern matching in let-in expression (binder, optional guard, value)
-    BoundValueDeclaration SourceAnn Binder Expr
-  | -- |
-    -- A minimal mutually recursive set of value declarations
-    BindingGroupDeclaration (NEL.NonEmpty ((SourceAnn, Ident), NameKind, Expr))
-  | -- |
-    -- A foreign import declaration (name, type)
-    ExternDeclaration SourceAnn Ident SourceType
-  | -- |
-    -- A data type foreign import (name, kind)
-    ExternDataDeclaration SourceAnn (ProperName 'TypeName) SourceType
-  | -- |
-    -- A fixity declaration
-    FixityDeclaration SourceAnn (Either ValueFixity TypeFixity)
-  | -- |
-    -- A module import (module name, qualified/unqualified/hiding, optional "qualified as" name)
-    ImportDeclaration SourceAnn ModuleName ImportDeclarationType (Maybe ModuleName)
-  | -- |
-    -- A type class declaration (name, argument, implies, member declarations)
-    TypeClassDeclaration SourceAnn (ProperName 'ClassName) [(Text, Maybe SourceType)] [SourceConstraint] [FunctionalDependency] [Declaration]
-  | -- |
-    -- A type instance declaration (instance chain, chain index, name,
-    -- dependencies, class name, instance types, member declarations)
-    --
-    -- The first @SourceAnn@ serves as the annotation for the entire
-    -- declaration, while the second @SourceAnn@ serves as the
-    -- annotation for the type class and its arguments.
-    TypeInstanceDeclaration SourceAnn SourceAnn ChainId Integer (Either Text Ident) [SourceConstraint] (Qualified (ProperName 'ClassName)) [SourceType] TypeInstanceBody
-  deriving (Show, Generic, Serialise, NFData)
+  -- |
+  -- A data type declaration (data or newtype, name, arguments, data constructors)
+  --
+  = DataDeclaration SourceAnn DataDeclType (ProperName 'TypeName) [(Text, Maybe SourceType)] [DataConstructorDeclaration]
+  -- |
+  -- A minimal mutually recursive set of data type declarations
+  --
+  | DataBindingGroupDeclaration (NEL.NonEmpty Declaration)
+  -- |
+  -- A type synonym declaration (name, arguments, type)
+  --
+  | TypeSynonymDeclaration SourceAnn (ProperName 'TypeName) [(Text, Maybe SourceType)] SourceType
+  -- |
+  -- A kind signature declaration
+  --
+  | KindDeclaration SourceAnn KindSignatureFor (ProperName 'TypeName) SourceType
+  -- |
+  -- A role declaration (name, roles)
+  --
+  | RoleDeclaration {-# UNPACK #-} !RoleDeclarationData
+  -- |
+  -- A type declaration for a value (name, ty)
+  --
+  | TypeDeclaration {-# UNPACK #-} !TypeDeclarationData
+  -- |
+  -- A value declaration (name, top-level binders, optional guard, value)
+  --
+  | ValueDeclaration {-# UNPACK #-} !(ValueDeclarationData [GuardedExpr])
+  -- |
+  -- A declaration paired with pattern matching in let-in expression (binder, optional guard, value)
+  | BoundValueDeclaration SourceAnn Binder Expr
+  -- |
+  -- A minimal mutually recursive set of value declarations
+  --
+  | BindingGroupDeclaration (NEL.NonEmpty ((SourceAnn, Ident), NameKind, Expr))
+  -- |
+  -- A foreign import declaration (name, type)
+  --
+  | ExternDeclaration SourceAnn Ident SourceType
+  -- |
+  -- A data type foreign import (name, kind)
+  --
+  | ExternDataDeclaration SourceAnn (ProperName 'TypeName) SourceType
+  -- |
+  -- A fixity declaration
+  --
+  | FixityDeclaration SourceAnn (Either ValueFixity TypeFixity)
+  -- |
+  -- A module import (module name, qualified/unqualified/hiding, optional "qualified as" name)
+  --
+  | ImportDeclaration SourceAnn ModuleName ImportDeclarationType (Maybe ModuleName)
+  -- |
+  -- A type class declaration (name, argument, implies, member declarations)
+  --
+  | TypeClassDeclaration SourceAnn (ProperName 'ClassName) [(Text, Maybe SourceType)] [SourceConstraint] [FunctionalDependency] [Declaration]
+  -- |
+  -- A type instance declaration (instance chain, chain index, name,
+  -- dependencies, class name, instance types, member declarations)
+  --
+  -- The first @SourceAnn@ serves as the annotation for the entire
+  -- declaration, while the second @SourceAnn@ serves as the
+  -- annotation for the type class and its arguments.
+  | TypeInstanceDeclaration SourceAnn SourceAnn ChainId Integer (Either Text Ident) [SourceConstraint] (Qualified (ProperName 'ClassName)) [SourceType] TypeInstanceBody
+  deriving (Show, Generic, NFData)
 
 data ValueFixity = ValueFixity Fixity (Qualified (Either Ident (ProperName 'ConstructorName))) (OpName 'ValueOpName)
-  deriving (Eq, Ord, Show, Generic, Serialise, NFData)
+  deriving (Eq, Ord, Show, Generic, NFData)
 
 data TypeFixity = TypeFixity Fixity (Qualified (ProperName 'TypeName)) (OpName 'TypeOpName)
-  deriving (Eq, Ord, Show, Generic, Serialise, NFData)
+  deriving (Eq, Ord, Show, Generic, NFData)
 
 pattern ValueFixityDeclaration :: SourceAnn -> Fixity -> Qualified (Either Ident (ProperName 'ConstructorName)) -> OpName 'ValueOpName -> Declaration
 pattern ValueFixityDeclaration sa fixity name op = FixityDeclaration sa (Left (ValueFixity fixity name op))
@@ -431,17 +462,17 @@ pattern TypeFixityDeclaration sa fixity name op = FixityDeclaration sa (Right (T
 data InstanceDerivationStrategy
   = KnownClassStrategy
   | NewtypeStrategy
-  deriving (Show, Generic, Serialise, NFData)
+  deriving (Show, Generic, NFData)
 
 -- | The members of a type class instance declaration
 data TypeInstanceBody
-  = -- | This is a derived instance
-    DerivedInstance
-  | -- | This is an instance derived from a newtype
-    NewtypeInstance
-  | -- | This is a regular (explicit) instance
-    ExplicitInstance [Declaration]
-  deriving (Show, Generic, Serialise, NFData)
+  = DerivedInstance
+  -- ^ This is a derived instance
+  | NewtypeInstance
+  -- ^ This is an instance derived from a newtype
+  | ExplicitInstance [Declaration]
+  -- ^ This is a regular (explicit) instance
+  deriving (Show, Generic, NFData)
 
 mapTypeInstanceBody :: ([Declaration] -> [Declaration]) -> TypeInstanceBody -> TypeInstanceBody
 mapTypeInstanceBody f = runIdentity . traverseTypeInstanceBody (Identity . f)
@@ -457,7 +488,7 @@ data KindSignatureFor
   | NewtypeSig
   | TypeSynonymSig
   | ClassSig
-  deriving (Eq, Ord, Show, Generic, Serialise, NFData)
+  deriving (Eq, Ord, Show, Generic, NFData)
 
 declSourceAnn :: Declaration -> SourceAnn
 declSourceAnn (DataDeclaration sa _ _ _ _) = sa
@@ -492,54 +523,61 @@ declName (FixityDeclaration _ (Left (ValueFixity _ _ n))) = Just (ValOpName n)
 declName (FixityDeclaration _ (Right (TypeFixity _ _ n))) = Just (TyOpName n)
 declName (TypeClassDeclaration _ n _ _ _ _) = Just (TyClassName n)
 declName (TypeInstanceDeclaration _ _ _ _ n _ _ _ _) = IdentName <$> hush n
-declName (RoleDeclaration RoleDeclarationData {..}) = Just (TyName rdeclIdent)
-declName ImportDeclaration {} = Nothing
-declName BindingGroupDeclaration {} = Nothing
-declName DataBindingGroupDeclaration {} = Nothing
-declName BoundValueDeclaration {} = Nothing
-declName KindDeclaration {} = Nothing
-declName TypeDeclaration {} = Nothing
+declName (RoleDeclaration RoleDeclarationData{..}) = Just (TyName rdeclIdent)
+declName ImportDeclaration{} = Nothing
+declName BindingGroupDeclaration{} = Nothing
+declName DataBindingGroupDeclaration{} = Nothing
+declName BoundValueDeclaration{} = Nothing
+declName KindDeclaration{} = Nothing
+declName TypeDeclaration{} = Nothing
 
 -- |
 -- Test if a declaration is a value declaration
+--
 isValueDecl :: Declaration -> Bool
-isValueDecl ValueDeclaration {} = True
+isValueDecl ValueDeclaration{} = True
 isValueDecl _ = False
 
 -- |
 -- Test if a declaration is a data type declaration
+--
 isDataDecl :: Declaration -> Bool
-isDataDecl DataDeclaration {} = True
+isDataDecl DataDeclaration{} = True
 isDataDecl _ = False
 
 -- |
 -- Test if a declaration is a type synonym declaration
+--
 isTypeSynonymDecl :: Declaration -> Bool
-isTypeSynonymDecl TypeSynonymDeclaration {} = True
+isTypeSynonymDecl TypeSynonymDeclaration{} = True
 isTypeSynonymDecl _ = False
 
 -- |
 -- Test if a declaration is a module import
+--
 isImportDecl :: Declaration -> Bool
-isImportDecl ImportDeclaration {} = True
+isImportDecl ImportDeclaration{} = True
 isImportDecl _ = False
 
 -- |
 -- Test if a declaration is a role declaration
+--
 isRoleDecl :: Declaration -> Bool
-isRoleDecl RoleDeclaration {} = True
+isRoleDecl RoleDeclaration{} = True
 isRoleDecl _ = False
 
 -- |
 -- Test if a declaration is a data type foreign import
+--
 isExternDataDecl :: Declaration -> Bool
-isExternDataDecl ExternDataDeclaration {} = True
+isExternDataDecl ExternDataDeclaration{} = True
 isExternDataDecl _ = False
 
 -- |
 -- Test if a declaration is a fixity declaration
+--
 isFixityDecl :: Declaration -> Bool
-isFixityDecl FixityDeclaration {} = True
+isFixityDecl FixityDeclaration{} = True
 isFixityDecl _ = False
 
 getFixityDecl :: Declaration -> Maybe (Either ValueFixity TypeFixity)
@@ -548,195 +586,234 @@ getFixityDecl _ = Nothing
 
 -- |
 -- Test if a declaration is a foreign import
+--
 isExternDecl :: Declaration -> Bool
-isExternDecl ExternDeclaration {} = True
+isExternDecl ExternDeclaration{} = True
 isExternDecl _ = False
 
 -- |
 -- Test if a declaration is a type class instance declaration
+--
 isTypeClassInstanceDecl :: Declaration -> Bool
-isTypeClassInstanceDecl TypeInstanceDeclaration {} = True
+isTypeClassInstanceDecl TypeInstanceDeclaration{} = True
 isTypeClassInstanceDecl _ = False
 
 -- |
 -- Test if a declaration is a type class declaration
+--
 isTypeClassDecl :: Declaration -> Bool
-isTypeClassDecl TypeClassDeclaration {} = True
+isTypeClassDecl TypeClassDeclaration{} = True
 isTypeClassDecl _ = False
 
 -- |
 -- Test if a declaration is a kind signature declaration.
+--
 isKindDecl :: Declaration -> Bool
-isKindDecl KindDeclaration {} = True
+isKindDecl KindDeclaration{} = True
 isKindDecl _ = False
 
 -- |
 -- Recursively flatten data binding groups in the list of declarations
 flattenDecls :: [Declaration] -> [Declaration]
 flattenDecls = concatMap flattenOne
-  where
-    flattenOne :: Declaration -> [Declaration]
-    flattenOne (DataBindingGroupDeclaration decls) = concatMap flattenOne decls
-    flattenOne d = [d]
+    where flattenOne :: Declaration -> [Declaration]
+          flattenOne (DataBindingGroupDeclaration decls) = concatMap flattenOne decls
+          flattenOne d = [d]
 
 -- |
 -- A guard is just a boolean-valued expression that appears alongside a set of binders
-data Guard
-  = ConditionGuard Expr
-  | PatternGuard Binder Expr
-  deriving (Show, Generic, Serialise, NFData)
+--
+data Guard = ConditionGuard Expr
+           | PatternGuard Binder Expr
+           deriving (Show, Generic, NFData)
 
 -- |
 -- The right hand side of a binder in value declarations
 -- and case expressions.
 data GuardedExpr = GuardedExpr [Guard] Expr
-  deriving (Show, Generic, Serialise, NFData)
+                 deriving (Show, Generic, NFData)
 
 pattern MkUnguarded :: Expr -> GuardedExpr
 pattern MkUnguarded e = GuardedExpr [] e
 
 -- |
 -- Data type for expressions and terms
+--
 data Expr
-  = -- |
-    -- A literal value
-    Literal SourceSpan (Literal Expr)
-  | -- |
-    -- A prefix -, will be desugared
-    UnaryMinus SourceSpan Expr
-  | -- |
-    -- Binary operator application. During the rebracketing phase of desugaring, this data constructor
-    -- will be removed.
-    BinaryNoParens Expr Expr Expr
-  | -- |
-    -- Explicit parentheses. During the rebracketing phase of desugaring, this data constructor
-    -- will be removed.
-    --
-    -- Note: although it seems this constructor is not used, it _is_ useful, since it prevents
-    -- certain traversals from matching.
-    Parens Expr
-  | -- |
-    -- An record property accessor expression (e.g. `obj.x` or `_.x`).
-    -- Anonymous arguments will be removed during desugaring and expanded
-    -- into a lambda that reads a property from a record.
-    Accessor PSString Expr
-  | -- |
-    -- Partial record update
-    ObjectUpdate Expr [(PSString, Expr)]
-  | -- |
-    -- Object updates with nested support: `x { foo { bar = e } }`
-    -- Replaced during desugaring into a `Let` and nested `ObjectUpdate`s
-    ObjectUpdateNested Expr (PathTree Expr)
-  | -- |
-    -- Function introduction
-    Abs Binder Expr
-  | -- |
-    -- Function application
-    App Expr Expr
-  | -- |
-    -- A type application (e.g. `f @Int`)
-    VisibleTypeApp Expr SourceType
-  | -- |
-    -- Hint that an expression is unused.
-    -- This is used to ignore type class dictionaries that are necessarily empty.
-    -- The inner expression lets us solve subgoals before eliminating the whole expression.
-    -- The code gen will render this as `undefined`, regardless of what the inner expression is.
-    Unused Expr
-  | -- |
-    -- Variable
-    Var SourceSpan (Qualified Ident)
-  | -- |
-    -- An operator. This will be desugared into a function during the "operators"
-    -- phase of desugaring.
-    Op SourceSpan (Qualified (OpName 'ValueOpName))
-  | -- |
-    -- Conditional (if-then-else expression)
-    IfThenElse Expr Expr Expr
-  | -- |
-    -- A data constructor
-    Constructor SourceSpan (Qualified (ProperName 'ConstructorName))
-  | -- |
-    -- A case expression. During the case expansion phase of desugaring, top-level binders will get
-    -- desugared into case expressions, hence the need for guards and multiple binders per branch here.
-    Case [Expr] [CaseAlternative]
-  | -- |
-    -- A value with a type annotation
-    TypedValue Bool Expr SourceType
-  | -- |
-    -- A let binding
-    Let WhereProvenance [Declaration] Expr
-  | -- |
-    -- A do-notation block
-    Do (Maybe ModuleName) [DoNotationElement]
-  | -- |
-    -- An ado-notation block
-    Ado (Maybe ModuleName) [DoNotationElement] Expr
-  | -- |
-    -- A placeholder for a type class dictionary to be inserted later. At the end of type checking, these
-    -- placeholders will be replaced with actual expressions representing type classes dictionaries which
-    -- can be evaluated at runtime. The constructor arguments represent (in order): whether or not to look
-    -- at superclass implementations when searching for a dictionary, the type class name and
-    -- instance type, and the type class dictionaries in scope.
-    TypeClassDictionary
-      SourceConstraint
-      (M.Map QualifiedBy (M.Map (Qualified (ProperName 'ClassName)) (M.Map (Qualified Ident) (NEL.NonEmpty NamedDict))))
-      [ErrorMessageHint]
-  | -- |
-    -- A placeholder for a superclass dictionary to be turned into a TypeClassDictionary during typechecking
-    DeferredDictionary (Qualified (ProperName 'ClassName)) [SourceType]
-  | -- |
-    -- A placeholder for a type class instance to be derived during typechecking
-    DerivedInstancePlaceholder (Qualified (ProperName 'ClassName)) InstanceDerivationStrategy
-  | -- |
-    -- A placeholder for an anonymous function argument
-    AnonymousArgument
-  | -- |
-    -- A typed hole that will be turned into a hint/error during typechecking
-    Hole Text
-  | -- |
-    -- A value with source position information
-    PositionedValue SourceSpan [Comment] Expr
-  deriving (Show, Generic, Serialise, NFData)
+  -- |
+  -- A literal value
+  --
+  = Literal SourceSpan (Literal Expr)
+  -- |
+  -- A prefix -, will be desugared
+  --
+  | UnaryMinus SourceSpan Expr
+  -- |
+  -- Binary operator application. During the rebracketing phase of desugaring, this data constructor
+  -- will be removed.
+  --
+  | BinaryNoParens Expr Expr Expr
+  -- |
+  -- Explicit parentheses. During the rebracketing phase of desugaring, this data constructor
+  -- will be removed.
+  --
+  -- Note: although it seems this constructor is not used, it _is_ useful, since it prevents
+  -- certain traversals from matching.
+  --
+  | Parens Expr
+  -- |
+  -- An record property accessor expression (e.g. `obj.x` or `_.x`).
+  -- Anonymous arguments will be removed during desugaring and expanded
+  -- into a lambda that reads a property from a record.
+  --
+  | Accessor PSString Expr
+  -- |
+  -- Partial record update
+  --
+  | ObjectUpdate Expr [(PSString, Expr)]
+  -- |
+  -- Object updates with nested support: `x { foo { bar = e } }`
+  -- Replaced during desugaring into a `Let` and nested `ObjectUpdate`s
+  --
+  | ObjectUpdateNested Expr (PathTree Expr)
+  -- |
+  -- Function introduction
+  --
+  | Abs Binder Expr
+  -- |
+  -- Function application
+  --
+  | App Expr Expr
+  -- |
+  -- A type application (e.g. `f @Int`)
+  --
+  | VisibleTypeApp Expr SourceType
+  -- |
+  -- Hint that an expression is unused.
+  -- This is used to ignore type class dictionaries that are necessarily empty.
+  -- The inner expression lets us solve subgoals before eliminating the whole expression.
+  -- The code gen will render this as `undefined`, regardless of what the inner expression is.
+  | Unused Expr
+  -- |
+  -- Variable
+  --
+  | Var SourceSpan (Qualified Ident)
+  -- |
+  -- An operator. This will be desugared into a function during the "operators"
+  -- phase of desugaring.
+  --
+  | Op SourceSpan (Qualified (OpName 'ValueOpName))
+  -- |
+  -- Conditional (if-then-else expression)
+  --
+  | IfThenElse Expr Expr Expr
+  -- |
+  -- A data constructor
+  --
+  | Constructor SourceSpan (Qualified (ProperName 'ConstructorName))
+  -- |
+  -- A case expression. During the case expansion phase of desugaring, top-level binders will get
+  -- desugared into case expressions, hence the need for guards and multiple binders per branch here.
+  --
+  | Case [Expr] [CaseAlternative]
+  -- |
+  -- A value with a type annotation
+  --
+  | TypedValue Bool Expr SourceType
+  -- |
+  -- A let binding
+  --
+  | Let WhereProvenance [Declaration] Expr
+  -- |
+  -- A do-notation block
+  --
+  | Do (Maybe ModuleName) [DoNotationElement]
+  -- |
+  -- An ado-notation block
+  --
+  | Ado (Maybe ModuleName) [DoNotationElement] Expr
+  -- |
+  -- A placeholder for a type class dictionary to be inserted later. At the end of type checking, these
+  -- placeholders will be replaced with actual expressions representing type classes dictionaries which
+  -- can be evaluated at runtime. The constructor arguments represent (in order): whether or not to look
+  -- at superclass implementations when searching for a dictionary, the type class name and
+  -- instance type, and the type class dictionaries in scope.
+  --
+  | TypeClassDictionary SourceConstraint
+                        (M.Map QualifiedBy (M.Map (Qualified (ProperName 'ClassName)) (M.Map (Qualified Ident) (NEL.NonEmpty NamedDict))))
+                        [ErrorMessageHint]
+  -- |
+  -- A placeholder for a superclass dictionary to be turned into a TypeClassDictionary during typechecking
+  --
+  | DeferredDictionary (Qualified (ProperName 'ClassName)) [SourceType]
+  -- |
+  -- A placeholder for a type class instance to be derived during typechecking
+  --
+  | DerivedInstancePlaceholder (Qualified (ProperName 'ClassName)) InstanceDerivationStrategy
+  -- |
+  -- A placeholder for an anonymous function argument
+  --
+  | AnonymousArgument
+  -- |
+  -- A typed hole that will be turned into a hint/error during typechecking
+  --
+  | Hole Text
+  -- |
+  -- A value with source position information
+  --
+  | PositionedValue SourceSpan [Comment] Expr
+  deriving (Show, Generic, NFData)
 
 -- |
 -- Metadata that tells where a let binding originated
+--
 data WhereProvenance
-  = -- |
-    -- The let binding was originally a where clause
-    FromWhere
-  | -- |
-    -- The let binding was always a let binding
-    FromLet
-  deriving (Show, Generic, Serialise, NFData)
+  -- |
+  -- The let binding was originally a where clause
+  --
+  = FromWhere
+  -- |
+  -- The let binding was always a let binding
+  --
+  | FromLet
+  deriving (Show, Generic, NFData)
 
 -- |
 -- An alternative in a case statement
+--
 data CaseAlternative = CaseAlternative
   { -- |
     -- A collection of binders with which to match the inputs
-    caseAlternativeBinders :: [Binder],
+    --
+    caseAlternativeBinders :: [Binder]
     -- |
     -- The result expression or a collect of guarded expressions
-    caseAlternativeResult :: [GuardedExpr]
-  }
-  deriving (Show, Generic, Serialise, NFData)
+    --
+  , caseAlternativeResult :: [GuardedExpr]
+  } deriving (Show, Generic, NFData)
 
 -- |
 -- A statement in a do-notation block
+--
 data DoNotationElement
-  = -- |
-    -- A monadic value without a binder
-    DoNotationValue Expr
-  | -- |
-    -- A monadic value with a binder
-    DoNotationBind Binder Expr
-  | -- |
-    -- A let statement, i.e. a pure value with a binder
-    DoNotationLet [Declaration]
-  | -- |
-    -- A do notation element with source position information
-    PositionedDoNotationElement SourceSpan [Comment] DoNotationElement
-  deriving (Show, Generic, Serialise, NFData)
+  -- |
+  -- A monadic value without a binder
+  --
+  = DoNotationValue Expr
+  -- |
+  -- A monadic value with a binder
+  --
+  | DoNotationBind Binder Expr
+  -- |
+  -- A let statement, i.e. a pure value with a binder
+  --
+  | DoNotationLet [Declaration]
+  -- |
+  -- A do notation element with source position information
+  --
+  | PositionedDoNotationElement SourceSpan [Comment] DoNotationElement
+  deriving (Show, Generic, NFData)
+
 
 -- For a record update such as:
 --
@@ -762,24 +839,20 @@ data DoNotationElement
 --
 
 newtype PathTree t = PathTree (AssocList PSString (PathNode t))
-  deriving (Show, Eq, Ord, Functor, Foldable, Generic, Traversable)
-  deriving newtype (NFData)
-
-instance (Serialise t) => Serialise (PathTree t)
+  deriving (Show, Eq, Ord, Functor, Foldable, Traversable)
+  deriving newtype NFData
 
 data PathNode t = Leaf t | Branch (PathTree t)
-  deriving (Show, Eq, Ord, Generic, NFData, Functor, Foldable, Traversable, Serialise)
+  deriving (Show, Eq, Ord, Generic, NFData, Functor, Foldable, Traversable)
 
-newtype AssocList k t = AssocList {runAssocList :: [(k, t)]}
-  deriving (Show, Eq, Ord, Foldable, Functor, Traversable, Generic)
-  deriving newtype (NFData)
+newtype AssocList k t = AssocList { runAssocList :: [(k, t)] }
+  deriving (Show, Eq, Ord, Foldable, Functor, Traversable)
+  deriving newtype NFData
 
-instance (Serialise t, Serialise k) => Serialise (AssocList k t)
-
-$(deriveJSON (defaultOptions {sumEncoding = ObjectWithSingleField}) ''NameSource)
-$(deriveJSON (defaultOptions {sumEncoding = ObjectWithSingleField}) ''ExportSource)
-$(deriveJSON (defaultOptions {sumEncoding = ObjectWithSingleField}) ''DeclarationRef)
-$(deriveJSON (defaultOptions {sumEncoding = ObjectWithSingleField}) ''ImportDeclarationType)
+$(deriveJSON (defaultOptions { sumEncoding = ObjectWithSingleField }) ''NameSource)
+$(deriveJSON (defaultOptions { sumEncoding = ObjectWithSingleField }) ''ExportSource)
+$(deriveJSON (defaultOptions { sumEncoding = ObjectWithSingleField }) ''DeclarationRef)
+$(deriveJSON (defaultOptions { sumEncoding = ObjectWithSingleField }) ''ImportDeclarationType)
 
 isTrueExpr :: Expr -> Bool
 isTrueExpr (Literal _ (BooleanLiteral True)) = True
