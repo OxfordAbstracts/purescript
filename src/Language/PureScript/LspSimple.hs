@@ -139,6 +139,7 @@ handlers diagErrs =
       let uri :: Uri
           uri = getMsgUri msg
           fileName = Types.uriToFilePath uri
+      logT $ "Rebuilding file: " <> show (uri, fileName)
       case fileName of
         Just file -> do
           res <- liftIde $ rebuildFile file
