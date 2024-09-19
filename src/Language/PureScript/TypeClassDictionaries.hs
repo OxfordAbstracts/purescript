@@ -10,6 +10,7 @@ import Language.PureScript.AST.Declarations.ChainId (ChainId)
 import Language.PureScript.Names (Ident, ProperName(..), ProperNameType(..), Qualified, disqualify)
 import Language.PureScript.Types (SourceConstraint, SourceType)
 import Codec.Serialise (Serialise)
+import Data.Aeson (FromJSON, ToJSON)
 
 --
 -- Data representing a type class dictionary which is in scope
@@ -42,6 +43,8 @@ data TypeClassDictionaryInScope v
 
 instance NFData v => NFData (TypeClassDictionaryInScope v)
 instance Serialise v => Serialise (TypeClassDictionaryInScope v)
+instance FromJSON v => FromJSON (TypeClassDictionaryInScope v)
+instance ToJSON v => ToJSON (TypeClassDictionaryInScope v)
 
 type NamedDict = TypeClassDictionaryInScope (Qualified Ident)
 

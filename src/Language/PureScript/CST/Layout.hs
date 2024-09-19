@@ -179,6 +179,7 @@ import Data.Function ((&))
 import GHC.Generics (Generic)
 import Language.PureScript.CST.Types (Comment, LineFeed, SourcePos(..), SourceRange(..), SourceToken(..), Token(..), TokenAnn(..))
 import Codec.Serialise qualified as S
+import Data.Aeson qualified as A
 
 type LayoutStack = [(SourcePos, LayoutDelim)]
 
@@ -205,7 +206,7 @@ data LayoutDelim
   | LytOf
   | LytDo
   | LytAdo
-  deriving (Show, Eq, Ord, Generic, S.Serialise, NFData)
+  deriving (Show, Eq, Ord, Generic, S.Serialise, A.FromJSON, A.ToJSON, NFData)
 
 isIndented :: LayoutDelim -> Bool
 isIndented = \case

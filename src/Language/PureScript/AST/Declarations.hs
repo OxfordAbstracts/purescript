@@ -1,13 +1,13 @@
 {-# LANGUAGE DeriveAnyClass #-}
-{-# LANGUAGE TemplateHaskell #-}
-
 -- |
 -- Data types for modules and declarations
 module Language.PureScript.AST.Declarations where
 
 import Codec.Serialise (Serialise)
 import Control.DeepSeq (NFData)
-import Data.Aeson.TH (Options (..), SumEncoding (..), defaultOptions, deriveJSON)
+import Data.Aeson (FromJSON, ToJSON)
+import Data.Aeson qualified as A
+import Data.Aeson.TH (Options (..), SumEncoding (..), defaultOptions)
 import Data.Functor.Identity (Identity (..))
 import Data.List.NonEmpty qualified as NEL
 import Data.Map qualified as M
@@ -46,7 +46,7 @@ data TypeSearch
         -- hole
         tsAfterRecordFields :: Maybe [(Label, SourceType)]
       }
-  deriving (Show, Generic, Serialise, NFData)
+  deriving (Show, Generic, Serialise, FromJSON, ToJSON, NFData)
 
 onTypeSearchTypes :: (SourceType -> SourceType) -> TypeSearch -> TypeSearch
 onTypeSearchTypes f = runIdentity . onTypeSearchTypesM (Identity . f)
@@ -86,7 +86,7 @@ data ErrorMessageHint
   | MissingConstructorImportForCoercible (Qualified (ProperName 'ConstructorName))
   | PositionedError (NEL.NonEmpty SourceSpan)
   | RelatedPositions (NEL.NonEmpty SourceSpan)
-  deriving (Show, Generic, Serialise, NFData)
+  deriving (Show, Generic, Serialise, FromJSON, ToJSON, NFData)
 
 -- | Categories of hints
 data HintCategory
@@ -108,7 +108,7 @@ data UnknownsHint
   = NoUnknowns
   | Unknowns
   | UnknownsWithVtaRequiringArgs (NEL.NonEmpty (Qualified Ident, [[Text]]))
-  deriving (Show, Generic, Serialise, NFData)
+  deriving (Show, Generic, Serialise, FromJSON, ToJSON, NFData)
 
 -- |
 -- A module declaration, consisting of comments about the module, a module name,
@@ -158,7 +158,7 @@ importPrim =
         . addDefaultImport (Qualified ByNullSourcePos primModName)
 
 data NameSource = UserNamed | CompilerNamed
-  deriving (Show, Generic, NFData, Serialise)
+  deriving (Show, Generic, NFData, Serialise, A.FromJSON, A.ToJSON)
 
 -- |
 -- An item in a list of explicit imports or exports
@@ -189,6 +189,12 @@ data DeclarationRef
     -- elaboration in name desugaring.
     ReExportRef SourceSpan ExportSource DeclarationRef
   deriving (Show, Generic, NFData, Serialise)
+
+instance FromJSON DeclarationRef where
+  parseJSON = A.genericParseJSON defaultOptions {sumEncoding = ObjectWithSingleField}
+
+instance ToJSON DeclarationRef where
+  toJSON = A.genericToJSON defaultOptions {sumEncoding = ObjectWithSingleField}
 
 instance Eq DeclarationRef where
   (TypeClassRef _ name) == (TypeClassRef _ name') = name == name'
@@ -228,6 +234,12 @@ data ExportSource = ExportSource
     exportSourceDefinedIn :: ModuleName
   }
   deriving (Eq, Ord, Show, Generic, NFData, Serialise)
+
+instance FromJSON ExportSource where
+  parseJSON = A.genericParseJSON defaultOptions {sumEncoding = ObjectWithSingleField}
+
+instance ToJSON ExportSource where
+  toJSON = A.genericToJSON defaultOptions {sumEncoding = ObjectWithSingleField}
 
 declRefSourceSpan :: DeclarationRef -> SourceSpan
 declRefSourceSpan (TypeRef ss _ _) = ss
@@ -287,6 +299,12 @@ data ImportDeclarationType
     Hiding [DeclarationRef]
   deriving (Eq, Show, Generic, Serialise, NFData)
 
+instance FromJSON ImportDeclarationType where
+  parseJSON = A.genericParseJSON defaultOptions {sumEncoding = ObjectWithSingleField}
+
+instance ToJSON ImportDeclarationType where
+  toJSON = A.genericToJSON defaultOptions {sumEncoding = ObjectWithSingleField}
+
 isExplicit :: ImportDeclarationType -> Bool
 isExplicit (Explicit _) = True
 isExplicit _ = False
@@ -303,7 +321,7 @@ data RoleDeclarationData = RoleDeclarationData
     rdeclIdent :: !(ProperName 'TypeName),
     rdeclRoles :: ![Role]
   }
-  deriving (Show, Eq, Generic, Serialise, NFData)
+  deriving (Show, Eq, Generic, Serialise, FromJSON, ToJSON, NFData)
 
 -- | A type declaration assigns a type to an identifier, eg:
 --
@@ -315,7 +333,7 @@ data TypeDeclarationData = TypeDeclarationData
     tydeclIdent :: !Ident,
     tydeclType :: !SourceType
   }
-  deriving (Show, Eq, Generic, Serialise, NFData)
+  deriving (Show, Eq, Generic, Serialise, FromJSON, ToJSON, NFData)
 
 getTypeDeclaration :: Declaration -> Maybe TypeDeclarationData
 getTypeDeclaration (TypeDeclaration d) = Just d
@@ -338,7 +356,7 @@ data ValueDeclarationData a = ValueDeclarationData
     valdeclBinders :: ![Binder],
     valdeclExpression :: !a
   }
-  deriving (Show, Functor, Generic, Serialise, NFData, Foldable, Traversable)
+  deriving (Show, Functor, Generic, Serialise, FromJSON, ToJSON, NFData, Foldable, Traversable)
 
 getValueDeclaration :: Declaration -> Maybe (ValueDeclarationData [GuardedExpr])
 getValueDeclaration (ValueDeclaration d) = Just d
@@ -353,7 +371,7 @@ data DataConstructorDeclaration = DataConstructorDeclaration
     dataCtorName :: !(ProperName 'ConstructorName),
     dataCtorFields :: ![(Ident, SourceType)]
   }
-  deriving (Show, Eq, Generic, Serialise, NFData)
+  deriving (Show, Eq, Generic, Serialise, FromJSON, ToJSON, NFData)
 
 mapDataCtorFields :: ([(Ident, SourceType)] -> [(Ident, SourceType)]) -> DataConstructorDeclaration -> DataConstructorDeclaration
 mapDataCtorFields f DataConstructorDeclaration {..} = DataConstructorDeclaration {dataCtorFields = f dataCtorFields, ..}
@@ -416,11 +434,17 @@ data Declaration
     TypeInstanceDeclaration SourceAnn SourceAnn ChainId Integer (Either Text Ident) [SourceConstraint] (Qualified (ProperName 'ClassName)) [SourceType] TypeInstanceBody
   deriving (Show, Generic, Serialise, NFData)
 
+instance FromJSON Declaration where
+  parseJSON = A.genericParseJSON defaultOptions {sumEncoding = ObjectWithSingleField}
+
+instance ToJSON Declaration where
+  toJSON = A.genericToJSON defaultOptions {sumEncoding = ObjectWithSingleField}
+
 data ValueFixity = ValueFixity Fixity (Qualified (Either Ident (ProperName 'ConstructorName))) (OpName 'ValueOpName)
-  deriving (Eq, Ord, Show, Generic, Serialise, NFData)
+  deriving (Eq, Ord, Show, Generic, Serialise, FromJSON, ToJSON, NFData)
 
 data TypeFixity = TypeFixity Fixity (Qualified (ProperName 'TypeName)) (OpName 'TypeOpName)
-  deriving (Eq, Ord, Show, Generic, Serialise, NFData)
+  deriving (Eq, Ord, Show, Generic, Serialise, FromJSON, ToJSON, NFData)
 
 pattern ValueFixityDeclaration :: SourceAnn -> Fixity -> Qualified (Either Ident (ProperName 'ConstructorName)) -> OpName 'ValueOpName -> Declaration
 pattern ValueFixityDeclaration sa fixity name op = FixityDeclaration sa (Left (ValueFixity fixity name op))
@@ -431,7 +455,7 @@ pattern TypeFixityDeclaration sa fixity name op = FixityDeclaration sa (Right (T
 data InstanceDerivationStrategy
   = KnownClassStrategy
   | NewtypeStrategy
-  deriving (Show, Generic, Serialise, NFData)
+  deriving (Show, Generic, Serialise, FromJSON, ToJSON, NFData)
 
 -- | The members of a type class instance declaration
 data TypeInstanceBody
@@ -442,6 +466,14 @@ data TypeInstanceBody
   | -- | This is a regular (explicit) instance
     ExplicitInstance [Declaration]
   deriving (Show, Generic, Serialise, NFData)
+
+-- $(deriveJSON (defaultOptions {sumEncoding = ObjectWithSingleField}) ''TypeInstanceBody)
+
+instance FromJSON TypeInstanceBody where
+  parseJSON = A.genericParseJSON defaultOptions {sumEncoding = ObjectWithSingleField}
+
+instance ToJSON TypeInstanceBody where
+  toJSON = A.genericToJSON defaultOptions {sumEncoding = ObjectWithSingleField}
 
 mapTypeInstanceBody :: ([Declaration] -> [Declaration]) -> TypeInstanceBody -> TypeInstanceBody
 mapTypeInstanceBody f = runIdentity . traverseTypeInstanceBody (Identity . f)
@@ -457,7 +489,7 @@ data KindSignatureFor
   | NewtypeSig
   | TypeSynonymSig
   | ClassSig
-  deriving (Eq, Ord, Show, Generic, Serialise, NFData)
+  deriving (Eq, Ord, Show, Generic, Serialise, FromJSON, ToJSON, NFData)
 
 declSourceAnn :: Declaration -> SourceAnn
 declSourceAnn (DataDeclaration sa _ _ _ _) = sa
@@ -584,13 +616,13 @@ flattenDecls = concatMap flattenOne
 data Guard
   = ConditionGuard Expr
   | PatternGuard Binder Expr
-  deriving (Show, Generic, Serialise, NFData)
+  deriving (Show, Generic, Serialise, FromJSON, ToJSON, NFData)
 
 -- |
 -- The right hand side of a binder in value declarations
 -- and case expressions.
 data GuardedExpr = GuardedExpr [Guard] Expr
-  deriving (Show, Generic, Serialise, NFData)
+  deriving (Show, Generic, Serialise, FromJSON, ToJSON, NFData)
 
 pattern MkUnguarded :: Expr -> GuardedExpr
 pattern MkUnguarded e = GuardedExpr [] e
@@ -696,7 +728,7 @@ data Expr
   | -- |
     -- A value with source position information
     PositionedValue SourceSpan [Comment] Expr
-  deriving (Show, Generic, Serialise, NFData)
+  deriving (Show, Generic, Serialise, A.FromJSON, A.ToJSON, NFData)
 
 -- |
 -- Metadata that tells where a let binding originated
@@ -707,7 +739,7 @@ data WhereProvenance
   | -- |
     -- The let binding was always a let binding
     FromLet
-  deriving (Show, Generic, Serialise, NFData)
+  deriving (Show, Generic, Serialise, FromJSON, ToJSON, NFData)
 
 -- |
 -- An alternative in a case statement
@@ -719,7 +751,7 @@ data CaseAlternative = CaseAlternative
     -- The result expression or a collect of guarded expressions
     caseAlternativeResult :: [GuardedExpr]
   }
-  deriving (Show, Generic, Serialise, NFData)
+  deriving (Show, Generic, Serialise, FromJSON, ToJSON, NFData)
 
 -- |
 -- A statement in a do-notation block
@@ -737,6 +769,11 @@ data DoNotationElement
     -- A do notation element with source position information
     PositionedDoNotationElement SourceSpan [Comment] DoNotationElement
   deriving (Show, Generic, Serialise, NFData)
+
+instance FromJSON DoNotationElement where
+  parseJSON = A.genericParseJSON defaultOptions {sumEncoding = ObjectWithSingleField}
+instance ToJSON DoNotationElement where
+  toJSON = A.genericToJSON defaultOptions {sumEncoding = ObjectWithSingleField}
 
 -- For a record update such as:
 --
@@ -766,20 +803,31 @@ newtype PathTree t = PathTree (AssocList PSString (PathNode t))
   deriving newtype (NFData)
 
 instance (Serialise t) => Serialise (PathTree t)
+instance (A.FromJSON t) => A.FromJSON (PathTree t)
+instance (A.ToJSON t) => A.ToJSON (PathTree t)
 
 data PathNode t = Leaf t | Branch (PathTree t)
-  deriving (Show, Eq, Ord, Generic, NFData, Functor, Foldable, Traversable, Serialise)
+  deriving (Show, Eq, Ord, Generic, NFData, Functor, Foldable, Traversable, Serialise, A.FromJSON, A.ToJSON)
 
 newtype AssocList k t = AssocList {runAssocList :: [(k, t)]}
   deriving (Show, Eq, Ord, Foldable, Functor, Traversable, Generic)
   deriving newtype (NFData)
 
 instance (Serialise t, Serialise k) => Serialise (AssocList k t)
+instance (A.FromJSON t, A.FromJSON k) => A.FromJSON (AssocList k t)
+instance (A.ToJSON t, A.ToJSON k) => A.ToJSON (AssocList k t)
 
-$(deriveJSON (defaultOptions {sumEncoding = ObjectWithSingleField}) ''NameSource)
-$(deriveJSON (defaultOptions {sumEncoding = ObjectWithSingleField}) ''ExportSource)
-$(deriveJSON (defaultOptions {sumEncoding = ObjectWithSingleField}) ''DeclarationRef)
-$(deriveJSON (defaultOptions {sumEncoding = ObjectWithSingleField}) ''ImportDeclarationType)
+-- $(deriveJSON (defaultOptions {sumEncoding = ObjectWithSingleField}) ''NameSource)
+
+-- $(deriveJSON (defaultOptions {sumEncoding = ObjectWithSingleField}) ''ExportSource)
+
+-- $(deriveJSON (defaultOptions {sumEncoding = ObjectWithSingleField}) ''DeclarationRef)
+
+-- $(deriveJSON (defaultOptions {sumEncoding = ObjectWithSingleField}) ''ImportDeclarationType)
+
+-- $(deriveJSON (defaultOptions {sumEncoding = ObjectWithSingleField}) ''Declaration)
+
+-- $(deriveJSON (defaultOptions {sumEncoding = ObjectWithSingleField}) ''DoNotationElement)
 
 isTrueExpr :: Expr -> Bool
 isTrueExpr (Literal _ (BooleanLiteral True)) = True

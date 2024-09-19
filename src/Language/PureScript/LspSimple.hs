@@ -1,12 +1,10 @@
 {-# LANGUAGE DuplicateRecordFields #-}
-{-# LANGUAGE InstanceSigs #-}
-{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PackageImports #-}
 {-# LANGUAGE UndecidableInstances #-}
+{-# OPTIONS_GHC -Wno-unused-local-binds #-}
 {-# OPTIONS_GHC -Wno-unused-matches #-}
 {-# OPTIONS_GHC -Wno-unused-top-binds #-}
-{-# OPTIONS_GHC -Wno-unused-local-binds #-}
 
 module Language.PureScript.LspSimple (main) where
 
@@ -84,6 +82,7 @@ handlers diagErrs =
             Types.DocumentDiagnosticReport $
               Types.InL $
                 Types.RelatedFullDocumentDiagnosticReport Types.AString Nothing diagnotics Nothing,
+                
       Server.requestHandler Message.SMethod_TextDocumentCodeAction $ \req res -> do
         sendInfoMsg "SMethod_TextDocumentCodeAction"
         let params = req ^. LSP.params
@@ -95,7 +94,7 @@ handlers diagErrs =
         -- diagnotics <- getFileDiagnotics msg
         res $
           Right $
-            Types.InL $
+            Types.InL
               [ Types.InR $
                   Types.CodeAction
                     "Fix all"
@@ -135,7 +134,7 @@ handlers diagErrs =
       case fileName of
         Just file -> do
           res <- liftIde $ rebuildFile file
-          getResultDiagnostics uri res
+          getResultDiagnostics res
         Nothing -> do
           sendInfoMsg $ "No file path for uri: " <> show uri
           pure []
@@ -145,16 +144,15 @@ handlers diagErrs =
 
     sendDiagnostics :: Uri -> Either IdeError Success -> HandlerM config ()
     sendDiagnostics uri res = do
-      diags <- getResultDiagnostics uri res
+      diags <- getResultDiagnostics res
       publishDiagnostics 100 (toNormalizedUri uri) Nothing (partitionBySource diags)
 
-    getResultDiagnostics :: Uri -> Either IdeError Success -> HandlerM config [Types.Diagnostic]
-    getResultDiagnostics uri res = case res of
+    getResultDiagnostics :: Either IdeError Success -> HandlerM config [Types.Diagnostic]
+    getResultDiagnostics res = case res of
       Right success ->
         case success of
           RebuildSuccess errs -> do
             let diags = errorMessageDiagnostic Types.DiagnosticSeverity_Warning <$> runMultipleErrors errs
-            -- insertDiagnosticError diagErrs diags errs
             pure diags
           TextResult _ -> pure []
           _ -> pure []

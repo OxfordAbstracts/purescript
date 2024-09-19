@@ -8,7 +8,7 @@ import Prelude
 import Codec.Serialise (Serialise)
 import GHC.Generics (Generic)
 import Control.DeepSeq (NFData)
-import Data.Aeson ((.=))
+import Data.Aeson ((.=), (.:))
 import Data.Aeson qualified as A
 
 import Language.PureScript.Crash (internalError)
@@ -58,3 +58,8 @@ instance A.ToJSON Fixity where
     A.object [ "associativity" .= associativity
              , "precedence" .= precedence
              ]
+instance A.FromJSON Fixity where 
+  parseJSON = A.withObject "Fixity" $ \o -> do
+    associativity <- o .: "associativity"
+    precedence <- o .: "precedence"
+    pure $ Fixity associativity precedence

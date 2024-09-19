@@ -22,6 +22,7 @@ import Language.PureScript.CST.Types (SourcePos(..), SourceRange(..), SourceToke
 import Text.Printf (printf)
 import Codec.Serialise (Serialise)
 import Codec.Serialise qualified as S
+import Data.Aeson qualified as A
 
 data ParserErrorType
   = ErrWildcardInType
@@ -61,7 +62,7 @@ data ParserErrorType
   | ErrConstraintInForeignImportSyntax
   | ErrEof
   | ErrCustom String
-  deriving (Show, Eq, Ord, Generic, S.Serialise, NFData)
+  deriving (Show, Eq, Ord, Generic, S.Serialise, A.FromJSON, A.ToJSON, NFData)
 
 data ParserWarningType
   = WarnDeprecatedRowSyntax
@@ -69,7 +70,7 @@ data ParserWarningType
   | WarnDeprecatedKindImportSyntax
   | WarnDeprecatedKindExportSyntax
   | WarnDeprecatedCaseOfOffsideSyntax
-  deriving (Show, Eq, Ord, Generic, Serialise, NFData)
+  deriving (Show, Eq, Ord, Generic, Serialise, A.FromJSON, A.ToJSON, NFData)
 
 data ParserErrorInfo a = ParserErrorInfo
   { errRange :: SourceRange
@@ -79,6 +80,8 @@ data ParserErrorInfo a = ParserErrorInfo
   } deriving (Show, Eq, Generic, NFData)
 
 instance Serialise a => Serialise (ParserErrorInfo a)
+instance A.FromJSON a => A.FromJSON (ParserErrorInfo a)
+instance A.ToJSON a => A.ToJSON (ParserErrorInfo a)
 
 type ParserError = ParserErrorInfo ParserErrorType
 type ParserWarning = ParserErrorInfo ParserWarningType

@@ -57,6 +57,7 @@ import System.FilePath (makeRelative)
 import Text.PrettyPrint.Boxes qualified as Box
 import Witherable (wither)
 import Codec.Serialise (Serialise)
+import Data.Aeson (FromJSON, ToJSON)
 
 -- | A type of error messages
 data SimpleErrorMessage
@@ -200,12 +201,12 @@ data SimpleErrorMessage
   | CannotDeriveInvalidConstructorArg (Qualified (ProperName 'ClassName)) [Qualified (ProperName 'ClassName)] Bool
   | CannotSkipTypeApplication SourceType
   | CannotApplyExpressionOfTypeOnType SourceType SourceType
-  deriving (Show, Generic, Serialise, NFData)
+  deriving (Show, Generic, Serialise, FromJSON, ToJSON, NFData)
 
 data ErrorMessage = ErrorMessage
   [ErrorMessageHint]
   SimpleErrorMessage
-  deriving (Show, Generic, Serialise, NFData)
+  deriving (Show, Generic, Serialise, FromJSON, ToJSON, NFData)
 
 newtype ErrorSuggestion = ErrorSuggestion Text
 

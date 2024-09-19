@@ -10,6 +10,7 @@ module Language.PureScript.CST.Types where
 
 import Codec.Serialise qualified as S
 import Control.DeepSeq (NFData)
+import Data.Aeson qualified as A
 import Data.List.NonEmpty (NonEmpty)
 import Data.Text (Text)
 import Data.Void (Void)
@@ -23,32 +24,32 @@ data SourcePos = SourcePos
   { srcLine :: {-# UNPACK #-} !Int,
     srcColumn :: {-# UNPACK #-} !Int
   }
-  deriving (Show, Eq, Ord, Generic, S.Serialise, NFData)
+  deriving (Show, Eq, Ord, Generic, S.Serialise, A.FromJSON, A.ToJSON, NFData)
 
 data SourceRange = SourceRange
   { srcStart :: !SourcePos,
     srcEnd :: !SourcePos
   }
-  deriving (Show, Eq, Ord, Generic, S.Serialise, NFData)
+  deriving (Show, Eq, Ord, Generic, S.Serialise, A.FromJSON, A.ToJSON, NFData)
 
 data Comment l
   = Comment !Text
   | Space {-# UNPACK #-} !Int
   | Line !l
-  deriving (Show, Eq, Ord, Generic, Functor, S.Serialise, NFData)
+  deriving (Show, Eq, Ord, Generic, Functor, S.Serialise, A.FromJSON, A.ToJSON, NFData)
 
 data LineFeed = LF | CRLF
-  deriving (Show, Eq, Ord, Generic, S.Serialise, NFData)
+  deriving (Show, Eq, Ord, Generic, S.Serialise, A.FromJSON, A.ToJSON, NFData)
 
 data TokenAnn = TokenAnn
   { tokRange :: !SourceRange,
     tokLeadingComments :: ![Comment LineFeed],
     tokTrailingComments :: ![Comment Void]
   }
-  deriving (Show, Eq, Ord, Generic, S.Serialise, NFData)
+  deriving (Show, Eq, Ord, Generic, S.Serialise, A.FromJSON, A.ToJSON, NFData)
 
 data SourceStyle = ASCII | Unicode
-  deriving (Show, Eq, Ord, Generic, S.Serialise, NFData)
+  deriving (Show, Eq, Ord, Generic, S.Serialise, A.FromJSON, A.ToJSON, NFData)
 
 data Token
   = TokLeftParen
@@ -84,13 +85,13 @@ data Token
   | TokLayoutSep
   | TokLayoutEnd
   | TokEof
-  deriving (Show, Eq, Ord, Generic, S.Serialise, NFData)
+  deriving (Show, Eq, Ord, Generic, S.Serialise, A.FromJSON, A.ToJSON, NFData)
 
 data SourceToken = SourceToken
   { tokAnn :: !TokenAnn,
     tokValue :: !Token
   }
-  deriving (Show, Eq, Ord, Generic, S.Serialise, NFData)
+  deriving (Show, Eq, Ord, Generic, S.Serialise, A.FromJSON, A.ToJSON, NFData)
 
 data Ident = Ident
   { getIdent :: Text
