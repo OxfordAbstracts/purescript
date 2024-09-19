@@ -6,6 +6,7 @@
 {-# LANGUAGE UndecidableInstances #-}
 {-# OPTIONS_GHC -Wno-unused-matches #-}
 {-# OPTIONS_GHC -Wno-unused-top-binds #-}
+{-# OPTIONS_GHC -Wno-unused-local-binds #-}
 
 module Language.PureScript.LspSimple (main) where
 
@@ -13,9 +14,7 @@ import Codec.Serialise (deserialise, serialise)
 import Control.Lens ((^.))
 import Control.Monad.IO.Unlift
 import Control.Monad.Reader (mapReaderT)
-import Control.Monad.Supply.Class (MonadSupply (fresh))
 import Data.Aeson qualified as A
-import Data.Aeson.KeyMap (insert)
 import Data.ByteArray qualified as B
 import Data.ByteString.Lazy qualified as BL
 import Data.IORef (IORef, modifyIORef, newIORef, readIORef)
@@ -155,7 +154,7 @@ handlers diagErrs =
         case success of
           RebuildSuccess errs -> do
             let diags = errorMessageDiagnostic Types.DiagnosticSeverity_Warning <$> runMultipleErrors errs
-            insertDiagnosticError diagErrs diags errs
+            -- insertDiagnosticError diagErrs diags errs
             pure diags
           TextResult _ -> pure []
           _ -> pure []
