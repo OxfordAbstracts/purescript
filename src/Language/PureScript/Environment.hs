@@ -46,7 +46,7 @@ data Environment = Environment
   -- scope (ie dictionaries brought in by a constrained type).
   , typeClasses :: M.Map (Qualified (ProperName 'ClassName)) TypeClassData
   -- ^ Type classes
-  } deriving (Show, Generic, Serialise, A.FromJSON, A.ToJSON)
+  } deriving (Show, Generic, Serialise)
 
 instance NFData Environment
 
@@ -72,7 +72,7 @@ data TypeClassData = TypeClassData
   -- ^ A sets of arguments that can be used to infer all other arguments.
   , typeClassIsEmpty :: Bool
   -- ^ Whether or not dictionaries for this type class are necessarily empty.
-  } deriving (Show, Generic, Serialise, A.FromJSON, A.ToJSON)
+  } deriving (Show, Generic, Serialise)
 
 instance NFData TypeClassData
 
@@ -238,8 +238,6 @@ data NameVisibility
 
 instance NFData NameVisibility
 instance Serialise NameVisibility
-instance A.FromJSON NameVisibility
-instance A.ToJSON NameVisibility
 
 -- | A flag for whether a name is for an private or public value - only public values will be
 -- included in a generated externs file.
@@ -251,7 +249,7 @@ data NameKind
   -- ^ A public value for a module member or foreign import declaration
   | External
   -- ^ A name for member introduced by foreign import
-  deriving (Show, Eq, Generic, A.FromJSON, A.ToJSON)
+  deriving (Show, Eq, Generic)
 
 instance NFData NameKind
 instance Serialise NameKind
@@ -272,8 +270,6 @@ data TypeKind
 
 instance NFData TypeKind
 instance Serialise TypeKind
-instance A.FromJSON TypeKind
-instance A.ToJSON TypeKind
 
 -- | The type ('data' or 'newtype') of a data type declaration
 data DataDeclType
