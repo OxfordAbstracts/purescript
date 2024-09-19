@@ -1,6 +1,8 @@
+{-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PackageImports #-}
+{-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE UndecidableInstances #-}
 {-# OPTIONS_GHC -Wno-unused-local-binds #-}
 {-# OPTIONS_GHC -Wno-unused-matches #-}
@@ -18,17 +20,19 @@ import Data.ByteString.Lazy qualified as BL
 import Data.IORef (IORef, modifyIORef, newIORef, readIORef)
 import Data.List.NonEmpty qualified as NEL
 import Data.Map qualified as Map
+import Data.Set qualified as Set
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
-import Language.LSP.Diagnostics (partitionBySource)
 import Language.LSP.Protocol.Lens qualified as LSP
 import Language.LSP.Protocol.Message qualified as Message
-import Language.LSP.Protocol.Types (Diagnostic, Uri, toNormalizedUri)
+import Language.LSP.Protocol.Types (Diagnostic, Uri)
 import Language.LSP.Protocol.Types qualified as Types
-import Language.LSP.Server (getConfig, publishDiagnostics)
+import Language.LSP.Server (getConfig)
 import Language.LSP.Server qualified as Server
 import Language.PureScript.Errors (ErrorMessage (ErrorMessage), MultipleErrors (runMultipleErrors), errorCode, errorDocUri, errorSpan, noColorPPEOptions, prettyPrintSingleError)
 import Language.PureScript.Errors qualified as Errors
+import Language.PureScript.Errors.JSON (toSuggestion)
+import Language.PureScript.Errors.JSON qualified as JsonErrors
 import Language.PureScript.Ide (findAvailableExterns, loadModulesAsync)
 import Language.PureScript.Ide.Error (IdeError (RebuildError), textError)
 import Language.PureScript.Ide.Rebuild (rebuildFileAsync)
@@ -47,12 +51,19 @@ liftIde = lift . mapReaderT (mapLoggingT runExceptT)
 
 type DiagnosticErrors = IORef (Map Diagnostic ErrorMessage)
 
-insertDiagnosticError :: (MonadIO m, Ord k) => IORef (Map k a) -> k -> a -> m ()
-insertDiagnosticError diagErrs diag err = liftIO $ modifyIORef diagErrs (Map.insert diag err)
+insertDiagnosticError :: (MonadIO m, Ord k) => IORef (Map k a) -> a -> k -> m ()
+insertDiagnosticError diagErrs err diag = liftIO $ modifyIORef diagErrs (Map.insert diag err)
+
+insertDiagnosticErrors :: (MonadIO m, Ord k) => IORef (Map k a) -> [a] -> [k] -> m ()
+insertDiagnosticErrors diagErrs errs diags = liftIO $ modifyIORef diagErrs (Map.union $ Map.fromList $ zip diags errs)
 
 getDiagnosticError :: (MonadIO m, Ord k) => IORef (Map k a) -> k -> m (Maybe a)
 getDiagnosticError diagErrs diags = liftIO $ Map.lookup diags <$> readIORef diagErrs
 
+getDiagnosticErrors :: (MonadIO m, Ord k) => IORef (Map k a) -> [k] -> m (Map k a)
+getDiagnosticErrors diagErrs diags = liftIO $ flip Map.restrictKeys (Set.fromList diags) <$> readIORef diagErrs
+
+-- z = combin
 handlers :: DiagnosticErrors -> Server.Handlers (HandlerM ())
 handlers diagErrs =
   mconcat
@@ -61,14 +72,11 @@ handlers diagErrs =
         log_ ("OA purs lsp server initialized" :: T.Text)
         sendInfoMsg "OA purs lsp server initialized",
       Server.notificationHandler Message.SMethod_TextDocumentDidOpen $ \msg -> do
-        sendInfoMsg "TextDocumentDidOpen"
-        rebuildFileFromMsg msg,
+        sendInfoMsg "TextDocumentDidOpen",
       Server.notificationHandler Message.SMethod_TextDocumentDidChange $ \msg -> do
-        sendInfoMsg "TextDocumentDidChange"
-        rebuildFileFromMsg msg,
+        sendInfoMsg "TextDocumentDidChange",
       Server.notificationHandler Message.SMethod_TextDocumentDidSave $ \msg -> do
-        sendInfoMsg "SMethod_TextDocumentDidSave"
-        rebuildFileFromMsg msg,
+        sendInfoMsg "SMethod_TextDocumentDidSave",
       Server.notificationHandler Message.SMethod_WorkspaceDidChangeConfiguration $ \msg -> do
         cfg <- getConfig
         sendInfoMsg $ "Config changed: " <> show cfg,
@@ -76,13 +84,13 @@ handlers diagErrs =
         sendInfoMsg "SMethod_SetTrace",
       Server.requestHandler Message.SMethod_TextDocumentDiagnostic $ \msg res -> do
         sendInfoMsg "SMethod_TextDocumentDiagnostic"
-        diagnotics <- getFileDiagnotics msg
+        (errs, diagnostics) <- getFileDiagnotics msg
+        insertDiagnosticErrors diagErrs errs diagnostics
         res $
           Right $
             Types.DocumentDiagnosticReport $
               Types.InL $
-                Types.RelatedFullDocumentDiagnosticReport Types.AString Nothing diagnotics Nothing,
-                
+                Types.RelatedFullDocumentDiagnosticReport Types.AString Nothing diagnostics Nothing,
       Server.requestHandler Message.SMethod_TextDocumentCodeAction $ \req res -> do
         sendInfoMsg "SMethod_TextDocumentCodeAction"
         let params = req ^. LSP.params
@@ -90,43 +98,53 @@ handlers diagErrs =
             diags = params ^. LSP.context . LSP.diagnostics
             uri = getMsgUri req
 
-        -- pure _
-        -- diagnotics <- getFileDiagnotics msg
+        errs <- Map.toList <$> getDiagnosticErrors diagErrs diags
+
+        -- let getRanges :: [Types.Command Types.|? Types.CodeAction] -> [Types.Range]
+        --     getRanges = foldMap \case
+        --       Types.InL _ -> []
+        --       Types.InR (Types.CodeAction _ _ _ _ _ (Just (Types.WorkspaceEdit (Just edits) _ _)) _ _) ->
+        --         (getEditRange =<< Map.toList edits) : []
+        --       _ -> []
+
+        --     getEditRange :: (Uri, [Types.TextEdit]) -> [Types.Range]
+        --     getEditRange (_, edits) = edits 
         res $
           Right $
-            Types.InL
-              [ Types.InR $
-                  Types.CodeAction
-                    "Fix all"
-                    (Just Types.CodeActionKind_QuickFix)
-                    (Just diags)
-                    (Just True)
-                    Nothing -- disabled
-                    ( Just $
-                        Types.WorkspaceEdit
-                          Nothing
-                          -- (Just $ Map.singleton uri [Types.TextEdit _ _])
-                          Nothing
-                          Nothing
-                    )
-                    Nothing
-                    Nothing
-              ]
+            Types.InL $
+              errs & fmap \(diag, err) ->
+                let textEdits :: [Types.TextEdit]
+                    textEdits =
+                      toSuggestion err
+                        & maybeToList
+                          >>= suggestionToEdit
+
+                    suggestionToEdit :: JsonErrors.ErrorSuggestion -> [Types.TextEdit]
+                    suggestionToEdit (JsonErrors.ErrorSuggestion replacement (Just JsonErrors.ErrorPosition {..})) =
+                      let start = Types.Position (fromIntegral $ startLine - 1) (fromIntegral $ startColumn - 1)
+                          end = Types.Position (fromIntegral $ endLine) (fromIntegral $ endColumn)
+                          range = Types.Range start end
+                       in pure $ Types.TextEdit (Types.Range start end) replacement
+                    suggestionToEdit _ = []
+
+                 in Types.InR $
+                      Types.CodeAction
+                        "Apply suggestion"
+                        (Just Types.CodeActionKind_QuickFix)
+                        (Just diags)
+                        (Just True)
+                        Nothing -- disabled
+                        ( Just $
+                            Types.WorkspaceEdit
+                              (Just $ Map.singleton uri textEdits)
+                              Nothing
+                              (Just _)
+                        )
+                        Nothing
+                        Nothing
     ]
   where
-    rebuildFileFromMsg :: (LSP.HasParams s a1, LSP.HasTextDocument a1 a2, LSP.HasUri a2 Uri) => s -> HandlerM config ()
-    rebuildFileFromMsg msg = do
-      let uri :: Uri
-          uri = getMsgUri msg
-          fileName = Types.uriToFilePath uri
-      case fileName of
-        Just file -> do
-          res <- liftIde $ rebuildFile file
-          sendDiagnostics uri res
-        Nothing ->
-          sendInfoMsg $ "No file path for uri: " <> show uri
-
-    getFileDiagnotics :: (LSP.HasUri a2 Uri, LSP.HasTextDocument a1 a2, LSP.HasParams s a1) => s -> HandlerM config [Types.Diagnostic]
+    getFileDiagnotics :: (LSP.HasUri a2 Uri, LSP.HasTextDocument a1 a2, LSP.HasParams s a1) => s -> HandlerM config ([ErrorMessage], [Types.Diagnostic])
     getFileDiagnotics msg = do
       let uri :: Uri
           uri = getMsgUri msg
@@ -137,29 +155,28 @@ handlers diagErrs =
           getResultDiagnostics res
         Nothing -> do
           sendInfoMsg $ "No file path for uri: " <> show uri
-          pure []
+          pure ([], [])
 
     getMsgUri :: (LSP.HasParams s a1, LSP.HasTextDocument a1 a2, LSP.HasUri a2 a3) => s -> a3
     getMsgUri msg = msg ^. LSP.params . LSP.textDocument . LSP.uri
 
-    sendDiagnostics :: Uri -> Either IdeError Success -> HandlerM config ()
-    sendDiagnostics uri res = do
-      diags <- getResultDiagnostics res
-      publishDiagnostics 100 (toNormalizedUri uri) Nothing (partitionBySource diags)
-
-    getResultDiagnostics :: Either IdeError Success -> HandlerM config [Types.Diagnostic]
+    getResultDiagnostics :: Either IdeError Success -> HandlerM config ([ErrorMessage], [Types.Diagnostic])
     getResultDiagnostics res = case res of
       Right success ->
         case success of
           RebuildSuccess errs -> do
-            let diags = errorMessageDiagnostic Types.DiagnosticSeverity_Warning <$> runMultipleErrors errs
-            pure diags
-          TextResult _ -> pure []
-          _ -> pure []
-      Left (RebuildError _ errs) -> pure $ errorMessageDiagnostic Types.DiagnosticSeverity_Error <$> runMultipleErrors errs
+            let errors = runMultipleErrors errs
+                diags = errorMessageDiagnostic Types.DiagnosticSeverity_Warning <$> errors
+            pure (errors, diags)
+          TextResult _ -> pure ([], [])
+          _ -> pure ([], [])
+      Left (RebuildError _ errs) -> do
+        let errors = runMultipleErrors errs
+            diags = errorMessageDiagnostic Types.DiagnosticSeverity_Error <$> errors
+        pure (errors, diags)
       Left err -> do
         sendError err
-        pure []
+        pure ([], [])
       where
         errorMessageDiagnostic :: Types.DiagnosticSeverity -> ErrorMessage -> Types.Diagnostic
         errorMessageDiagnostic severity msg@((ErrorMessage hints _)) =
@@ -172,7 +189,6 @@ handlers diagErrs =
             (T.pack $ render $ prettyPrintSingleError noColorPPEOptions msg)
             Nothing
             Nothing
-            -- (Just $ encodeErrorMessage msg)
             Nothing
           where
             notFound = Types.Position 0 0
