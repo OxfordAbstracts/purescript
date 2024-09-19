@@ -206,10 +206,6 @@ data ErrorMessage = ErrorMessage
   [ErrorMessageHint]
   SimpleErrorMessage
   deriving (Show, Generic, Serialise, NFData)
-  
--- instance Serialise ErrorMessage where
---   encode = genericEncode
---   decode = _
 
 newtype ErrorSuggestion = ErrorSuggestion Text
 

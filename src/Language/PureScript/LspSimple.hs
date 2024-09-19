@@ -9,20 +9,24 @@
 
 module Language.PureScript.LspSimple (main) where
 
-import Codec.Serialise (serialise, deserialise)
+import Codec.Serialise (deserialise, serialise)
 import Control.Lens ((^.))
 import Control.Monad.IO.Unlift
 import Control.Monad.Reader (mapReaderT)
+import Control.Monad.Supply.Class (MonadSupply (fresh))
 import Data.Aeson qualified as A
+import Data.Aeson.KeyMap (insert)
 import Data.ByteArray qualified as B
 import Data.ByteString.Lazy qualified as BL
+import Data.IORef (IORef, modifyIORef, newIORef, readIORef)
 import Data.List.NonEmpty qualified as NEL
+import Data.Map qualified as Map
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Language.LSP.Diagnostics (partitionBySource)
 import Language.LSP.Protocol.Lens qualified as LSP
 import Language.LSP.Protocol.Message qualified as Message
-import Language.LSP.Protocol.Types (Uri, toNormalizedUri)
+import Language.LSP.Protocol.Types (Diagnostic, Uri, toNormalizedUri)
 import Language.LSP.Protocol.Types qualified as Types
 import Language.LSP.Server (getConfig, publishDiagnostics)
 import Language.LSP.Server qualified as Server
@@ -41,14 +45,22 @@ type HandlerM config = Server.LspT config (ReaderT IdeEnvironment (LoggingT IO))
 
 type IdeM = ReaderT IdeEnvironment (LoggingT (ExceptT IdeError IO))
 
-runIde :: IdeM a -> HandlerM config (Either IdeError a)
-runIde = lift . mapReaderT (mapLoggingT runExceptT)
+liftIde :: IdeM a -> HandlerM config (Either IdeError a)
+liftIde = lift . mapReaderT (mapLoggingT runExceptT)
 
-handlers :: Server.Handlers (HandlerM ())
-handlers =
+type DiagnosticErrors = IORef (Map Diagnostic ErrorMessage)
+
+insertDiagnosticError :: (MonadIO m, Ord k) => IORef (Map k a) -> k -> a -> m ()
+insertDiagnosticError diagErrs diag err = liftIO $ modifyIORef diagErrs (Map.insert diag err)
+
+getDiagnosticError :: (MonadIO m, Ord k) => IORef (Map k a) -> k -> m (Maybe a)
+getDiagnosticError diagErrs diags = liftIO $ Map.lookup diags <$> readIORef diagErrs
+
+handlers :: DiagnosticErrors -> Server.Handlers (HandlerM ())
+handlers diagErrs =
   mconcat
     [ Server.notificationHandler Message.SMethod_Initialized $ \_not -> do
-        void $ runIde $ findAvailableExterns >>= loadModulesAsync
+        void $ liftIde $ findAvailableExterns >>= loadModulesAsync
         log_ ("OA purs lsp server initialized" :: T.Text)
         sendInfoMsg "OA purs lsp server initialized",
       Server.notificationHandler Message.SMethod_TextDocumentDidOpen $ \msg -> do
@@ -78,6 +90,8 @@ handlers =
         let params = req ^. LSP.params
             -- doc = params ^. LSP.textDocument
             diags = params ^. LSP.context . LSP.diagnostics
+            uri = getMsgUri req
+
         -- pure _
         -- diagnotics <- getFileDiagnotics msg
         res $
@@ -90,101 +104,92 @@ handlers =
                     (Just diags)
                     (Just True)
                     Nothing -- disabled
-                    (Just $ Types.WorkspaceEdit Nothing Nothing Nothing)
+                    ( Just $
+                        Types.WorkspaceEdit
+                          Nothing
+                          -- (Just $ Map.singleton uri [Types.TextEdit _ _])
+                          Nothing
+                          Nothing
+                    )
                     Nothing
                     Nothing
               ]
     ]
-
---     { _title       :: Text -- ^ A short, human-readable, title for this code action.
--- , _kind        :: Maybe CodeActionKind -- ^ The kind of the code action. Used to filter code actions.
--- , _diagnostics :: Maybe (List Diagnostic) -- ^ The diagnostics that this code action resolves.
--- , _edit        :: Maybe WorkspaceEdit -- ^ The workspace edit this code action performs.
--- , _command     :: Maybe Command -- ^ A command this code action executes. If a code action
---                                 -- provides an edit and a command, first the edit is
---                                 -- executed and then the command.
--- , _isPreferred :: Maybe Bool -- ^ Marks this as a preferred action.
---                           -- Preferred actions are used by the `auto fix` command and can be targeted by keybindings.
---                           -- A quick fix should be marked preferred if it properly addresses the underlying error.
---                           -- A refactoring should be marked preferred if it is the most reasonable choice of actions to take.
--- , _disabled    :: Maybe Reason -- ^ Marks that the code action cannot currently be applied.
--- }
-
-rebuildFileFromMsg :: (LSP.HasParams s a1, LSP.HasTextDocument a1 a2, LSP.HasUri a2 Uri) => s -> HandlerM config ()
-rebuildFileFromMsg msg = do
-  let uri :: Uri
-      uri = getMsgUri msg
-      fileName = Types.uriToFilePath uri
-  case fileName of
-    Just file -> do
-      res <- runIde $ rebuildFile file
-      sendDiagnostics uri res
-    Nothing ->
-      sendInfoMsg $ "No file path for uri: " <> show uri
-
-getFileDiagnotics :: (LSP.HasUri a2 Uri, LSP.HasTextDocument a1 a2, LSP.HasParams s a1) => s -> HandlerM config [Types.Diagnostic]
-getFileDiagnotics msg = do
-  let uri :: Uri
-      uri = getMsgUri msg
-      fileName = Types.uriToFilePath uri
-  case fileName of
-    Just file -> do
-      res <- runIde $ rebuildFile file
-      getResultDiagnostics uri res
-    Nothing -> do
-      sendInfoMsg $ "No file path for uri: " <> show uri
-      pure []
-
-rebuildFile :: FilePath -> IdeM Success
-rebuildFile file = do
-  rebuildFileAsync file Nothing mempty
-
-getMsgUri :: (LSP.HasParams s a1, LSP.HasTextDocument a1 a2, LSP.HasUri a2 a3) => s -> a3
-getMsgUri msg = msg ^. LSP.params . LSP.textDocument . LSP.uri
-
-sendDiagnostics :: Uri -> Either IdeError Success -> HandlerM config ()
-sendDiagnostics uri res = do
-  diags <- getResultDiagnostics uri res
-  publishDiagnostics 100 (toNormalizedUri uri) Nothing (partitionBySource diags)
-
-getResultDiagnostics :: Uri -> Either IdeError Success -> HandlerM config [Types.Diagnostic]
-getResultDiagnostics uri res = case res of
-  Right success ->
-    case success of
-      RebuildSuccess errs -> pure $ errorMessageDiagnostic Types.DiagnosticSeverity_Warning <$> runMultipleErrors errs
-      TextResult _ -> pure []
-      _ -> pure []
-  Left (RebuildError _ errs) -> pure $ errorMessageDiagnostic Types.DiagnosticSeverity_Error <$> runMultipleErrors errs
-  Left err -> do
-    sendError err
-    pure []
   where
-    errorMessageDiagnostic :: Types.DiagnosticSeverity -> ErrorMessage -> Types.Diagnostic
-    errorMessageDiagnostic severity msg@((ErrorMessage hints _)) =
-      Types.Diagnostic
-        (Types.Range start end)
-        (Just severity)
-        (Just $ Types.InR $ errorCode msg)
-        (Just $ Types.CodeDescription $ Types.Uri $ errorDocUri msg)
-        (T.pack <$> spanName)
-        (T.pack $ render $ prettyPrintSingleError noColorPPEOptions msg)
-        Nothing
-        Nothing
-        -- (Just $ encodeErrorMessage msg)
-        Nothing
+    rebuildFileFromMsg :: (LSP.HasParams s a1, LSP.HasTextDocument a1 a2, LSP.HasUri a2 Uri) => s -> HandlerM config ()
+    rebuildFileFromMsg msg = do
+      let uri :: Uri
+          uri = getMsgUri msg
+          fileName = Types.uriToFilePath uri
+      case fileName of
+        Just file -> do
+          res <- liftIde $ rebuildFile file
+          sendDiagnostics uri res
+        Nothing ->
+          sendInfoMsg $ "No file path for uri: " <> show uri
+
+    getFileDiagnotics :: (LSP.HasUri a2 Uri, LSP.HasTextDocument a1 a2, LSP.HasParams s a1) => s -> HandlerM config [Types.Diagnostic]
+    getFileDiagnotics msg = do
+      let uri :: Uri
+          uri = getMsgUri msg
+          fileName = Types.uriToFilePath uri
+      case fileName of
+        Just file -> do
+          res <- liftIde $ rebuildFile file
+          getResultDiagnostics uri res
+        Nothing -> do
+          sendInfoMsg $ "No file path for uri: " <> show uri
+          pure []
+
+    getMsgUri :: (LSP.HasParams s a1, LSP.HasTextDocument a1 a2, LSP.HasUri a2 a3) => s -> a3
+    getMsgUri msg = msg ^. LSP.params . LSP.textDocument . LSP.uri
+
+    sendDiagnostics :: Uri -> Either IdeError Success -> HandlerM config ()
+    sendDiagnostics uri res = do
+      diags <- getResultDiagnostics uri res
+      publishDiagnostics 100 (toNormalizedUri uri) Nothing (partitionBySource diags)
+
+    getResultDiagnostics :: Uri -> Either IdeError Success -> HandlerM config [Types.Diagnostic]
+    getResultDiagnostics uri res = case res of
+      Right success ->
+        case success of
+          RebuildSuccess errs -> do
+            let diags = errorMessageDiagnostic Types.DiagnosticSeverity_Warning <$> runMultipleErrors errs
+            insertDiagnosticError diagErrs diags errs
+            pure diags
+          TextResult _ -> pure []
+          _ -> pure []
+      Left (RebuildError _ errs) -> pure $ errorMessageDiagnostic Types.DiagnosticSeverity_Error <$> runMultipleErrors errs
+      Left err -> do
+        sendError err
+        pure []
       where
-        notFound = Types.Position 0 0
-        (spanName, start, end) = getPositions $ errorSpan msg
+        errorMessageDiagnostic :: Types.DiagnosticSeverity -> ErrorMessage -> Types.Diagnostic
+        errorMessageDiagnostic severity msg@((ErrorMessage hints _)) =
+          Types.Diagnostic
+            (Types.Range start end)
+            (Just severity)
+            (Just $ Types.InR $ errorCode msg)
+            (Just $ Types.CodeDescription $ Types.Uri $ errorDocUri msg)
+            (T.pack <$> spanName)
+            (T.pack $ render $ prettyPrintSingleError noColorPPEOptions msg)
+            Nothing
+            Nothing
+            -- (Just $ encodeErrorMessage msg)
+            Nothing
+          where
+            notFound = Types.Position 0 0
+            (spanName, start, end) = getPositions $ errorSpan msg
 
-        getPositions = fromMaybe (Nothing, notFound, notFound) . getPositionsMb
+            getPositions = fromMaybe (Nothing, notFound, notFound) . getPositionsMb
 
-        getPositionsMb = fmap $ \spans ->
-          let (Errors.SourceSpan name (Errors.SourcePos startLine startCol) (Errors.SourcePos endLine endCol)) =
-                NEL.head spans
-           in ( Just name,
-                Types.Position (fromIntegral $ startLine - 1) (fromIntegral $ startCol - 1),
-                Types.Position (fromIntegral $ endLine - 1) (fromIntegral $ endCol - 1)
-              )
+            getPositionsMb = fmap $ \spans ->
+              let (Errors.SourceSpan name (Errors.SourcePos startLine startCol) (Errors.SourcePos endLine endCol)) =
+                    NEL.head spans
+               in ( Just name,
+                    Types.Position (fromIntegral $ startLine - 1) (fromIntegral $ startCol - 1),
+                    Types.Position (fromIntegral $ endLine - 1) (fromIntegral $ endCol - 1)
+                  )
 
 sendError :: IdeError -> HandlerM config ()
 sendError err =
@@ -193,6 +198,10 @@ sendError err =
     ( Types.ShowMessageParams Types.MessageType_Error $
         "Something went wrong:\n" <> textError err
     )
+
+rebuildFile :: FilePath -> IdeM Success
+rebuildFile file = do
+  rebuildFileAsync file Nothing mempty
 
 sendInfoMsg :: (Server.MonadLsp config f) => Text -> f ()
 sendInfoMsg msg = Server.sendNotification Message.SMethod_WindowShowMessage (Types.ShowMessageParams Types.MessageType_Info msg)
@@ -207,12 +216,9 @@ decodeErrorMessage json = do
     A.Error err -> Left $ T.pack err
   deserialise $ toUtf8Lazy fromJson
 
-  -- Left ""
-
---  fromJSON json & TE.encodeUtf8  & _ & BL.fromChunks $ _
-
 main :: IdeEnvironment -> IO Int
-main ideEnv =
+main ideEnv = do
+  diagErrs <- newIORef Map.empty
   Server.runServer $
     Server.ServerDefinition
       { parseConfig = const $ const $ Right (),
@@ -222,7 +228,7 @@ main ideEnv =
         doInitialize = \env _req -> do
           logT "Init OA purs lsp server"
           pure $ Right env,
-        staticHandlers = \_caps -> do handlers,
+        staticHandlers = \_caps -> do handlers diagErrs,
         interpretHandler = \env ->
           Server.Iso
             ( runLogger (confLogLevel (ideConfiguration ideEnv))
