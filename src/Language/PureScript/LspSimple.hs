@@ -6,9 +6,9 @@
 {-# LANGUAGE PackageImports #-}
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE UndecidableInstances #-}
+{-# OPTIONS_GHC -Wno-unused-local-binds #-}
 {-# OPTIONS_GHC -Wno-unused-matches #-}
 {-# OPTIONS_GHC -Wno-unused-top-binds #-}
-{-# OPTIONS_GHC -Wno-unused-local-binds #-}
 
 module Language.PureScript.LspSimple (main) where
 
@@ -20,6 +20,8 @@ import Data.List.NonEmpty qualified as NEL
 import Data.Map qualified as Map
 import Data.Set qualified as Set
 import Data.Text qualified as T
+import Data.Time (getCurrentTime)
+import GHC.IO (unsafePerformIO)
 import Language.LSP.Protocol.Lens qualified as LSP
 import Language.LSP.Protocol.Message qualified as Message
 import Language.LSP.Protocol.Types (Diagnostic, Uri)
@@ -36,6 +38,7 @@ import Language.PureScript.Ide.Rebuild (rebuildFileAsync)
 import Language.PureScript.Ide.Types (IdeConfiguration (confLogLevel), IdeEnvironment (ideConfiguration), Success (RebuildSuccess, TextResult))
 import Language.PureScript.Ide.Util (runLogger)
 import Protolude
+import System.Directory (createDirectoryIfMissing)
 import Text.PrettyPrint.Boxes (render)
 import "monad-logger" Control.Monad.Logger (LoggingT, mapLoggingT)
 
@@ -97,15 +100,6 @@ handlers diagErrs =
 
         errs <- Map.toList <$> getDiagnosticErrors diagErrs diags
 
-        -- let getRanges :: [Types.Command Types.|? Types.CodeAction] -> [Types.Range]
-        --     getRanges = foldMap \case
-        --       Types.InL _ -> []
-        --       Types.InR (Types.CodeAction _ _ _ _ _ (Just (Types.WorkspaceEdit (Just edits) _ _)) _ _) ->
-        --         (getEditRange =<< Map.toList edits) : []
-        --       _ -> []
-
-        --     getEditRange :: (Uri, [Types.TextEdit]) -> [Types.Range]
-        --     getEditRange (_, edits) = edits 
         res $
           Right $
             Types.InL $
@@ -114,16 +108,15 @@ handlers diagErrs =
                     textEdits =
                       toSuggestion err
                         & maybeToList
+                        & spy "suggestion"
                           >>= suggestionToEdit
 
                     suggestionToEdit :: JsonErrors.ErrorSuggestion -> [Types.TextEdit]
-                    suggestionToEdit (JsonErrors.ErrorSuggestion replacement (Just JsonErrors.ErrorPosition {..})) =
+                    suggestionToEdit (JsonErrors.ErrorSuggestion replacement (Just errorPos@JsonErrors.ErrorPosition {..})) =
                       let start = Types.Position (fromIntegral $ startLine - 1) (fromIntegral $ startColumn - 1)
-                          end = Types.Position (fromIntegral $ endLine) (fromIntegral $ endColumn)
-                          range = Types.Range start end
+                          end = Types.Position (fromIntegral $ endLine - 1) (fromIntegral $ endColumn - 1)
                        in pure $ Types.TextEdit (Types.Range start end) replacement
                     suggestionToEdit _ = []
-
                  in Types.InR $
                       Types.CodeAction
                         "Apply suggestion"
@@ -239,11 +232,22 @@ main ideEnv = do
         options = Server.defaultOptions
       }
 
+spy :: (Show a) => Text -> a -> a
+spy msg a = unsafePerformIO $ do
+  logT $ msg <> ": " <> show a
+  pure a
+
+unsafeLog :: (Show a) => a -> ()
+unsafeLog a = unsafePerformIO $ log_ a
+
 log_ :: (MonadIO m, Show a) => a -> m ()
-log_ = logToFile "log.txt" . show
+log_ = logToFile . show
 
 logT :: (MonadIO m) => Text -> m ()
-logT = logToFile "log.txt"
+logT = logToFile
 
-logToFile :: (MonadIO m) => FilePath -> Text -> m ()
-logToFile path txt = liftIO $ appendFile path $ txt <> "\n"
+logToFile :: (MonadIO m) => Text -> m ()
+logToFile txt = liftIO $ do
+  createDirectoryIfMissing True "logs"
+  time <- show <$> getCurrentTime
+  writeFile ("logs/" <> time <> "-----" <> T.unpack txt) $ txt <> "\n"
