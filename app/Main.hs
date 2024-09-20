@@ -8,6 +8,7 @@ import Command.Docs qualified as Docs
 import Command.Graph qualified as Graph
 import Command.Hierarchy qualified as Hierarchy
 import Command.Ide qualified as Ide
+import Command.Lsp qualified as Lsp
 import Command.Publish qualified as Publish
 import Command.REPL qualified as REPL
 import Control.Monad (join)
@@ -76,6 +77,9 @@ main = do
         , Opts.command "ide"
             (Opts.info Ide.command
               (Opts.progDesc "Start or query an IDE server process"))
+        , Opts.command "lsp"
+            (Opts.info Lsp.command
+              (Opts.progDesc "Start or query an IDE server process using the Language Server Protocol"))
         , Opts.command "publish"
             (Opts.info Publish.command
               (Opts.progDesc "Generates documentation packages for upload to Pursuit"))

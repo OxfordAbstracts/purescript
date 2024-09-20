@@ -520,7 +520,7 @@ errorSuggestion err =
       ImplicitQualifiedImport mn asModule refs -> suggest $ importSuggestion mn refs (Just asModule)
       ImplicitQualifiedImportReExport mn asModule refs -> suggest $ importSuggestion mn refs (Just asModule)
       HidingImport mn refs -> suggest $ importSuggestion mn refs Nothing
-      MissingTypeDeclaration ident ty -> suggest $ showIdent ident <> " :: " <> T.pack (prettyPrintSuggestedTypeSimplified ty) <> "\n"
+      MissingTypeDeclaration ident ty -> suggest $ showIdent ident <> " :: " <> T.pack (prettyPrintSuggestedTypeSimplified ty)
       MissingKindDeclaration sig name ty -> suggest $ prettyPrintKindSignatureFor sig <> " " <> runProperName name <> " :: " <> T.pack (prettyPrintSuggestedTypeSimplified ty) <> "\n"
       WildcardInferredType ty _ -> suggest $ T.pack (prettyPrintSuggestedTypeSimplified ty)
       WarningParsingCSTModule pe -> do
@@ -619,6 +619,16 @@ data PPEOptions = PPEOptions
 defaultPPEOptions :: PPEOptions
 defaultPPEOptions = PPEOptions
   { ppeCodeColor         = Just defaultCodeColor
+  , ppeFull              = False
+  , ppeLevel             = Error
+  , ppeShowDocs          = True
+  , ppeRelativeDirectory = mempty
+  , ppeFileContents      = []
+  }
+  
+noColorPPEOptions :: PPEOptions
+noColorPPEOptions = PPEOptions
+  { ppeCodeColor         = Nothing
   , ppeFull              = False
   , ppeLevel             = Error
   , ppeShowDocs          = True
