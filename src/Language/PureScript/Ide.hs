@@ -8,31 +8,28 @@
 -- Maintainer  : Christoph Hegemann <christoph.hegemann1337@gmail.com>
 -- Stability   : experimental
 --
--- |
--- Interface for the psc-ide-server
 -----------------------------------------------------------------------------
-
 {-# LANGUAGE PackageImports #-}
 
+-- |
+-- Interface for the psc-ide-server
 module Language.PureScript.Ide
-       ( handleCommand
-       , loadModulesAsync
-       , findAvailableExterns
-       ) where
-
-import Protolude hiding (moduleName)
+  ( handleCommand,
+    loadModulesAsync,
+    findAvailableExterns,
+  )
+where
 
 import Control.Concurrent.Async.Lifted (mapConcurrently_)
-import "monad-logger" Control.Monad.Logger (MonadLogger, logWarnN)
 import Data.Map qualified as Map
 import Data.Set qualified as Set
 import Data.Text qualified as T
 import Language.PureScript qualified as P
-import Language.PureScript.Glob (toInputGlobs, PSCGlobs(..))
+import Language.PureScript.Glob (PSCGlobs (..), toInputGlobs)
 import Language.PureScript.Ide.CaseSplit qualified as CS
-import Language.PureScript.Ide.Command (Command(..), ImportCommand(..), ListType(..))
+import Language.PureScript.Ide.Command (Command (..), ImportCommand (..), ListType (..))
 import Language.PureScript.Ide.Completion (CompletionOptions, completionFromMatch, getCompletions, getExactCompletions, simpleExport)
-import Language.PureScript.Ide.Error (IdeError(..))
+import Language.PureScript.Ide.Error (IdeError (..))
 import Language.PureScript.Ide.Externs (readExternFile)
 import Language.PureScript.Ide.Filter (Filter)
 import Language.PureScript.Ide.Imports (parseImportsFromFile)
@@ -41,19 +38,21 @@ import Language.PureScript.Ide.Matcher (Matcher)
 import Language.PureScript.Ide.Prim (idePrimDeclarations)
 import Language.PureScript.Ide.Rebuild (rebuildFileAsync, rebuildFileSync)
 import Language.PureScript.Ide.SourceFile (parseModulesFromFiles)
-import Language.PureScript.Ide.State (getAllModules, getLoadedModulenames, insertExterns, insertModule, populateVolatileState, populateVolatileStateSync, resetIdeState, setFocusedModules, getFocusedModules)
-import Language.PureScript.Ide.Types (Annotation(..), Ide, IdeConfiguration(..), IdeDeclarationAnn(..), IdeEnvironment(..), Success(..))
-import Language.PureScript.Ide.Util (discardAnn, identifierFromIdeDeclaration, namespaceForDeclaration, withEmptyAnn)
+import Language.PureScript.Ide.State (getAllModules, getFocusedModules, getLoadedModulenames, insertExterns, insertModule, populateVolatileState, populateVolatileStateSync, resetIdeState, setFocusedModules)
+import Language.PureScript.Ide.Types (Annotation (..), Ide, IdeConfiguration (..), IdeDeclarationAnn (..), IdeEnvironment (..), Success (..))
 import Language.PureScript.Ide.Usage (findUsages)
-import System.Directory (getCurrentDirectory, getDirectoryContents, doesDirectoryExist, doesFileExist)
-import System.FilePath ((</>), normalise)
+import Language.PureScript.Ide.Util (discardAnn, identifierFromIdeDeclaration, namespaceForDeclaration, withEmptyAnn)
+import Protolude hiding (moduleName)
+import System.Directory (doesDirectoryExist, doesFileExist, getCurrentDirectory, getDirectoryContents)
+import System.FilePath (normalise, (</>))
+import "monad-logger" Control.Monad.Logger (MonadLogger, logWarnN)
 
 -- | Accepts a Command and runs it against psc-ide's State. This is the main
 -- entry point for the server.
-handleCommand
-  :: (Ide m, MonadLogger m, MonadError IdeError m)
-  => Command
-  -> m Success
+handleCommand ::
+  (Ide m, MonadLogger m, MonadError IdeError m) =>
+  Command ->
+  m Success
 handleCommand c = case c of
   Load [] ->
     -- Clearing the State before populating it to avoid a space leak
@@ -81,15 +80,20 @@ handleCommand c = case c of
   AddClause l wca ->
     MultilineTextResult <$> CS.addClause l wca
   FindUsages moduleName ident namespace -> do
-    Map.lookup moduleName <$> getAllModules Nothing >>= \case
-      Nothing -> throwError (GeneralError "Module not found")
-      Just decls -> do
-        case find (\d -> namespaceForDeclaration (discardAnn d) == namespace
-                    && identifierFromIdeDeclaration (discardAnn d) == ident) decls of
-          Nothing -> throwError (GeneralError "Declaration not found")
-          Just declaration -> do
-            let sourceModule = fromMaybe moduleName (declaration & _idaAnnotation & _annExportedFrom)
-            UsagesResult . foldMap toList <$> findUsages (discardAnn declaration) sourceModule
+    Map.lookup moduleName
+      <$> getAllModules Nothing >>= \case
+        Nothing -> throwError (GeneralError "Module not found")
+        Just decls -> do
+          case find
+            ( \d ->
+                namespaceForDeclaration (discardAnn d) == namespace
+                  && identifierFromIdeDeclaration (discardAnn d) == ident
+            )
+            decls of
+            Nothing -> throwError (GeneralError "Declaration not found")
+            Just declaration -> do
+              let sourceModule = fromMaybe moduleName (declaration & _idaAnnotation & _annExportedFrom)
+              UsagesResult . foldMap toList <$> findUsages (discardAnn declaration) sourceModule
   Import fp outfp _ (AddImplicitImport mn) -> do
     rs <- addImplicitImport fp mn
     answerRequest outfp rs
@@ -115,39 +119,39 @@ handleCommand c = case c of
   Quit ->
     liftIO exitSuccess
 
-findCompletions
-  :: Ide m
-  => [Filter]
-  -> Matcher IdeDeclarationAnn
-  -> Maybe P.ModuleName
-  -> CompletionOptions
-  -> m Success
+findCompletions ::
+  (Ide m) =>
+  [Filter] ->
+  Matcher IdeDeclarationAnn ->
+  Maybe P.ModuleName ->
+  CompletionOptions ->
+  m Success
 findCompletions filters matcher currentModule complOptions = do
   modules <- getAllModules currentModule
   let insertPrim = Map.union idePrimDeclarations
   pure (CompletionResult (getCompletions filters matcher complOptions (insertPrim modules)))
 
-findType
-  :: Ide m
-  => Text
-  -> [Filter]
-  -> Maybe P.ModuleName
-  -> m Success
+findType ::
+  (Ide m) =>
+  Text ->
+  [Filter] ->
+  Maybe P.ModuleName ->
+  m Success
 findType search filters currentModule = do
   modules <- getAllModules currentModule
   let insertPrim = Map.union idePrimDeclarations
   pure (CompletionResult (getExactCompletions search filters (insertPrim modules)))
 
-printModules :: Ide m => m Success
+printModules :: (Ide m) => m Success
 printModules = ModuleList . map P.runModuleName <$> getLoadedModulenames
 
-outputDirectory :: Ide m => m FilePath
+outputDirectory :: (Ide m) => m FilePath
 outputDirectory = do
   outputPath <- confOutputPath . ideConfiguration <$> ask
   cwd <- liftIO getCurrentDirectory
   pure (cwd </> outputPath)
 
-listAvailableModules :: Ide m => m Success
+listAvailableModules :: (Ide m) => m Success
 listAvailableModules = do
   oDir <- outputDirectory
   liftIO $ do
@@ -155,8 +159,14 @@ listAvailableModules = do
     let cleaned = filter (`notElem` [".", ".."]) contents
     return (ModuleList (map toS cleaned))
 
-caseSplit :: (Ide m, MonadError IdeError m) =>
-  Text -> Int -> Int -> CS.WildcardAnnotations -> Text -> m Success
+caseSplit ::
+  (Ide m, MonadError IdeError m) =>
+  Text ->
+  Int ->
+  Int ->
+  CS.WildcardAnnotations ->
+  Text ->
+  m Success
 caseSplit l b e csa t = do
   patterns <- CS.makePattern l b e csa <$> CS.caseSplit t
   pure (MultilineTextResult patterns)
@@ -166,7 +176,8 @@ caseSplit l b e csa t = do
 findAvailableExterns :: (Ide m, MonadError IdeError m) => m [P.ModuleName]
 findAvailableExterns = do
   oDir <- outputDirectory
-  unlessM (liftIO (doesDirectoryExist oDir))
+  unlessM
+    (liftIO (doesDirectoryExist oDir))
     (throwError (GeneralError $ "Couldn't locate your output directory at: " <> T.pack (normalise oDir)))
   liftIO $ do
     directories <- getDirectoryContents oDir
@@ -183,55 +194,54 @@ findAvailableExterns = do
           doesFileExist file
 
 -- | Finds all matches for the globs specified at the commandline
-findAllSourceFiles :: Ide m => m [FilePath]
+findAllSourceFiles :: (Ide m) => m [FilePath]
 findAllSourceFiles = do
-  IdeConfiguration{..} <- ideConfiguration <$> ask
-  liftIO $ toInputGlobs $ PSCGlobs
-    { pscInputGlobs = confGlobs
-    , pscInputGlobsFromFile = confGlobsFromFile
-    , pscExcludeGlobs = confGlobsExclude
-    , pscWarnFileTypeNotFound = const $ pure ()
-    }
-
+  IdeConfiguration {..} <- ideConfiguration <$> ask
+  liftIO $
+    toInputGlobs $
+      PSCGlobs
+        { pscInputGlobs = confGlobs,
+          pscInputGlobsFromFile = confGlobsFromFile,
+          pscExcludeGlobs = confGlobsExclude,
+          pscWarnFileTypeNotFound = const $ pure ()
+        }
 
 -- | Looks up the ExternsFiles for the given Modulenames and loads them into the
 -- server state. Then proceeds to parse all the specified sourcefiles and
 -- inserts their ASTs into the state. Finally kicks off an async worker, which
 -- populates the VolatileState.
-loadModulesAsync
-  :: (Ide m, MonadError IdeError m, MonadLogger m)
-  => [P.ModuleName]
-  -> m Success
+loadModulesAsync ::
+  (Ide m, MonadError IdeError m, MonadLogger m) =>
+  [P.ModuleName] ->
+  m Success
 loadModulesAsync moduleNames = do
   tr <- loadModules moduleNames
   _ <- populateVolatileState
   pure tr
 
-loadModulesSync
-  :: (Ide m, MonadError IdeError m, MonadLogger m)
-  => [P.ModuleName]
-  -> m Success
+loadModulesSync ::
+  (Ide m, MonadError IdeError m, MonadLogger m) =>
+  [P.ModuleName] ->
+  m Success
 loadModulesSync moduleNames = do
   tr <- loadModules moduleNames
   populateVolatileStateSync
   pure tr
 
-loadModules
-  :: (Ide m, MonadError IdeError m, MonadLogger m)
-  => [P.ModuleName]
-  -> m Success
+loadModules ::
+  (Ide m, MonadError IdeError m, MonadLogger m) =>
+  [P.ModuleName] ->
+  m Success
 loadModules moduleNames = do
   focusedModules <- getFocusedModules
   -- We resolve all the modulenames to externs files and load these into memory.
   oDir <- outputDirectory
-  let
-    -- But we only load the externs files that are in the focusedModules.
-    efModules = 
-        if Set.null focusedModules then 
-          moduleNames
-        else 
-          Set.toList $ Set.fromList moduleNames `Set.intersection` focusedModules
-    efPaths =
+  let -- But we only load the externs files that are in the focusedModules.
+      efModules =
+        if Set.null focusedModules
+          then moduleNames
+          else Set.toList $ Set.fromList moduleNames `Set.intersection` focusedModules
+      efPaths =
         map (\mn -> oDir </> toS (P.runModuleName mn) </> P.externsFileName) efModules
   efiles <- traverse readExternFile efPaths
   mapConcurrently_ insertExterns efiles
@@ -244,5 +254,12 @@ loadModules moduleNames = do
     logWarnN ("Failed to parse: " <> show failures)
   mapConcurrently_ insertModule allModules
 
-  pure (TextResult ("Loaded " <> show (length efiles) <> " modules and "
-                    <> show (length allModules) <> " source files."))
+  pure
+    ( TextResult
+        ( "Loaded "
+            <> show (length efiles)
+            <> " modules and "
+            <> show (length allModules)
+            <> " source files."
+        )
+    )

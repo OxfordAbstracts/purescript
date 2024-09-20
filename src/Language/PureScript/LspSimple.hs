@@ -35,12 +35,19 @@ import Language.PureScript.Errors.JSON qualified as JsonErrors
 import Language.PureScript.Ide (findAvailableExterns, loadModulesAsync)
 import Language.PureScript.Ide.Error (IdeError (RebuildError), textError)
 import Language.PureScript.Ide.Rebuild (rebuildFileAsync)
-import Language.PureScript.Ide.Types (IdeConfiguration (confLogLevel), IdeEnvironment (ideConfiguration), Success (RebuildSuccess, TextResult))
+import Language.PureScript.Ide.Types (Completion, IdeConfiguration (confLogLevel), IdeEnvironment (ideConfiguration), Success (RebuildSuccess, TextResult), IdeDeclarationAnn, Ide)
 import Language.PureScript.Ide.Util (runLogger)
 import Protolude
 import System.Directory (createDirectoryIfMissing)
 import Text.PrettyPrint.Boxes (render)
 import "monad-logger" Control.Monad.Logger (LoggingT, mapLoggingT)
+import Language.PureScript.Ide.Matcher (Matcher)
+import Language.PureScript qualified as P
+import Language.PureScript.Ide.Filter (Filter)
+import Language.PureScript.Ide.Completion (getExactCompletions, getCompletions)
+import Language.PureScript.Ide.Prim (idePrimDeclarations)
+import Language.PureScript.Ide.State (getAllModules)
+import Language.PureScript.Ide.Completion qualified as Purs.Completion
 
 type HandlerM config = Server.LspT config (ReaderT IdeEnvironment (LoggingT IO))
 
@@ -82,9 +89,9 @@ handlers diagErrs =
         sendInfoMsg $ "Config changed: " <> show cfg,
       Server.notificationHandler Message.SMethod_SetTrace $ \msg -> do
         sendInfoMsg "SMethod_SetTrace",
-      Server.requestHandler Message.SMethod_TextDocumentDiagnostic $ \msg res -> do
+      Server.requestHandler Message.SMethod_TextDocumentDiagnostic $ \req res -> do
         sendInfoMsg "SMethod_TextDocumentDiagnostic"
-        (errs, diagnostics) <- getFileDiagnotics msg
+        (errs, diagnostics) <- getFileDiagnotics req
         insertDiagnosticErrors diagErrs errs diagnostics
         res $
           Right $
@@ -131,9 +138,37 @@ handlers diagErrs =
                               Nothing
                         )
                         Nothing
-                        Nothing
+                        Nothing,
+      Server.requestHandler Message.SMethod_TextDocumentHover $ \req res -> do
+        sendInfoMsg "SMethod_TextDocumentHover"
+        let Types.HoverParams _doc pos _workDone = req ^. LSP.params
+            Types.Position _l _c' = pos
+            -- LSP.at
+        res $
+          Right $
+            Types.InL $
+              Types.Hover
+                ( Types.InL $
+                    Types.MarkupContent Types.MarkupKind_PlainText "Hello!"
+                )
+                Nothing,
+      Server.requestHandler Message.SMethod_TextDocumentDocumentSymbol $ \req res -> do
+        sendInfoMsg "SMethod_TextDocumentDocumentSymbol"
+        -- getCompletionsWithPrim
+        res $
+          Right $
+            Types.InL
+              []
     ]
   where
+    -- Types.DocumentSymbol
+    --   "symbol"
+    --   Nothing
+    --   Types.SymbolKind_Array
+    --   (Types.Range (Types.Position 0 0) (Types.Position 0 0))
+    --   (Types.Range (Types.Position 0 0) (Types.Position 0 0))
+    --   []
+
     getFileDiagnotics :: (LSP.HasUri a2 Uri, LSP.HasTextDocument a1 a2, LSP.HasParams s a1) => s -> HandlerM config ([ErrorMessage], [Types.Diagnostic])
     getFileDiagnotics msg = do
       let uri :: Uri
@@ -252,3 +287,26 @@ logToFile txt = liftIO $ do
   createDirectoryIfMissing True "logs"
   time <- show <$> getCurrentTime
   writeFile ("logs/" <> time <> "-----" <> T.unpack txt) $ txt <> "\n"
+
+getCompletionsWithPrim ::
+  (Ide m) =>
+  [Filter] ->
+  Matcher IdeDeclarationAnn ->
+  Maybe P.ModuleName ->
+  Purs.Completion.CompletionOptions ->
+  m [Completion]
+getCompletionsWithPrim filters matcher currentModule complOptions = do
+  modules <- getAllModules currentModule
+  let insertPrim = Map.union idePrimDeclarations
+  pure (getCompletions filters matcher complOptions (insertPrim modules))
+
+getExactCompletionsWithPrim ::
+  (Ide m) =>
+  Text ->
+  [Filter] ->
+  Maybe P.ModuleName ->
+  m [Completion]
+getExactCompletionsWithPrim search filters currentModule = do
+  modules <- getAllModules currentModule
+  let insertPrim = Map.union idePrimDeclarations
+  pure (getExactCompletions search filters (insertPrim modules))
