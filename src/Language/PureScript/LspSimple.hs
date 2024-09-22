@@ -13,6 +13,7 @@
 module Language.PureScript.LspSimple (main) where
 
 import Control.Lens ((^.))
+import Control.Lens.Getter (to)
 import Control.Monad.IO.Unlift
 import Control.Monad.Reader (mapReaderT)
 import Data.IORef (IORef, modifyIORef, newIORef, readIORef)
@@ -20,34 +21,38 @@ import Data.List.NonEmpty qualified as NEL
 import Data.Map qualified as Map
 import Data.Set qualified as Set
 import Data.Text qualified as T
+import Data.Text.Utf16.Rope.Mixed as Rope
 import Data.Time (getCurrentTime)
 import GHC.IO (unsafePerformIO)
 import Language.LSP.Protocol.Lens qualified as LSP
 import Language.LSP.Protocol.Message qualified as Message
-import Language.LSP.Protocol.Types (Diagnostic, Uri)
+import Language.LSP.Protocol.Types (Diagnostic, UInt, Uri)
 import Language.LSP.Protocol.Types qualified as Types
 import Language.LSP.Server (getConfig)
 import Language.LSP.Server qualified as Server
+import Language.LSP.VFS qualified as VFS
+import Language.PureScript qualified as P
 import Language.PureScript.Errors (ErrorMessage (ErrorMessage), MultipleErrors (runMultipleErrors), errorCode, errorDocUri, errorSpan, noColorPPEOptions, prettyPrintSingleError)
 import Language.PureScript.Errors qualified as Errors
 import Language.PureScript.Errors.JSON (toSuggestion)
 import Language.PureScript.Errors.JSON qualified as JsonErrors
 import Language.PureScript.Ide (findAvailableExterns, loadModulesAsync)
+import Language.PureScript.Ide.Completion (getCompletions, getExactCompletions)
+import Language.PureScript.Ide.Completion qualified as Purs.Completion
 import Language.PureScript.Ide.Error (IdeError (RebuildError), textError)
+import Language.PureScript.Ide.Filter (Filter)
+import Language.PureScript.Ide.Matcher (Matcher)
+import Language.PureScript.Ide.Prim (idePrimDeclarations)
 import Language.PureScript.Ide.Rebuild (rebuildFileAsync)
-import Language.PureScript.Ide.Types (Completion, IdeConfiguration (confLogLevel), IdeEnvironment (ideConfiguration), Success (RebuildSuccess, TextResult), IdeDeclarationAnn, Ide)
+import Language.PureScript.Ide.State (cachedRebuild, getAllModules)
+import Language.PureScript.Ide.Types (Completion (complIdentifier, complModule, complType), Ide, IdeConfiguration (confLogLevel), IdeDeclarationAnn, IdeEnvironment (ideConfiguration), Success (RebuildSuccess, TextResult))
 import Language.PureScript.Ide.Util (runLogger)
-import Protolude
+import Protolude hiding (to)
 import System.Directory (createDirectoryIfMissing)
 import Text.PrettyPrint.Boxes (render)
 import "monad-logger" Control.Monad.Logger (LoggingT, mapLoggingT)
-import Language.PureScript.Ide.Matcher (Matcher)
-import Language.PureScript qualified as P
-import Language.PureScript.Ide.Filter (Filter)
-import Language.PureScript.Ide.Completion (getExactCompletions, getCompletions)
-import Language.PureScript.Ide.Prim (idePrimDeclarations)
-import Language.PureScript.Ide.State (getAllModules)
-import Language.PureScript.Ide.Completion qualified as Purs.Completion
+
+-- import Language.Haskell.LSP.VFS qualified as VFS
 
 type HandlerM config = Server.LspT config (ReaderT IdeEnvironment (LoggingT IO))
 
@@ -75,6 +80,7 @@ handlers :: DiagnosticErrors -> Server.Handlers (HandlerM ())
 handlers diagErrs =
   mconcat
     [ Server.notificationHandler Message.SMethod_Initialized $ \_not -> do
+        sendInfoMsg "SMethod_Initialized"
         void $ liftIde $ findAvailableExterns >>= loadModulesAsync
         log_ ("OA purs lsp server initialized" :: T.Text)
         sendInfoMsg "OA purs lsp server initialized",
@@ -101,7 +107,6 @@ handlers diagErrs =
       Server.requestHandler Message.SMethod_TextDocumentCodeAction $ \req res -> do
         sendInfoMsg "SMethod_TextDocumentCodeAction"
         let params = req ^. LSP.params
-            -- doc = params ^. LSP.textDocument
             diags = params ^. LSP.context . LSP.diagnostics
             uri = getMsgUri req
 
@@ -115,7 +120,6 @@ handlers diagErrs =
                     textEdits =
                       toSuggestion err
                         & maybeToList
-                        & spy "suggestion"
                           >>= suggestionToEdit
 
                     suggestionToEdit :: JsonErrors.ErrorSuggestion -> [Types.TextEdit]
@@ -141,17 +145,43 @@ handlers diagErrs =
                         Nothing,
       Server.requestHandler Message.SMethod_TextDocumentHover $ \req res -> do
         sendInfoMsg "SMethod_TextDocumentHover"
-        let Types.HoverParams _doc pos _workDone = req ^. LSP.params
-            Types.Position _l _c' = pos
-            -- LSP.at
-        res $
-          Right $
-            Types.InL $
-              Types.Hover
-                ( Types.InL $
-                    Types.MarkupContent Types.MarkupKind_PlainText "Hello!"
-                )
-                Nothing,
+        let Types.HoverParams docIdent pos _workDone = req ^. LSP.params
+
+        let doc =
+              docIdent
+                ^. LSP.uri
+                  . to Types.toNormalizedUri
+
+        vfMb <- Server.getVirtualFile doc
+
+        for_ vfMb \vf -> do
+          let word = getWordAt (VFS._file_text vf) pos
+          cache <- liftIde cachedRebuild
+          let moduleName' = case cache of
+                Right (Just (mName, _)) -> Just mName
+                _ -> Nothing
+
+          completions <- liftIde $ getExactCompletionsWithPrim word [] moduleName'
+          sendInfoMsg $ "Completions: " <> show (length completions)
+
+          let pursValue = case head <$> completions of
+                Right (Just completion) ->
+                  complType completion
+                    <> "\n"
+                    <> complModule completion
+                    <> "."
+                    <> complIdentifier completion
+                _ -> word
+
+          res $
+            Right $
+              Types.InL $
+                Types.Hover
+                  ( Types.InL $
+                      Types.MarkupContent Types.MarkupKind_Markdown $
+                        pursMarkdown pursValue
+                  )
+                  Nothing,
       Server.requestHandler Message.SMethod_TextDocumentDocumentSymbol $ \req res -> do
         sendInfoMsg "SMethod_TextDocumentDocumentSymbol"
         -- getCompletionsWithPrim
@@ -265,8 +295,25 @@ main ideEnv = do
                 . Server.runLspT env
             )
             liftIO,
-        options = Server.defaultOptions
+        options = lspOptions
       }
+
+syncOptions :: Types.TextDocumentSyncOptions
+syncOptions =
+  Types.TextDocumentSyncOptions
+    { Types._openClose = Just True,
+      Types._change = Just Types.TextDocumentSyncKind_Incremental,
+      Types._willSave = Just False,
+      Types._willSaveWaitUntil = Just False,
+      Types._save = Just $ Types.InR $ Types.SaveOptions $ Just False
+    }
+
+lspOptions :: Server.Options
+lspOptions =
+  Server.defaultOptions
+    { Server.optTextDocumentSync = Just syncOptions,
+      Server.optExecuteCommandCommands = Just ["lsp-purescript-command"]
+    }
 
 spy :: (Show a) => Text -> a -> a
 spy msg a = unsafePerformIO $ do
@@ -283,10 +330,15 @@ logT :: (MonadIO m) => Text -> m ()
 logT = logToFile
 
 logToFile :: (MonadIO m) => Text -> m ()
-logToFile txt = liftIO $ do
-  createDirectoryIfMissing True "logs"
-  time <- show <$> getCurrentTime
-  writeFile ("logs/" <> time <> "-----" <> T.unpack txt) $ txt <> "\n"
+logToFile txt =
+  liftIO $
+    catchError
+      ( do
+          createDirectoryIfMissing True "logs"
+          time <- show <$> getCurrentTime
+          writeFile ("logs/" <> time <> "-----" <> T.unpack txt) $ txt <> "\n"
+      )
+      (const $ pure ())
 
 getCompletionsWithPrim ::
   (Ide m) =>
@@ -310,3 +362,26 @@ getExactCompletionsWithPrim search filters currentModule = do
   modules <- getAllModules currentModule
   let insertPrim = Map.union idePrimDeclarations
   pure (getExactCompletions search filters (insertPrim modules))
+
+getWordAt :: Rope -> Types.Position -> Text
+getWordAt file Types.Position {..} =
+  let (_, after) = splitAtLine (fromIntegral _line) file
+      (ropeLine, _) = splitAtLine 1 after
+      line' = Rope.toText ropeLine
+   in getWordOnLine line' _character
+
+getWordOnLine :: Text -> UInt -> Text
+getWordOnLine line' col =
+  let start = getWsIdx (subtract 1) (fromIntegral col) line'
+      end = getWsIdx (+ 1) (fromIntegral col) line'
+   in T.take (end - start) $ T.drop start line'
+  where
+    getWsIdx :: (Int -> Int) -> Int -> Text -> Int
+    getWsIdx _ 0 _ = 0
+    getWsIdx _ idx txt | idx >= T.length txt = idx
+    getWsIdx fn idx txt = case T.index txt idx of
+      ch | isSpace ch -> idx
+      _ -> getWsIdx fn (fn idx) txt
+
+pursMarkdown :: Text -> Text
+pursMarkdown txt = "```pureScript\n" <> txt <> "```"

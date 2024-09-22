@@ -19,7 +19,8 @@ import Language.LSP.Protocol.Lens qualified as LSP
 import Language.LSP.Protocol.Message qualified as LSP
 import Language.LSP.Protocol.Types qualified as LSP
 import Language.LSP.Server as LSP.Server
-import Language.LSP.VFS
+-- import Language.LSP.VFS  (VirtualFile(..))
+import Language.LSP.VFS  qualified as VFS
 import Prettyprinter
 import Protolude hiding (to)
 import System.IO as IO
@@ -222,7 +223,7 @@ handlers logger =
         logger <& ("Processing DidChangeTextDocument for: " <> T.pack (show doc)) `WithSeverity` Info
         mdoc <- getVirtualFile doc
         case mdoc of
-          Just (VirtualFile _version str _) -> do
+          Just (VFS.VirtualFile _version str _) -> do
             logger <& ("Found the virtual file: " <> T.pack (show str)) `WithSeverity` Info
           Nothing -> do
             logger <& ("Didn't find anything in the VFS for: " <> T.pack (show doc)) `WithSeverity` Info,
