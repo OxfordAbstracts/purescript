@@ -40,12 +40,13 @@ import Language.PureScript.Ide (findAvailableExterns, loadModulesAsync)
 import Language.PureScript.Ide.Completion (getCompletions, getExactCompletions)
 import Language.PureScript.Ide.Completion qualified as Purs.Completion
 import Language.PureScript.Ide.Error (IdeError (RebuildError), textError)
-import Language.PureScript.Ide.Filter (Filter)
+import Language.PureScript.Ide.Filter (Filter, moduleFilter)
+import Language.PureScript.Ide.Imports (parseImportsFromFile)
 import Language.PureScript.Ide.Matcher (Matcher)
 import Language.PureScript.Ide.Prim (idePrimDeclarations)
 import Language.PureScript.Ide.Rebuild (rebuildFileAsync)
 import Language.PureScript.Ide.State (cachedRebuild, getAllModules)
-import Language.PureScript.Ide.Types (Completion (complIdentifier, complModule, complType), Ide, IdeConfiguration (confLogLevel), IdeDeclarationAnn, IdeEnvironment (ideConfiguration), Success (RebuildSuccess, TextResult))
+import Language.PureScript.Ide.Types (Completion (..), Ide, IdeConfiguration (confLogLevel), IdeDeclarationAnn, IdeEnvironment (ideConfiguration), Success (RebuildSuccess, TextResult))
 import Language.PureScript.Ide.Util (runLogger)
 import Protolude hiding (to)
 import System.Directory (createDirectoryIfMissing)
@@ -144,10 +145,10 @@ handlers diagErrs =
                         Nothing
                         Nothing,
       Server.requestHandler Message.SMethod_TextDocumentHover $ \req res -> do
-        sendInfoMsg "SMethod_TextDocumentHover"
         let Types.HoverParams docIdent pos _workDone = req ^. LSP.params
 
-        let doc =
+        let filePathMb = Types.uriToFilePath $ docIdent ^. LSP.uri
+            doc =
               docIdent
                 ^. LSP.uri
                   . to Types.toNormalizedUri
@@ -161,16 +162,34 @@ handlers diagErrs =
                 Right (Just (mName, _)) -> Just mName
                 _ -> Nothing
 
-          completions <- liftIde $ getExactCompletionsWithPrim word [] moduleName'
-          sendInfoMsg $ "Completions: " <> show (length completions)
+          imports <-
+            filePathMb
+              & maybe (pure Nothing) (fmap hush . liftIde . parseImportsFromFile)
 
-          let pursValue = case head <$> completions of
-                Right (Just completion) ->
-                  complType completion
-                    <> "\n"
-                    <> complModule completion
-                    <> "."
-                    <> complIdentifier completion
+          let filters :: [Filter]
+              filters =
+                imports
+                  & maybe [] (pure . (moduleFilter . insertCurrentModule . Set.fromList . fmap getInputModName) . snd)
+
+              getInputModName (n, _, _) = n
+
+              insertCurrentModule :: Set P.ModuleName -> Set P.ModuleName
+              insertCurrentModule mods = maybe mods (flip Set.insert mods) moduleName'
+
+          sendInfoMsg $ "word: " <> show word
+          sendInfoMsg $ "word: " <> show word
+
+          completions <- liftIde $ getExactCompletionsWithPrim word filters moduleName'
+          sendInfoMsg $ "Completions: " <> show completions
+
+          completions1 <- liftIde $ getExactCompletionsWithPrim word [] moduleName'
+          sendInfoMsg $ "completions1: " <> show completions1
+
+          completions2 <- liftIde $ getExactCompletionsWithPrim "log" [] moduleName'
+          sendInfoMsg $ "completions2: " <> show completions2
+
+          let hoverInfo = case head <$> completions of
+                Right (Just completion) -> completionToHoverInfo word completion
                 _ -> word
 
           res $
@@ -178,27 +197,17 @@ handlers diagErrs =
               Types.InL $
                 Types.Hover
                   ( Types.InL $
-                      Types.MarkupContent Types.MarkupKind_Markdown $
-                        pursMarkdown pursValue
+                      Types.MarkupContent Types.MarkupKind_Markdown hoverInfo
                   )
                   Nothing,
       Server.requestHandler Message.SMethod_TextDocumentDocumentSymbol $ \req res -> do
         sendInfoMsg "SMethod_TextDocumentDocumentSymbol"
-        -- getCompletionsWithPrim
         res $
           Right $
             Types.InL
               []
     ]
   where
-    -- Types.DocumentSymbol
-    --   "symbol"
-    --   Nothing
-    --   Types.SymbolKind_Array
-    --   (Types.Range (Types.Position 0 0) (Types.Position 0 0))
-    --   (Types.Range (Types.Position 0 0) (Types.Position 0 0))
-    --   []
-
     getFileDiagnotics :: (LSP.HasUri a2 Uri, LSP.HasTextDocument a1 a2, LSP.HasParams s a1) => s -> HandlerM config ([ErrorMessage], [Types.Diagnostic])
     getFileDiagnotics msg = do
       let uri :: Uri
@@ -372,16 +381,34 @@ getWordAt file Types.Position {..} =
 
 getWordOnLine :: Text -> UInt -> Text
 getWordOnLine line' col =
-  let start = getWsIdx (subtract 1) (fromIntegral col) line'
-      end = getWsIdx (+ 1) (fromIntegral col) line'
+  let start = getPrevWs (fromIntegral col) line'
+      end = getNextWs (fromIntegral col) line'
    in T.take (end - start) $ T.drop start line'
   where
-    getWsIdx :: (Int -> Int) -> Int -> Text -> Int
-    getWsIdx _ 0 _ = 0
-    getWsIdx _ idx txt | idx >= T.length txt = idx
-    getWsIdx fn idx txt = case T.index txt idx of
+    getNextWs :: Int -> Text -> Int
+    getNextWs idx txt | idx >= T.length txt = idx
+    getNextWs idx txt = case T.index txt idx of
       ch | isSpace ch -> idx
-      _ -> getWsIdx fn (fn idx) txt
+      _ -> getNextWs (idx + 1) txt
+
+    getPrevWs :: Int -> Text -> Int
+    getPrevWs 0 _ = 0
+    getPrevWs idx txt = case T.index txt idx of
+      ch | isSpace ch -> idx + 1
+      _ -> getPrevWs (idx - 1) txt
 
 pursMarkdown :: Text -> Text
 pursMarkdown txt = "```pureScript\n" <> txt <> "```"
+
+completionToHoverInfo :: Text -> Completion -> Text
+completionToHoverInfo word Completion {..} =
+  typeStr <> "\n" <> fromMaybe "" complDocumentation
+  where
+    typeStr =
+      "```purescript\n"
+        <> compactTypeStr
+        <> (if showExpanded then "\n" <> expandedTypeStr else "")
+        <> "\n```"
+    showExpanded = complExpandedType /= "" && (complExpandedType /= complType)
+    compactTypeStr = word <> " :: " <> complType
+    expandedTypeStr = word <> " :: " <> complExpandedType
