@@ -176,17 +176,7 @@ handlers diagErrs =
               insertCurrentModule :: Set P.ModuleName -> Set P.ModuleName
               insertCurrentModule mods = maybe mods (flip Set.insert mods) moduleName'
 
-          sendInfoMsg $ "word: " <> show word
-          sendInfoMsg $ "word: " <> show word
-
           completions <- liftIde $ getExactCompletionsWithPrim word filters moduleName'
-          sendInfoMsg $ "Completions: " <> show completions
-
-          completions1 <- liftIde $ getExactCompletionsWithPrim word [] moduleName'
-          sendInfoMsg $ "completions1: " <> show completions1
-
-          completions2 <- liftIde $ getExactCompletionsWithPrim "log" [] moduleName'
-          sendInfoMsg $ "completions2: " <> show completions2
 
           let hoverInfo = case head <$> completions of
                 Right (Just completion) -> completionToHoverInfo word completion
