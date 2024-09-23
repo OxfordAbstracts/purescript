@@ -45,8 +45,8 @@ import Language.PureScript.Ide.Imports (parseImportsFromFile)
 import Language.PureScript.Ide.Matcher (Matcher)
 import Language.PureScript.Ide.Prim (idePrimDeclarations)
 import Language.PureScript.Ide.Rebuild (rebuildFileAsync)
-import Language.PureScript.Ide.State (cachedRebuild, getAllModules)
-import Language.PureScript.Ide.Types (Completion (..), Ide, IdeConfiguration (confLogLevel), IdeDeclarationAnn, IdeEnvironment (ideConfiguration), Success (RebuildSuccess, TextResult))
+import Language.PureScript.Ide.State (cachedRebuild, getAllModules, getFileState)
+import Language.PureScript.Ide.Types (Completion (..), Ide, IdeConfiguration (confLogLevel), IdeDeclarationAnn, IdeEnvironment (ideConfiguration), IdeFileState (fsModules), Success (RebuildSuccess, TextResult))
 import Language.PureScript.Ide.Util (runLogger)
 import Protolude hiding (to)
 import System.Directory (createDirectoryIfMissing)
@@ -76,7 +76,6 @@ getDiagnosticError diagErrs diags = liftIO $ Map.lookup diags <$> readIORef diag
 getDiagnosticErrors :: (MonadIO m, Ord k) => IORef (Map k a) -> [k] -> m (Map k a)
 getDiagnosticErrors diagErrs diags = liftIO $ flip Map.restrictKeys (Set.fromList diags) <$> readIORef diagErrs
 
--- z = combin
 handlers :: DiagnosticErrors -> Server.Handlers (HandlerM ())
 handlers diagErrs =
   mconcat
@@ -148,12 +147,12 @@ handlers diagErrs =
         let Types.HoverParams docIdent pos _workDone = req ^. LSP.params
 
         let filePathMb = Types.uriToFilePath $ docIdent ^. LSP.uri
-            doc =
+            docUri =
               docIdent
                 ^. LSP.uri
                   . to Types.toNormalizedUri
 
-        vfMb <- Server.getVirtualFile doc
+        vfMb <- Server.getVirtualFile docUri
 
         for_ vfMb \vf -> do
           let word = getWordAt (VFS._file_text vf) pos
@@ -190,12 +189,77 @@ handlers diagErrs =
                       Types.MarkupContent Types.MarkupKind_Markdown hoverInfo
                   )
                   Nothing,
-      Server.requestHandler Message.SMethod_TextDocumentDocumentSymbol $ \req res -> do
-        sendInfoMsg "SMethod_TextDocumentDocumentSymbol"
-        res $
-          Right $
-            Types.InL
-              []
+      Server.requestHandler Message.SMethod_TextDocumentDefinition $ \req res -> do
+        sendInfoMsg "SMethod_TextDocumentDefinition"
+        let Types.DefinitionParams docIdent pos _prog _prog' = req ^. LSP.params
+            filePathMb = Types.uriToFilePath $ docIdent ^. LSP.uri
+            uri =
+              req
+                ^. LSP.params
+                  . LSP.textDocument
+                  . LSP.uri
+                  . to Types.toNormalizedUri
+
+            nullRes = res $ Right $ Types.InR $ Types.InR Types.Null
+
+        vfMb <- Server.getVirtualFile uri
+
+        for_ vfMb \vf -> do
+          let word = getWordAt (VFS._file_text vf) pos
+          cache <- liftIde cachedRebuild
+          let moduleName' = case cache of
+                Right (Just (mName, _)) -> Just mName
+                _ -> Nothing
+
+          imports <-
+            filePathMb
+              & maybe (pure Nothing) (fmap hush . liftIde . parseImportsFromFile)
+
+          let filters :: [Filter]
+              filters =
+                imports
+                  & maybe [] (pure . (moduleFilter . insertCurrentModule . Set.fromList . fmap getInputModName) . snd)
+
+              getInputModName (n, _, _) = n
+
+              insertCurrentModule :: Set P.ModuleName -> Set P.ModuleName
+              insertCurrentModule mods = maybe mods (flip Set.insert mods) moduleName'
+
+          completions :: Either IdeError [Completion] <- liftIde $ getExactCompletionsWithPrim word filters moduleName'
+
+          sendInfoMsg $ "Completions: " <> show completions
+          let withLocation =
+                fold completions
+                  & mapMaybe
+                    ( \c -> case complLocation c of
+                        Just loc -> Just (c, loc)
+                        Nothing -> Nothing
+                    )
+                  & head
+
+          paths <- liftIde $ Map.map snd . fsModules <$> getFileState
+
+          case withLocation of
+            Just (completion, location) -> do
+              let fpMb =
+                    Map.lookup (P.ModuleName . complModule $ completion) (either mempty identity paths)
+
+              case fpMb of
+                Nothing -> do
+                  sendInfoMsg "No file path for module"
+                  nullRes
+                Just fp ->
+                  res $
+                    Right $
+                      Types.InL $
+                        Types.Definition $
+                          Types.InL $
+                            Types.Location
+                              (Types.filePathToUri fp)
+                              (spanToRange location)
+            _ -> do
+              sendInfoMsg "No location for completion"
+              nullRes
     ]
   where
     getFileDiagnotics :: (LSP.HasUri a2 Uri, LSP.HasTextDocument a1 a2, LSP.HasParams s a1) => s -> HandlerM config ([ErrorMessage], [Types.Diagnostic])
@@ -258,6 +322,12 @@ handlers diagErrs =
                     Types.Position (fromIntegral $ startLine - 1) (fromIntegral $ startCol - 1),
                     Types.Position (fromIntegral $ endLine - 1) (fromIntegral $ endCol - 1)
                   )
+
+spanToRange :: Errors.SourceSpan -> Types.Range
+spanToRange (Errors.SourceSpan _ (Errors.SourcePos startLine startCol) (Errors.SourcePos endLine endCol)) =
+  Types.Range
+    (Types.Position (fromIntegral $ startLine - 1) (fromIntegral $ startCol - 1))
+    (Types.Position (fromIntegral $ endLine - 1) (fromIntegral $ endCol - 1))
 
 sendError :: IdeError -> HandlerM config ()
 sendError err =
