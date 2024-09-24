@@ -1,7 +1,32 @@
-module Language.PureScript.Lsp.Types where 
+module Language.PureScript.Lsp.Types where
 
-import Protolude 
+import Protolude
+import Database.SQLite.Simple (Connection)
+import Control.Concurrent.STM (TVar)
+import Language.PureScript.Ide.Types (IdeDeclarationAnn)
+import Language.PureScript qualified as P
 
-type LspM = ()
+data LspEnvironment = LspEnvironment
+  { lspConfig :: LspConfig,
+    lspDbConnection :: Connection,
+    lspStateVar :: TVar LspState
+  }
 
-x = 1
+data LspConfig = LspConfig
+  { configOutputPath :: FilePath,
+    confRootDir :: FilePath,
+    confGlobs :: [FilePath]
+  }
+  deriving (Show)
+
+data LspState = LspState
+  { currentFile :: Maybe CurrentFile
+  }
+  deriving (Show)
+
+data CurrentFile = CurrentFile
+  { currentModuleName :: P.ModuleName,
+    currentExternsFile :: P.ExternsFile,
+    currentDeclarations :: [IdeDeclarationAnn]
+  }
+  deriving (Show)
