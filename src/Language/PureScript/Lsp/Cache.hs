@@ -24,6 +24,22 @@ import System.Directory (doesDirectoryExist, doesFileExist, getDirectoryContents
 import System.FilePath (normalise, (</>))
 import "monad-logger" Control.Monad.Logger (MonadLogger)
 
+dropTables :: (MonadIO m, MonadReader LspEnvironment m) => m ()
+dropTables = do
+  DB.execute_ "DROP TABLE IF EXISTS modules"
+  DB.execute_ "DROP TABLE IF EXISTS declarations"
+  DB.execute_ "DROP TABLE IF EXISTS externs"
+  DB.execute_ "DROP TABLE IF EXISTS ef_imports"
+  DB.execute_ "DROP TABLE IF EXISTS ef_exports"
+
+initDb :: (MonadReader LspEnvironment m, MonadIO m) => m ()
+initDb = do
+  DB.execute_ "CREATE TABLE IF NOT EXISTS modules (module_name TEXT PRIMARY KEY, path TEXT)"
+  DB.execute_ "CREATE TABLE IF NOT EXISTS declarations (module_name TEXT, name TEXT, type_printed TEXT, start_col INTEGER, start_line INTEGER, end_col INTEGER, end_line INTEGER, comments TEXT, exported BOOLEAN, value BLOB)"
+  DB.execute_ "CREATE TABLE IF NOT EXISTS externs (name TEXT PRIMARY KEY, path TEXT, ef_version TEXT, value BLOB, module_name TEXT)"
+  DB.execute_ "CREATE TABLE IF NOT EXISTS ef_imports (module_name TEXT, import_name TEXT, imported_module TEXT, import_type TEXT, imported_as TEXT)"
+  DB.execute_ "CREATE TABLE IF NOT EXISTS ef_exports (module_name TEXT, export_name TEXT, value TEXT, span_name TEXT, start_col INTEGER, start_line INTEGER, end_col INTEGER, end_line INTEGER)"
+
 selectAllExternsMap :: (MonadIO m, MonadReader LspEnvironment m) => m (ModuleMap ExternsFile)
 selectAllExternsMap = do
   Map.fromList . fmap (\ef -> (efModuleName ef, ef)) <$> selectAllExterns
@@ -43,7 +59,8 @@ insertAllExterns = do
   oDir <- asks (confOutputPath . lspConfig)
   externPaths <- findAvailableExterns
   forM_ externPaths $ \name -> do
-    extern <- readExternFile (oDir </> T.unpack (P.runModuleName name) <> externsFileName)
+    extern <- readExternFile (oDir </> toS (P.runModuleName name) </> P.externsFileName)
+
     insertExtern oDir extern
 
 -- | Finds all the externs inside the output folder and returns the
@@ -75,7 +92,7 @@ insertExtern ::
   m ()
 insertExtern outDir extern = do
   DB.executeNamed
-    (Query "INSERT INTO externs (name, path) VALUES (:path, :name)")
+    (Query "INSERT INTO externs (path, ef_version, value, module_name) VALUES (:path, :ef_version, :value, :module_name)")
     [ ":path" := externsPath,
       ":ef_version" := P.efVersion extern,
       ":value" := serialise extern,
@@ -90,7 +107,7 @@ insertExtern outDir extern = do
 insertEfImport :: (MonadIO m, MonadReader LspEnvironment m) => P.ModuleName -> P.ExternsImport -> m ()
 insertEfImport moduleName' ei = do
   DB.executeNamed
-    (Query "INSERT INTO ef_imports (module_name, import_name) VALUES (:module_name, :import_name)")
+    (Query "INSERT INTO ef_imports (module_name, imported_module, import_type, imported_as) VALUES (:module_name, :imported_module, :import_type, :imported_as)")
     [ ":module_name" := P.runModuleName moduleName',
       ":imported_module" := P.runModuleName (P.eiModule ei),
       ":import_type" := serialise (P.eiImportType ei),
@@ -100,7 +117,7 @@ insertEfImport moduleName' ei = do
 insertEfExport :: (MonadIO m, MonadReader LspEnvironment m) => P.ModuleName -> P.DeclarationRef -> m ()
 insertEfExport moduleName' dr = do
   DB.executeNamed
-    (Query "INSERT INTO ef_exports (module_name, export_name) VALUES (:module_name, :export_name)")
+    (Query "INSERT INTO ef_exports (module_name, value, span_name, start_col, start_line, end_col, end_line) VALUES (:module_name, :value, :span_name, :start_col, :start_line, :end_col, :end_line)")
     [ ":module_name" := P.runModuleName moduleName',
       ":value" := serialise dr,
       ":span_name" := P.spanName span,
@@ -116,7 +133,7 @@ insertModule :: (MonadIO m, MonadReader LspEnvironment m) => FilePath -> P.Modul
 insertModule srcPath m = do
   let moduleName' = P.getModuleName m
   DB.executeNamed
-    (Query "INSERT INTO modules (module_name, module) VALUES (:module_name, :module)")
+    (Query "INSERT INTO modules (module_name, path) VALUES (:module_name, :path)")
     [ ":module_name" := P.runModuleName moduleName',
       ":path" := srcPath
     ]
@@ -127,7 +144,7 @@ insertModule srcPath m = do
 insertDeclaration :: (MonadIO m, MonadReader LspEnvironment m) => P.ModuleName -> Set P.Declaration -> P.Declaration -> m ()
 insertDeclaration moduleName' exportedDecls decl = do
   DB.executeNamed
-    (Query "INSERT INTO declarations (module_name, declaration) VALUES (:module_name, :name, :value)")
+    (Query "INSERT INTO declarations (module_name, name, type_printed, start_col, start_line, end_col, end_line, comments, exported, value) VALUES (:module_name, :name, :type_printed, :start_col, :start_line, :end_col, :end_line, :comments, :exported, :value)")
     [ ":module_name" := P.runModuleName moduleName',
       ":name" := P.spanName declLocation,
       ":type_printed" := typeName,
