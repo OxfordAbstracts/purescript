@@ -82,7 +82,7 @@ data FunctionalDependency = FunctionalDependency
   -- ^ the type arguments which determine the determined type arguments
   , fdDetermined  :: [Int]
   -- ^ the determined type arguments
-  } deriving (Show, Generic)
+  } deriving (Show, Eq, Ord, Generic)
 
 instance NFData FunctionalDependency
 instance Serialise FunctionalDependency
@@ -248,7 +248,7 @@ data NameKind
   -- ^ A public value for a module member or foreign import declaration
   | External
   -- ^ A name for member introduced by foreign import
-  deriving (Show, Eq, Generic)
+  deriving (Show, Eq, Ord, Generic)
 
 instance NFData NameKind
 instance Serialise NameKind
