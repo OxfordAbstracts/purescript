@@ -1,8 +1,7 @@
 module Command.Lsp (command) where
 
-import Control.Concurrent.STM (newTVarIO)
-import Data.IORef (newIORef)
-import Language.PureScript.Ide.Types (IdeConfiguration (..), IdeEnvironment (..), IdeLogLevel (..), emptyIdeState)
+import Language.PureScript.Ide.Types (IdeLogLevel (..))
+import Language.PureScript.Lsp.Types (LspConfig (..), mkEnv)
 import Language.PureScript.LspSimple as Lsp
 import Options.Applicative qualified as Opts
 import Protolude
@@ -34,27 +33,18 @@ command = Opts.helper <*> subcommands
         ]
 
     server :: ServerOptions -> IO ()
-    server opts'@(ServerOptions dir globs globsFromFile globsExcluded outputPath logLevel) = do
+    server opts'@(ServerOptions dir globs _globsFromFile _globsExcluded outputPath logLevel) = do
       when
         (logLevel == LogDebug || logLevel == LogAll)
         (putText "Parsed Options:" *> print opts')
       maybe (pure ()) setCurrentDirectory dir
-      ideState <- newTVarIO emptyIdeState
       let conf =
-            IdeConfiguration
-              { confLogLevel = logLevel,
-                confOutputPath = outputPath,
+            LspConfig
+              { confOutputPath = outputPath,
                 confGlobs = globs,
-                confGlobsFromFile = globsFromFile,
-                confGlobsExclude = globsExcluded
+                confLogLevel = logLevel
               }
-      ts <- newIORef Nothing
-      let env =
-            IdeEnvironment
-              { ideStateVar = ideState,
-                ideConfiguration = conf,
-                ideCacheDbTimestamp = ts
-              }
+      env <- mkEnv conf
       startServer env
 
     serverOptions :: Opts.Parser ServerOptions

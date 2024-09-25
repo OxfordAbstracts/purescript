@@ -12,15 +12,16 @@ import Data.Text qualified as T
 import Language.PureScript qualified as P
 import Language.PureScript.CST qualified as CST
 import Language.PureScript.Externs (ExternsFile (efModuleName))
-import Language.PureScript.Ide.Error (IdeError (RebuildError))
+import Language.PureScript.Ide.Error (IdeError (GeneralError, RebuildError))
 import Language.PureScript.Ide.Rebuild (updateCacheDb)
 import Language.PureScript.Ide.Types (ModuleMap)
 import Language.PureScript.Ide.Util (ideReadFile)
 import Language.PureScript.Lsp.Cache
 import Language.PureScript.Lsp.Types (LspConfig (..), LspEnvironment (lspConfig))
 import Language.PureScript.Make (ffiCodegen')
-import Protolude  hiding (moduleName)
+import Protolude hiding (moduleName)
 import System.FilePath.Glob (glob)
+import Language.PureScript.Lsp.State (cacheRebuild)
 
 rebuildAllFiles ::
   ( MonadIO m,
@@ -71,12 +72,30 @@ rebuildFile srcPath = do
     Right newExterns -> do
       insertModule fp m
       insertExtern outputDirectory newExterns
-      -- void populateVolatileState
-      -- _ <- updateCacheTimestamp
-      -- runOpenBuild (rebuildModuleOpen makeEnv externs m)
+      rebuildModuleOpen makeEnv externs m
       pure (fp, CST.toMultipleWarnings fp pwarnings <> warnings)
   where
     codegenTargets = Set.singleton P.JS
+
+-- | Rebuilds a module but opens up its export list first and stores the result
+-- inside the rebuild cache
+rebuildModuleOpen ::
+  ( MonadReader LspEnvironment m,
+    MonadIO m
+  ) =>
+  P.MakeActions P.Make ->
+  [P.ExternsFile] ->
+  P.Module ->
+  m ()
+rebuildModuleOpen makeEnv externs m = void $ runExceptT do
+  (openResult, _) <-
+    liftIO $
+      P.runMake P.defaultOptions $
+        P.rebuildModule (shushProgress (shushCodegen makeEnv)) externs (openModuleExports m)
+  case openResult of
+    Left _ ->
+      throwError (GeneralError "Failed when rebuilding with open exports")
+    Right result -> cacheRebuild result
 
 -- | Shuts the compiler up about progress messages
 shushProgress :: (Monad m) => P.MakeActions m -> P.MakeActions m
@@ -84,11 +103,12 @@ shushProgress ma =
   ma {P.progress = \_ -> pure ()}
 
 -- | Stops any kind of codegen
-shushCodegen :: Monad m => P.MakeActions m -> P.MakeActions m
+shushCodegen :: (Monad m) => P.MakeActions m -> P.MakeActions m
 shushCodegen ma =
-  ma { P.codegen = \_ _ _ -> pure ()
-     , P.ffiCodegen = \_ -> pure ()
-     }
+  ma
+    { P.codegen = \_ _ _ -> pure (),
+      P.ffiCodegen = \_ -> pure ()
+    }
 
 enableForeignCheck ::
   M.Map P.ModuleName FilePath ->
@@ -132,3 +152,8 @@ sortExterns m ex = do
     -- Sort a list so its elements appear in the same order as in another list.
     inOrderOf :: (Ord a) => [a] -> [a] -> [a]
     inOrderOf xs ys = let s = S.fromList xs in filter (`S.member` s) ys
+
+
+-- | Removes a modules export list.
+openModuleExports :: P.Module -> P.Module
+openModuleExports (P.Module ss cs mn decls _) = P.Module ss cs mn decls Nothing

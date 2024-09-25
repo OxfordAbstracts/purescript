@@ -2,6 +2,7 @@
 
 module Language.PureScript.Ide.Logging
        ( runLogger
+       , runFileLogger
        , logPerf
        , displayTimeSpec
        , labelTimespec
@@ -9,11 +10,12 @@ module Language.PureScript.Ide.Logging
 
 import Protolude
 
-import "monad-logger" Control.Monad.Logger (LogLevel(..), LoggingT, MonadLogger, filterLogger, logOtherN, runStdoutLoggingT)
+import "monad-logger" Control.Monad.Logger (LogLevel(..), LoggingT, MonadLogger, filterLogger, logOtherN, runStdoutLoggingT, runFileLoggingT)
 import Data.Text qualified as T
 import Language.PureScript.Ide.Types (IdeLogLevel(..))
 import System.Clock (Clock(..), TimeSpec, diffTimeSpec, getTime, toNanoSecs)
 import Text.Printf (printf)
+import Control.Monad.Trans.Control (MonadBaseControl)
 
 runLogger :: MonadIO m => IdeLogLevel -> LoggingT m a -> m a
 runLogger logLevel' =
@@ -24,6 +26,16 @@ runLogger logLevel' =
                                          LogNone -> False
                                          LogDebug -> logLevel /= LevelOther "perf"
                                          LogPerf -> logLevel == LevelOther "perf")
+
+runFileLogger :: MonadBaseControl IO m => FilePath -> IdeLogLevel -> LoggingT m a -> m a
+runFileLogger fp logLevel' =
+  runFileLoggingT fp . filterLogger (\_ logLevel ->
+                                        case logLevel' of
+                                          LogAll -> True
+                                          LogDefault -> not (logLevel == LevelOther "perf" || logLevel == LevelDebug)
+                                          LogNone -> False
+                                          LogDebug -> logLevel /= LevelOther "perf"
+                                          LogPerf -> logLevel == LevelOther "perf")
 
 labelTimespec :: Text -> TimeSpec -> Text
 labelTimespec label duration = label <> ": " <> displayTimeSpec duration
