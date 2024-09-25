@@ -36,6 +36,8 @@ data IdeDeclaration
   | IdeDeclModule P.ModuleName
   deriving (Show, Eq, Ord, Generic, Serialise)
 
+
+
 data IdeValue = IdeValue
   { _ideValueIdent :: P.Ident
   , _ideValueType :: P.SourceType
@@ -328,7 +330,7 @@ encodeImport (P.runModuleName -> mn, importType, map P.runModuleName -> qualifie
 
 -- | Denotes the different namespaces a name in PureScript can reside in.
 data IdeNamespace = IdeNSValue | IdeNSType | IdeNSModule
-  deriving (Show, Eq, Ord)
+  deriving (Show, Eq, Ord, Generic, Serialise)
 
 instance FromJSON IdeNamespace where
   parseJSON = Aeson.withText "Namespace" $ \case

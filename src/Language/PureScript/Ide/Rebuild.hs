@@ -4,6 +4,7 @@ module Language.PureScript.Ide.Rebuild
   ( rebuildFileSync
   , rebuildFileAsync
   , rebuildFile
+  , updateCacheDb
   ) where
 
 import Protolude hiding (moduleName)
@@ -201,7 +202,7 @@ enableForeignCheck foreigns codegenTargets ma =
 -- module. Throws an error if there is a cyclic dependency within the
 -- ExternsFiles
 sortExterns
-  :: (Ide m, MonadError IdeError m)
+  :: (MonadError IdeError m)
   => P.Module
   -> ModuleMap P.ExternsFile
   -> m [P.ExternsFile]

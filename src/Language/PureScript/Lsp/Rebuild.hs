@@ -1,0 +1,134 @@
+{-# LANGUAGE BlockArguments #-}
+{-# LANGUAGE PackageImports #-}
+
+module Language.PureScript.Lsp.Rebuild where
+
+import Data.List qualified as List
+import Data.Map.Lazy qualified as M
+import Data.Maybe (fromJust)
+import Data.Set qualified as S
+import Data.Set qualified as Set
+import Data.Text qualified as T
+import Language.PureScript qualified as P
+import Language.PureScript.CST qualified as CST
+import Language.PureScript.Externs (ExternsFile (efModuleName))
+import Language.PureScript.Ide.Error (IdeError (RebuildError))
+import Language.PureScript.Ide.Rebuild (updateCacheDb)
+import Language.PureScript.Ide.Types (ModuleMap)
+import Language.PureScript.Ide.Util (ideReadFile)
+import Language.PureScript.Lsp.Cache
+import Language.PureScript.Lsp.Types (LspConfig (..), LspEnvironment (lspConfig))
+import Language.PureScript.Make (ffiCodegen')
+import Protolude  hiding (moduleName)
+import System.FilePath.Glob (glob)
+
+rebuildAllFiles ::
+  ( MonadIO m,
+    MonadError IdeError m,
+    MonadReader LspEnvironment m
+  ) =>
+  m [(FilePath, P.MultipleErrors)]
+rebuildAllFiles = do
+  globs <- asks (confGlobs . lspConfig)
+  files <- liftIO $ concat <$> traverse glob globs
+  traverse rebuildFile files
+
+rebuildFile ::
+  ( MonadIO m,
+    MonadError IdeError m,
+    MonadReader LspEnvironment m
+  ) =>
+  FilePath ->
+  m (FilePath, P.MultipleErrors)
+rebuildFile srcPath = do
+  (fp, input) <-
+    case List.stripPrefix "data:" srcPath of
+      Just source -> pure ("", T.pack source)
+      _ -> ideReadFile srcPath -- todo replace with VFS
+  (pwarnings, m) <- case sequence $ CST.parseFromFile fp input of
+    Left parseError ->
+      throwError $ RebuildError [(fp, input)] $ CST.toMultipleErrors fp parseError
+    Right m -> pure m
+  let moduleName = P.getModuleName m
+  externs <- sortExterns m =<< selectAllExternsMap
+  outputDirectory <- asks (confOutputPath . lspConfig)
+  let filePathMap = M.singleton moduleName (Left P.RebuildAlways)
+  let pureRebuild = fp == ""
+  let modulePath = if pureRebuild then fp else srcPath
+  foreigns <- P.inferForeignModules (M.singleton moduleName (Right modulePath))
+  let makeEnv =
+        P.buildMakeActions outputDirectory filePathMap foreigns False
+          & (if pureRebuild then enableForeignCheck foreigns codegenTargets . shushCodegen else identity)
+          & shushProgress
+  (result, warnings) <- liftIO $ P.runMake (P.defaultOptions {P.optionsCodegenTargets = codegenTargets}) do
+    newExterns <- P.rebuildModule makeEnv externs m
+    unless pureRebuild $
+      updateCacheDb codegenTargets outputDirectory srcPath Nothing moduleName
+    pure newExterns
+  case result of
+    Left errors ->
+      throwError (RebuildError [(fp, input)] errors)
+    Right newExterns -> do
+      insertModule fp m
+      insertExtern outputDirectory newExterns
+      -- void populateVolatileState
+      -- _ <- updateCacheTimestamp
+      -- runOpenBuild (rebuildModuleOpen makeEnv externs m)
+      pure (fp, CST.toMultipleWarnings fp pwarnings <> warnings)
+  where
+    codegenTargets = Set.singleton P.JS
+
+-- | Shuts the compiler up about progress messages
+shushProgress :: (Monad m) => P.MakeActions m -> P.MakeActions m
+shushProgress ma =
+  ma {P.progress = \_ -> pure ()}
+
+-- | Stops any kind of codegen
+shushCodegen :: Monad m => P.MakeActions m -> P.MakeActions m
+shushCodegen ma =
+  ma { P.codegen = \_ _ _ -> pure ()
+     , P.ffiCodegen = \_ -> pure ()
+     }
+
+enableForeignCheck ::
+  M.Map P.ModuleName FilePath ->
+  S.Set P.CodegenTarget ->
+  P.MakeActions P.Make ->
+  P.MakeActions P.Make
+enableForeignCheck foreigns codegenTargets ma =
+  ma
+    { P.ffiCodegen = ffiCodegen' foreigns codegenTargets Nothing
+    }
+
+-- | Returns a topologically sorted list of dependent ExternsFiles for the given
+-- module. Throws an error if there is a cyclic dependency within the
+-- ExternsFiles
+sortExterns ::
+  (MonadError IdeError m) =>
+  P.Module ->
+  ModuleMap P.ExternsFile ->
+  m [P.ExternsFile]
+sortExterns m ex = do
+  sorted' <-
+    runExceptT
+      . P.sortModules P.Transitive P.moduleSignature
+      . (:) m
+      . map mkShallowModule
+      . M.elems
+      . M.delete (P.getModuleName m)
+      $ ex
+  case sorted' of
+    Left err ->
+      throwError (RebuildError [] err)
+    Right (sorted, graph) -> do
+      let deps = fromJust (List.lookup (P.getModuleName m) graph)
+      pure $ mapMaybe getExtern (deps `inOrderOf` map P.getModuleName sorted)
+  where
+    mkShallowModule P.ExternsFile {..} =
+      P.Module (P.internalModuleSourceSpan "<rebuild>") [] efModuleName (map mkImport efImports) Nothing
+    mkImport (P.ExternsImport mn it iq) =
+      P.ImportDeclaration (P.internalModuleSourceSpan "<rebuild>", []) mn it iq
+    getExtern mn = M.lookup mn ex
+    -- Sort a list so its elements appear in the same order as in another list.
+    inOrderOf :: (Ord a) => [a] -> [a] -> [a]
+    inOrderOf xs ys = let s = S.fromList xs in filter (`S.member` s) ys

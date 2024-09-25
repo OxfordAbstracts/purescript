@@ -1,10 +1,10 @@
 module Language.PureScript.Lsp.Types where
 
-import Protolude
-import Database.SQLite.Simple (Connection)
 import Control.Concurrent.STM (TVar)
-import Language.PureScript.Ide.Types (IdeDeclarationAnn)
+import Database.SQLite.Simple (Connection)
 import Language.PureScript qualified as P
+import Language.PureScript.Ide.Types (IdeDeclarationAnn)
+import Protolude
 
 data LspEnvironment = LspEnvironment
   { lspConfig :: LspConfig,
@@ -13,7 +13,7 @@ data LspEnvironment = LspEnvironment
   }
 
 data LspConfig = LspConfig
-  { configOutputPath :: FilePath,
+  { confOutputPath :: FilePath,
     confRootDir :: FilePath,
     confGlobs :: [FilePath]
   }

@@ -343,6 +343,7 @@ library
     Language.PureScript.Lsp.DB
     Language.PureScript.Lsp.Cache
     Language.PureScript.Lsp.Types
+    Language.PureScript.Lsp.Rebuild
     Language.PureScript.LspSimple
     Language.PureScript.Make
     Language.PureScript.Make.Actions
