@@ -13,7 +13,7 @@
 
 module Language.PureScript.LspSimple (main) where
 
-import Control.Lens ((^.), Field1 (_1))
+import Control.Lens (Field1 (_1), (^.))
 import Control.Lens.Getter (to)
 import Control.Monad.IO.Unlift
 import Control.Monad.Reader (mapReaderT)
@@ -36,16 +36,17 @@ import Language.LSP.Server qualified as Server
 import Language.LSP.VFS qualified as VFS
 import Language.PureScript (accumTypes, prettyPrintType)
 import Language.PureScript qualified as P
-import Language.PureScript.AST.Declarations (declSourceAnn, getModuleDeclarations)
+import Language.PureScript.AST.Declarations (declSourceAnn, getModuleDeclarations, getModuleName)
 import Language.PureScript.Docs.Convert.Single (convertComments)
 import Language.PureScript.Errors (ErrorMessage (ErrorMessage), MultipleErrors (runMultipleErrors), errorCode, errorDocUri, errorSpan, noColorPPEOptions, prettyPrintSingleError)
 import Language.PureScript.Errors qualified as Errors
 import Language.PureScript.Errors.JSON (toSuggestion)
 import Language.PureScript.Errors.JSON qualified as JsonErrors
+import Language.PureScript.Externs (ExternsFile (efSourceSpan))
 import Language.PureScript.Ide (findAvailableExterns, loadModulesAsync)
 import Language.PureScript.Ide.Completion (getCompletions, getExactCompletions)
 import Language.PureScript.Ide.Completion qualified as Purs.Completion
-import Language.PureScript.Ide.Error (IdeError (RebuildError), textError)
+import Language.PureScript.Ide.Error (IdeError (RebuildError), prettyPrintTypeSingleLine, textError)
 import Language.PureScript.Ide.Filter (Filter, moduleFilter)
 import Language.PureScript.Ide.Imports (parseImportsFromFile)
 import Language.PureScript.Ide.Logging (runErrLogger)
@@ -55,15 +56,16 @@ import Language.PureScript.Ide.State (getAllModules)
 import Language.PureScript.Ide.Types (Completion (Completion, complDocumentation, complExpandedType, complType), IdeDeclarationAnn)
 import Language.PureScript.Ide.Util (runLogger)
 import Language.PureScript.Lsp.Cache (dropTables, initDb, insertAllExterns)
+import Language.PureScript.Lsp.Cache.Query (getDeclaration)
 import Language.PureScript.Lsp.Rebuild (rebuildAllFiles, rebuildFile)
 import Language.PureScript.Lsp.State (cachedRebuild)
 import Language.PureScript.Lsp.Types (CurrentFile (CurrentFile), LspConfig (confLogLevel, confOutputPath), LspEnvironment (lspConfig, lspDbConnection))
+import Language.PureScript.Lsp.Util (efDeclComments, efDeclSourceSpan, efDeclSourceType, getWordAt)
 import Protolude hiding (to)
 import System.Directory (createDirectoryIfMissing)
 import System.FilePath (takeDirectory, (</>))
 import Text.PrettyPrint.Boxes (render)
 import "monad-logger" Control.Monad.Logger (LoggingT, mapLoggingT)
-import Language.PureScript.Lsp.Util (getWordAt)
 
 -- import Language.Haskell.LSP.VFS qualified as VFS
 
@@ -101,7 +103,7 @@ handlers diagErrs =
     [ Server.notificationHandler Message.SMethod_Initialized $ \_not -> do
         res <- fromLspWithErr do
           dropTables
-          initDb 
+          initDb
           insertAllExterns
           rebuildAllFiles
         case res of
@@ -197,22 +199,11 @@ handlers diagErrs =
             else do
               cacheMb <- fromLsp cachedRebuild
               forLsp cacheMb $ \(CurrentFile _ module' ex) -> do
-                let posInSpan :: P.SourceSpan -> Bool
-                    posInSpan (Errors.SourceSpan name (Errors.SourcePos startLine startCol) (Errors.SourcePos endLine endCol)) =
-                      startLine <= fromIntegral (line + 1)
-                        && endLine >= fromIntegral (line + 1)
-                        && startCol <= fromIntegral (col + 1)
-                        && endCol >= fromIntegral (col + 1)
-
-                    declMb :: Maybe P.Declaration
-                    declMb =
-                      getModuleDeclarations module'
-                        & find (posInSpan . fst . declSourceAnn)
+                declMb <- fromLsp $ getDeclaration (getModuleName module') word
                 forLsp declMb $ \decl -> do
-                  let (declSpan, _) = declSourceAnn decl
-                      declName = P.spanName declSpan
-                      declType = Protolude.fold $ (head :: [Text] -> Maybe Text) $ accumTypes (pure . T.pack . P.prettyPrintType maxBound) ^. _1 $ decl
-                      declComments = snd $ declSourceAnn decl
+                  let declSpan = efDeclSourceSpan decl
+                      declType = prettyPrintTypeSingleLine $ efDeclSourceType decl
+                      declComments = efDeclComments decl
                       hoverInfo =
                         Types.InL $
                           Types.Hover
@@ -230,110 +221,110 @@ handlers diagErrs =
                             )
                             Nothing
                   res $ Right hoverInfo
-            -- let moduleName' = case cache of
-            --       Just (CurrentFile mName _) -> Just mName
-            --       _ -> Nothing
+                  -- let moduleName' = case cache of
+                  --       Just (CurrentFile mName _) -> Just mName
+                  --       _ -> Nothing
 
-            -- imports <-
-            --   filePathMb
-            --     & maybe (pure Nothing) (fromLsp . parseImportsFromFile)
+                  -- imports <-
+                  --   filePathMb
+                  --     & maybe (pure Nothing) (fromLsp . parseImportsFromFile)
 
-            -- let filters :: [Filter]
-            --     filters =
-            --       imports
-            --         & maybe [] (pure . (moduleFilter . insertCurrentModule . Set.fromList . fmap getInputModName) . snd)
+                  -- let filters :: [Filter]
+                  --     filters =
+                  --       imports
+                  --         & maybe [] (pure . (moduleFilter . insertCurrentModule . Set.fromList . fmap getInputModName) . snd)
 
-            --     getInputModName (n, _, _) = n
+                  --     getInputModName (n, _, _) = n
 
-            --     insertCurrentModule :: Set P.ModuleName -> Set P.ModuleName
-            --     insertCurrentModule mods = maybe mods (flip Set.insert mods) moduleName'
+                  --     insertCurrentModule :: Set P.ModuleName -> Set P.ModuleName
+                  --     insertCurrentModule mods = maybe mods (flip Set.insert mods) moduleName'
 
-            -- completions <- fromLsp $ getExactCompletionsWithPrim word filters moduleName'
+                  -- completions <- fromLsp $ getExactCompletionsWithPrim word filters moduleName'
 
-            -- let hoverInfo = case head <$> completions of
-            --       Right (Just completion) -> completionToHoverInfo word completion
-            --       _ -> word
+                  -- let hoverInfo = case head <$> completions of
+                  --       Right (Just completion) -> completionToHoverInfo word completion
+                  --       _ -> word
 
-            -- res $
-            --   Right $
-            --     Types.InL $
-            --       Types.Hover
-            --         ( Types.InL $
-            --             Types.MarkupContent Types.MarkupKind_Markdown hoverInfo
-            --         )
-            --         Nothing
-            --             ,
-            -- Server.requestHandler Message.SMethod_TextDocumentDefinition $ \req res -> do
-            --   sendInfoMsg "SMethod_TextDocumentDefinition"
-            --   let Types.DefinitionParams docIdent pos _prog _prog' = req ^. LSP.params
-            --       filePathMb = Types.uriToFilePath $ docIdent ^. LSP.uri
-            --       uri =
-            --         req
-            --           ^. LSP.params
-            --             . LSP.textDocument
-            --             . LSP.uri
-            --             . to Types.toNormalizedUri
+                  -- res $
+                  --   Right $
+                  --     Types.InL $
+                  --       Types.Hover
+                  --         ( Types.InL $
+                  --             Types.MarkupContent Types.MarkupKind_Markdown hoverInfo
+                  --         )
+                  --         Nothing
+                  --             ,
+                  -- Server.requestHandler Message.SMethod_TextDocumentDefinition $ \req res -> do
+                  --   sendInfoMsg "SMethod_TextDocumentDefinition"
+                  --   let Types.DefinitionParams docIdent pos _prog _prog' = req ^. LSP.params
+                  --       filePathMb = Types.uriToFilePath $ docIdent ^. LSP.uri
+                  --       uri =
+                  --         req
+                  --           ^. LSP.params
+                  --             . LSP.textDocument
+                  --             . LSP.uri
+                  --             . to Types.toNormalizedUri
 
-            --       nullRes = res $ Right $ Types.InR $ Types.InR Types.Null
+                  --       nullRes = res $ Right $ Types.InR $ Types.InR Types.Null
 
-            --   vfMb <- Server.getVirtualFile uri
+                  --   vfMb <- Server.getVirtualFile uri
 
-            --   for_ vfMb \vf -> do
-            --     let word = getWordAt (VFS._file_text vf) pos
-            --     cache <- fromLsp cachedRebuild
-            --     let moduleName' = case cache of
-            --           Right (Just (mName, _)) -> Just mName
-            --           _ -> Nothing
+                  --   for_ vfMb \vf -> do
+                  --     let word = getWordAt (VFS._file_text vf) pos
+                  --     cache <- fromLsp cachedRebuild
+                  --     let moduleName' = case cache of
+                  --           Right (Just (mName, _)) -> Just mName
+                  --           _ -> Nothing
 
-            --     imports <-
-            --       filePathMb
-            --         & maybe (pure Nothing) (fmap hush . fromLsp . parseImportsFromFile)
+                  --     imports <-
+                  --       filePathMb
+                  --         & maybe (pure Nothing) (fmap hush . fromLsp . parseImportsFromFile)
 
-            --     let filters :: [Filter]
-            --         filters =
-            --           imports
-            --             & maybe [] (pure . (moduleFilter . insertCurrentModule . Set.fromList . fmap getInputModName) . snd)
+                  --     let filters :: [Filter]
+                  --         filters =
+                  --           imports
+                  --             & maybe [] (pure . (moduleFilter . insertCurrentModule . Set.fromList . fmap getInputModName) . snd)
 
-            --         getInputModName (n, _, _) = n
+                  --         getInputModName (n, _, _) = n
 
-            --         insertCurrentModule :: Set P.ModuleName -> Set P.ModuleName
-            --         insertCurrentModule mods = maybe mods (flip Set.insert mods) moduleName'
+                  --         insertCurrentModule :: Set P.ModuleName -> Set P.ModuleName
+                  --         insertCurrentModule mods = maybe mods (flip Set.insert mods) moduleName'
 
-            --     completions :: Either IdeError [Completion] <- fromLsp $ getExactCompletionsWithPrim word filters moduleName'
+                  --     completions :: Either IdeError [Completion] <- fromLsp $ getExactCompletionsWithPrim word filters moduleName'
 
-            --     sendInfoMsg $ "Completions: " <> show completions
-            --     let withLocation =
-            --           fold completions
-            --             & mapMaybe
-            --               ( \c -> case complLocation c of
-            --                   Just loc -> Just (c, loc)
-            --                   Nothing -> Nothing
-            --               )
-            --             & head
+                  --     sendInfoMsg $ "Completions: " <> show completions
+                  --     let withLocation =
+                  --           fold completions
+                  --             & mapMaybe
+                  --               ( \c -> case complLocation c of
+                  --                   Just loc -> Just (c, loc)
+                  --                   Nothing -> Nothing
+                  --               )
+                  --             & head
 
-            --     paths <- fromLsp $ Map.map snd . fsModules <$> getFileState
+                  --     paths <- fromLsp $ Map.map snd . fsModules <$> getFileState
 
-            --     case withLocation of
-            --       Just (completion, location) -> do
-            --         let fpMb =
-            --               Map.lookup (P.ModuleName . complModule $ completion) (either mempty identity paths)
+                  --     case withLocation of
+                  --       Just (completion, location) -> do
+                  --         let fpMb =
+                  --               Map.lookup (P.ModuleName . complModule $ completion) (either mempty identity paths)
 
-            --         case fpMb of
-            --           Nothing -> do
-            --             sendInfoMsg "No file path for module"
-            --             nullRes
-            --           Just fp ->
-            --             res $
-            --               Right $
-            --                 Types.InL $
-            --                   Types.Definition $
-            --                     Types.InL $
-            --                       Types.Location
-            --                         (Types.filePathToUri fp)
-            --                         (spanToRange location)
-            --       _ -> do
-            --         sendInfoMsg "No location for completion"
-            --         nullRes
+                  --         case fpMb of
+                  --           Nothing -> do
+                  --             sendInfoMsg "No file path for module"
+                  --             nullRes
+                  --           Just fp ->
+                  --             res $
+                  --               Right $
+                  --                 Types.InL $
+                  --                   Types.Definition $
+                  --                     Types.InL $
+                  --                       Types.Location
+                  --                         (Types.filePathToUri fp)
+                  --                         (spanToRange location)
+                  --       _ -> do
+                  --         sendInfoMsg "No location for completion"
+                  --         nullRes
     ]
   where
     getFileDiagnotics :: (LSP.HasUri a2 Uri, LSP.HasTextDocument a1 a2, LSP.HasParams s a1) => s -> HandlerM config ([ErrorMessage], [Types.Diagnostic])
@@ -426,7 +417,7 @@ main lspEnv = do
         defaultConfig = (),
         configSection = "oa-purescript-simple",
         doInitialize = \env _req -> do
-          logT "Init OA purs lsp server"   
+          logT "Init OA purs lsp server"
           pure $ Right env,
         staticHandlers = \_caps -> do handlers diagErrs,
         interpretHandler = \env ->

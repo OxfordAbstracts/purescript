@@ -16,7 +16,7 @@ import Language.PureScript.Ide.Externs (readExternFile)
 import Language.PureScript.Ide.Types (ModuleMap)
 import Language.PureScript.Lsp.DB qualified as DB
 import Language.PureScript.Lsp.Types (LspConfig (..), LspEnvironment (lspConfig))
-import Language.PureScript.Lsp.Util (printName, printDeclarationType)
+import Language.PureScript.Lsp.Util (efDeclCategory, efDeclName, efDeclSourceSpan, printDeclarationType, printName)
 import Protolude
 import System.Directory (doesDirectoryExist, doesFileExist, getDirectoryContents)
 import System.FilePath (normalise, (</>))
@@ -29,14 +29,16 @@ dropTables = do
   DB.execute_ "DROP TABLE IF EXISTS externs"
   DB.execute_ "DROP TABLE IF EXISTS ef_imports"
   DB.execute_ "DROP TABLE IF EXISTS ef_exports"
+  DB.execute_ "DROP TABLE IF EXISTS ef_declarations"
 
 initDb :: (MonadReader LspEnvironment m, MonadIO m) => m ()
 initDb = do
   DB.execute_ "CREATE TABLE IF NOT EXISTS modules (module_name TEXT PRIMARY KEY, path TEXT, UNIQUE(module_name), UNIQUE(path))"
   DB.execute_ "CREATE TABLE IF NOT EXISTS declarations (module_name TEXT, name TEXT, type_printed TEXT, start_col INTEGER, start_line INTEGER, end_col INTEGER, end_line INTEGER, comments TEXT, exported BOOLEAN, value BLOB, PRIMARY KEY (module_name, name))"
   DB.execute_ "CREATE TABLE IF NOT EXISTS externs (path TEXT PRIMARY KEY, ef_version TEXT, value BLOB, module_name TEXT, UNIQUE(path), UNIQUE(module_name))"
-  DB.execute_ "CREATE TABLE IF NOT EXISTS ef_imports (module_name TEXT, import_name TEXT, imported_module TEXT, import_type TEXT, imported_as TEXT)"
-  DB.execute_ "CREATE TABLE IF NOT EXISTS ef_exports (module_name TEXT, export_name TEXT, value TEXT, name TEXT, start_col INTEGER, start_line INTEGER, end_col INTEGER, end_line INTEGER)"
+  DB.execute_ "CREATE TABLE IF NOT EXISTS ef_imports (module_name TEXT, import_name TEXT, imported_module TEXT, import_type TEXT, imported_as TEXT, value BLOB)"
+  DB.execute_ "CREATE TABLE IF NOT EXISTS ef_exports (module_name TEXT, export_name TEXT, value BLOB, name TEXT, start_col INTEGER, start_line INTEGER, end_col INTEGER, end_line INTEGER)"
+  DB.execute_ "CREATE TABLE IF NOT EXISTS ef_declarations (module_name TEXT, name TEXT, value BLOB, start_col INTEGER, start_line INTEGER, end_col INTEGER, end_line INTEGER, category TEXT)"
 
 selectAllExternsMap :: (MonadIO m, MonadReader LspEnvironment m) => m (ModuleMap ExternsFile)
 selectAllExternsMap = do
@@ -96,8 +98,18 @@ insertExtern outDir extern = do
       ":value" := serialise extern,
       ":module_name" := P.runModuleName name
     ]
+  DB.executeNamed
+    (Query "DELETE FROM ef_imports WHERE module_name = :module_name")
+    [":module_name" := P.runModuleName name]
   forM_ (P.efImports extern) $ insertEfImport name
+  DB.executeNamed
+    (Query "DELETE FROM ef_exports WHERE module_name = :module_name")
+    [":module_name" := P.runModuleName name]
   forM_ (P.efExports extern) $ insertEfExport name
+  DB.executeNamed
+    (Query "DELETE FROM ef_declarations WHERE module_name = :module_name")
+    [":module_name" := P.runModuleName name]
+  forM_ (P.efDeclarations extern) $ insertEfDeclaration name
   where
     externsPath = outDir </> T.unpack (P.runModuleName name) <> externsFileName
     name = efModuleName extern
@@ -105,21 +117,29 @@ insertExtern outDir extern = do
 insertEfImport :: (MonadIO m, MonadReader LspEnvironment m) => P.ModuleName -> P.ExternsImport -> m ()
 insertEfImport moduleName' ei = do
   DB.executeNamed
-    (Query "INSERT OR REPLACE INTO ef_imports (module_name, imported_module, import_type, imported_as) VALUES (:module_name, :imported_module, :import_type, :imported_as)")
+    (Query "INSERT OR REPLACE INTO ef_imports (module_name, imported_module, import_type, imported_as, value) VALUES (:module_name, :imported_module, :import_type, :imported_as, :value)")
     [ ":module_name" := P.runModuleName moduleName',
       ":imported_module" := P.runModuleName (P.eiModule ei),
       ":import_type" := serialise (P.eiImportType ei),
-      ":imported_as" := fmap P.runModuleName (P.eiImportedAs ei)
+      ":imported_as" := fmap P.runModuleName (P.eiImportedAs ei),
+      ":value" := serialise ei
     ]
 
--- insertEfDeclaration :: (MonadIO m, MonadReader LspEnvironment m) => P.ModuleName -> P.ExternsDeclaration -> m ()
--- insertEfDeclaration moduleName' decl = do
---   DB.executeNamed
---     (Query "INSERT OR REPLACE INTO ef_declarations (module_name, value) VALUES (:module_name, :value)")
---     [ ":module_name" := P.runModuleName moduleName',
---       ":value" := serialise decl
---       -- ":name" :=
---     ]
+insertEfDeclaration :: (MonadIO m, MonadReader LspEnvironment m) => P.ModuleName -> P.ExternsDeclaration -> m ()
+insertEfDeclaration moduleName' decl = do
+  DB.executeNamed
+    (Query "INSERT OR REPLACE INTO ef_declarations (module_name, value, name, start_col, start_line, end_col, end_line, category) VALUES (:module_name, :value, :name, :start_col, :start_line, :end_col, :end_line, :category)")
+    [ ":module_name" := P.runModuleName moduleName',
+      ":name" := efDeclName decl,
+      ":value" := serialise decl,
+      ":start_col" := (P.sourcePosColumn . P.spanStart) span,
+      ":start_line" := (P.sourcePosLine . P.spanStart) span,
+      ":end_col" := (P.sourcePosColumn . P.spanEnd) span,
+      ":end_line" := (P.sourcePosLine . P.spanEnd) span,
+      ":category" := efDeclCategory decl
+    ]
+  where
+    span = efDeclSourceSpan decl
 
 insertEfExport :: (MonadIO m, MonadReader LspEnvironment m) => P.ModuleName -> P.DeclarationRef -> m ()
 insertEfExport moduleName' dr = do

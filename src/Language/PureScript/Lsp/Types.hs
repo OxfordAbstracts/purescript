@@ -16,7 +16,7 @@ data LspEnvironment = LspEnvironment
 
 mkEnv :: LspConfig -> IO LspEnvironment
 mkEnv conf = do 
-   connection <- open (confOutputPath conf <> "lsp.db") 
+   connection <- open (confOutputPath conf <> "lsp.sqlite") 
    st <- newTVarIO (LspState Nothing)
    pure $ LspEnvironment conf connection st
 
