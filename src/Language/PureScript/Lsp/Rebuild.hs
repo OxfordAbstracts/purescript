@@ -95,7 +95,7 @@ rebuildModuleOpen makeEnv externs m = void $ runExceptT do
   case openResult of
     Left _ ->
       throwError (GeneralError "Failed when rebuilding with open exports")
-    Right result -> cacheRebuild result
+    Right result -> cacheRebuild result m
 
 -- | Shuts the compiler up about progress messages
 shushProgress :: (Monad m) => P.MakeActions m -> P.MakeActions m

@@ -34,6 +34,8 @@ data LspState = LspState
 
 data CurrentFile = CurrentFile
   { currentModuleName :: P.ModuleName,
+    currentModule :: P.Module,
     currentExternsFile :: P.ExternsFile
+    
   }
   deriving (Show)

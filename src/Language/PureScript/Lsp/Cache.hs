@@ -36,8 +36,8 @@ initDb :: (MonadReader LspEnvironment m, MonadIO m) => m ()
 initDb = do
   DB.execute_ "CREATE TABLE IF NOT EXISTS modules (module_name TEXT PRIMARY KEY, path TEXT, UNIQUE(module_name), UNIQUE(path))"
   DB.execute_ "CREATE TABLE IF NOT EXISTS declarations (module_name TEXT, name TEXT, type_printed TEXT, start_col INTEGER, start_line INTEGER, end_col INTEGER, end_line INTEGER, comments TEXT, exported BOOLEAN, value BLOB, PRIMARY KEY (module_name, name))"
-  DB.execute_ "CREATE TABLE IF NOT EXISTS externs (path TEXT PRIMARY TEXT, ef_version TEXT, value BLOB, module_name TEXT, UNIQUE(path), UNIQUE(module_name))"
-  DB.execute_ "CREATE TABLE IF NOT EXISTS ef_imports (module_name TEXT, import_name TEXT, imported_module TEXT, import_type TEXT, imported_as TEXT, )"
+  DB.execute_ "CREATE TABLE IF NOT EXISTS externs (path TEXT PRIMARY KEY, ef_version TEXT, value BLOB, module_name TEXT, UNIQUE(path), UNIQUE(module_name))"
+  DB.execute_ "CREATE TABLE IF NOT EXISTS ef_imports (module_name TEXT, import_name TEXT, imported_module TEXT, import_type TEXT, imported_as TEXT)"
   DB.execute_ "CREATE TABLE IF NOT EXISTS ef_exports (module_name TEXT, export_name TEXT, value TEXT, span_name TEXT, start_col INTEGER, start_line INTEGER, end_col INTEGER, end_line INTEGER)"
 
 selectAllExternsMap :: (MonadIO m, MonadReader LspEnvironment m) => m (ModuleMap ExternsFile)
