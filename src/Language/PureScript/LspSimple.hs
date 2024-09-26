@@ -63,6 +63,7 @@ import System.Directory (createDirectoryIfMissing)
 import System.FilePath (takeDirectory, (</>))
 import Text.PrettyPrint.Boxes (render)
 import "monad-logger" Control.Monad.Logger (LoggingT, mapLoggingT)
+import Language.PureScript.Lsp.Util (getWordAt)
 
 -- import Language.Haskell.LSP.VFS qualified as VFS
 
@@ -102,7 +103,7 @@ handlers diagErrs =
           dropTables
           initDb 
           insertAllExterns
-        -- rebuildAllFiles
+          rebuildAllFiles
         case res of
           Left err -> do
             log_ err
@@ -189,43 +190,46 @@ handlers diagErrs =
             forLsp val f = maybe nullRes f val
         vfMb <- Server.getVirtualFile docUri
 
-        for_ vfMb \vf -> do
+        forLsp vfMb \vf -> do
           let word = getWordAt (VFS._file_text vf) pos
-          cacheMb <- fromLsp cachedRebuild
-          forLsp cacheMb $ \(CurrentFile _ module' ex) -> do
-            let spanAtPos :: P.SourceSpan -> Bool
-                spanAtPos (Errors.SourceSpan name (Errors.SourcePos startLine startCol) (Errors.SourcePos endLine endCol)) =
-                  startLine <= fromIntegral (line + 1)
-                    && endLine >= fromIntegral (line + 1)
-                    && startCol <= fromIntegral (col + 1)
-                    && endCol >= fromIntegral (col + 1)
+          if word == ""
+            then nullRes
+            else do
+              cacheMb <- fromLsp cachedRebuild
+              forLsp cacheMb $ \(CurrentFile _ module' ex) -> do
+                let posInSpan :: P.SourceSpan -> Bool
+                    posInSpan (Errors.SourceSpan name (Errors.SourcePos startLine startCol) (Errors.SourcePos endLine endCol)) =
+                      startLine <= fromIntegral (line + 1)
+                        && endLine >= fromIntegral (line + 1)
+                        && startCol <= fromIntegral (col + 1)
+                        && endCol >= fromIntegral (col + 1)
 
-                declMb :: Maybe P.Declaration
-                declMb =
-                  getModuleDeclarations module'
-                    & find (spanAtPos . fst . declSourceAnn)
-            forLsp declMb $ \decl -> do
-              let (declSpan, _) = declSourceAnn decl
-                  declName = P.spanName declSpan
-                  declType = Protolude.fold $ (head :: [Text] -> Maybe Text) $ accumTypes (pure . T.pack . P.prettyPrintType maxBound) ^. _1 $ decl
-                  declComments = snd $ declSourceAnn decl
-                  hoverInfo =
-                    Types.InL $
-                      Types.Hover
-                        ( Types.InL $
-                            Types.MarkupContent
-                              Types.MarkupKind_Markdown
-                              ( "```purescript\n"
-                                  <> T.pack declName
-                                  <> " :: "
-                                  <> declType
-                                  <> "\n"
-                                  <> fold (convertComments declComments)
-                                  <> "\n```"
-                              )
-                        )
-                        Nothing
-              res $ Right hoverInfo
+                    declMb :: Maybe P.Declaration
+                    declMb =
+                      getModuleDeclarations module'
+                        & find (posInSpan . fst . declSourceAnn)
+                forLsp declMb $ \decl -> do
+                  let (declSpan, _) = declSourceAnn decl
+                      declName = P.spanName declSpan
+                      declType = Protolude.fold $ (head :: [Text] -> Maybe Text) $ accumTypes (pure . T.pack . P.prettyPrintType maxBound) ^. _1 $ decl
+                      declComments = snd $ declSourceAnn decl
+                      hoverInfo =
+                        Types.InL $
+                          Types.Hover
+                            ( Types.InL $
+                                Types.MarkupContent
+                                  Types.MarkupKind_Markdown
+                                  ( "```purescript\n"
+                                      <> word
+                                      <> " :: "
+                                      <> declType
+                                      <> "\n"
+                                      <> fold (convertComments declComments)
+                                      <> "\n```"
+                                  )
+                            )
+                            Nothing
+                  res $ Right hoverInfo
             -- let moduleName' = case cache of
             --       Just (CurrentFile mName _) -> Just mName
             --       _ -> Nothing
@@ -500,34 +504,6 @@ logToFile txt =
 --   let insertPrim = Map.union idePrimDeclarations
 --   pure (getExactCompletions search filters (insertPrim modules))
 -- z = getAllModules
-
-getWordAt :: Rope -> Types.Position -> Text
-getWordAt file Types.Position {..} =
-  let (_, after) = splitAtLine (fromIntegral _line) file
-      (ropeLine, _) = splitAtLine 1 after
-      line' = Rope.toText ropeLine
-   in getWordOnLine line' _character
-
-getWordOnLine :: Text -> UInt -> Text
-getWordOnLine line' col =
-  let start = getPrevWs (fromIntegral col) line'
-      end = getNextWs (fromIntegral col) line'
-   in T.take (end - start) $ T.drop start line'
-  where
-    getNextWs :: Int -> Text -> Int
-    getNextWs idx txt | idx >= T.length txt = idx
-    getNextWs idx txt = case T.index txt idx of
-      ch | isSpace ch -> idx
-      _ -> getNextWs (idx + 1) txt
-
-    getPrevWs :: Int -> Text -> Int
-    getPrevWs 0 _ = 0
-    getPrevWs idx txt = case T.index txt idx of
-      ch | isSpace ch -> idx + 1
-      _ -> getPrevWs (idx - 1) txt
-
-pursMarkdown :: Text -> Text
-pursMarkdown txt = "```pureScript\n" <> txt <> "```"
 
 completionToHoverInfo :: Text -> Completion -> Text
 completionToHoverInfo word Completion {..} =

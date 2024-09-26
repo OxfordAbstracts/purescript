@@ -3,22 +3,20 @@
 module Language.PureScript.Lsp.Cache where
 
 import Codec.Serialise (deserialise, serialise)
-import Control.Lens (Field1 (_1), (^.), _1)
 import Data.Aeson (encode)
 import Data.Map qualified as Map
 import Data.Set qualified as Set
 import Data.Text qualified as T
 import Database.SQLite.Simple
 import Language.PureScript qualified as P
-import Language.PureScript.AST.Declarations (declSourceAnn)
-import Language.PureScript.AST.Traversals (accumTypes)
+import Language.PureScript.AST.Declarations (declName, declRefName, declSourceAnn)
 import Language.PureScript.Externs (ExternsFile (efModuleName), externsFileName)
 import Language.PureScript.Ide.Error (IdeError (GeneralError))
 import Language.PureScript.Ide.Externs (readExternFile)
 import Language.PureScript.Ide.Types (ModuleMap)
 import Language.PureScript.Lsp.DB qualified as DB
 import Language.PureScript.Lsp.Types (LspConfig (..), LspEnvironment (lspConfig))
-import Language.PureScript.Pretty.Types (prettyPrintType)
+import Language.PureScript.Lsp.Util (printName, printDeclarationType)
 import Protolude
 import System.Directory (doesDirectoryExist, doesFileExist, getDirectoryContents)
 import System.FilePath (normalise, (</>))
@@ -38,7 +36,7 @@ initDb = do
   DB.execute_ "CREATE TABLE IF NOT EXISTS declarations (module_name TEXT, name TEXT, type_printed TEXT, start_col INTEGER, start_line INTEGER, end_col INTEGER, end_line INTEGER, comments TEXT, exported BOOLEAN, value BLOB, PRIMARY KEY (module_name, name))"
   DB.execute_ "CREATE TABLE IF NOT EXISTS externs (path TEXT PRIMARY KEY, ef_version TEXT, value BLOB, module_name TEXT, UNIQUE(path), UNIQUE(module_name))"
   DB.execute_ "CREATE TABLE IF NOT EXISTS ef_imports (module_name TEXT, import_name TEXT, imported_module TEXT, import_type TEXT, imported_as TEXT)"
-  DB.execute_ "CREATE TABLE IF NOT EXISTS ef_exports (module_name TEXT, export_name TEXT, value TEXT, span_name TEXT, start_col INTEGER, start_line INTEGER, end_col INTEGER, end_line INTEGER)"
+  DB.execute_ "CREATE TABLE IF NOT EXISTS ef_exports (module_name TEXT, export_name TEXT, value TEXT, name TEXT, start_col INTEGER, start_line INTEGER, end_col INTEGER, end_line INTEGER)"
 
 selectAllExternsMap :: (MonadIO m, MonadReader LspEnvironment m) => m (ModuleMap ExternsFile)
 selectAllExternsMap = do
@@ -114,13 +112,22 @@ insertEfImport moduleName' ei = do
       ":imported_as" := fmap P.runModuleName (P.eiImportedAs ei)
     ]
 
+-- insertEfDeclaration :: (MonadIO m, MonadReader LspEnvironment m) => P.ModuleName -> P.ExternsDeclaration -> m ()
+-- insertEfDeclaration moduleName' decl = do
+--   DB.executeNamed
+--     (Query "INSERT OR REPLACE INTO ef_declarations (module_name, value) VALUES (:module_name, :value)")
+--     [ ":module_name" := P.runModuleName moduleName',
+--       ":value" := serialise decl
+--       -- ":name" :=
+--     ]
+
 insertEfExport :: (MonadIO m, MonadReader LspEnvironment m) => P.ModuleName -> P.DeclarationRef -> m ()
 insertEfExport moduleName' dr = do
   DB.executeNamed
-    (Query "INSERT OR REPLACE INTO ef_exports (module_name, value, span_name, start_col, start_line, end_col, end_line) VALUES (:module_name, :value, :span_name, :start_col, :start_line, :end_col, :end_line)")
+    (Query "INSERT OR REPLACE INTO ef_exports (module_name, value, name, start_col, start_line, end_col, end_line) VALUES (:module_name, :value, :name, :start_col, :start_line, :end_col, :end_line)")
     [ ":module_name" := P.runModuleName moduleName',
       ":value" := serialise dr,
-      ":span_name" := P.spanName span,
+      ":name" := printName (declRefName dr),
       ":start_col" := (P.sourcePosColumn . P.spanStart) span,
       ":start_line" := (P.sourcePosLine . P.spanStart) span,
       ":end_col" := (P.sourcePosColumn . P.spanEnd) span,
@@ -146,7 +153,7 @@ insertDeclaration moduleName' exportedDecls decl = do
   DB.executeNamed
     (Query "INSERT OR REPLACE INTO declarations (module_name, name, type_printed, start_col, start_line, end_col, end_line, comments, exported, value) VALUES (:module_name, :name, :type_printed, :start_col, :start_line, :end_col, :end_line, :comments, :exported, :value)")
     [ ":module_name" := P.runModuleName moduleName',
-      ":name" := P.spanName declLocation,
+      ":name" := maybe (show decl) printName (declName decl),
       ":type_printed" := typeName,
       ":start_col" := (P.sourcePosColumn . P.spanStart) declLocation,
       ":start_line" := (P.sourcePosLine . P.spanStart) declLocation,
@@ -157,10 +164,7 @@ insertDeclaration moduleName' exportedDecls decl = do
       ":value" := serialise decl
     ]
   where
-    typeName = Protolude.fold $ head typeNames
-
-    typeNames :: [Text]
-    typeNames = accumTypes (pure . T.pack . prettyPrintType maxBound) ^. _1 $ decl
+    typeName = printDeclarationType decl
 
     exported = Set.member decl exportedDecls
     (declLocation, comments) = declSourceAnn decl

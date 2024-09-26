@@ -17,16 +17,18 @@ import Language.PureScript.Ide.Rebuild (updateCacheDb)
 import Language.PureScript.Ide.Types (ModuleMap)
 import Language.PureScript.Ide.Util (ideReadFile)
 import Language.PureScript.Lsp.Cache
+import Language.PureScript.Lsp.State (cacheRebuild)
 import Language.PureScript.Lsp.Types (LspConfig (..), LspEnvironment (lspConfig))
 import Language.PureScript.Make (ffiCodegen')
 import Protolude hiding (moduleName)
 import System.FilePath.Glob (glob)
-import Language.PureScript.Lsp.State (cacheRebuild)
+import "monad-logger" Control.Monad.Logger (logWarnN, MonadLogger)
 
 rebuildAllFiles ::
   ( MonadIO m,
     MonadError IdeError m,
-    MonadReader LspEnvironment m
+    MonadReader LspEnvironment m,
+    MonadLogger m
   ) =>
   m [(FilePath, P.MultipleErrors)]
 rebuildAllFiles = do
@@ -37,11 +39,13 @@ rebuildAllFiles = do
 rebuildFile ::
   ( MonadIO m,
     MonadError IdeError m,
-    MonadReader LspEnvironment m
+    MonadReader LspEnvironment m,
+    MonadLogger m
   ) =>
   FilePath ->
   m (FilePath, P.MultipleErrors)
 rebuildFile srcPath = do
+  logWarnN $ "Rebuilding file: " <> T.pack srcPath
   (fp, input) <-
     case List.stripPrefix "data:" srcPath of
       Just source -> pure ("", T.pack source)
@@ -66,6 +70,7 @@ rebuildFile srcPath = do
     unless pureRebuild $
       updateCacheDb codegenTargets outputDirectory srcPath Nothing moduleName
     pure newExterns
+  logWarnN $ "Rebuilt file: " <> T.pack srcPath
   case result of
     Left errors ->
       throwError (RebuildError [(fp, input)] errors)
@@ -152,7 +157,6 @@ sortExterns m ex = do
     -- Sort a list so its elements appear in the same order as in another list.
     inOrderOf :: (Ord a) => [a] -> [a] -> [a]
     inOrderOf xs ys = let s = S.fromList xs in filter (`S.member` s) ys
-
 
 -- | Removes a modules export list.
 openModuleExports :: P.Module -> P.Module
