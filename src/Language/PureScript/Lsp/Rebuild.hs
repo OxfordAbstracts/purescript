@@ -1,5 +1,6 @@
 {-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE PackageImports #-}
+{-# OPTIONS_GHC -Wno-unused-matches #-}
 
 module Language.PureScript.Lsp.Rebuild where
 
@@ -9,9 +10,11 @@ import Data.Maybe (fromJust)
 import Data.Set qualified as S
 import Data.Set qualified as Set
 import Data.Text qualified as T
-import Language.PureScript qualified as P
+import Language.PureScript.AST qualified as P
 import Language.PureScript.CST qualified as CST
+import Language.PureScript.Errors qualified as P
 import Language.PureScript.Externs (ExternsFile (efModuleName))
+import Language.PureScript.Externs qualified as P
 import Language.PureScript.Ide.Error (IdeError (GeneralError, RebuildError))
 import Language.PureScript.Ide.Rebuild (updateCacheDb)
 import Language.PureScript.Ide.Types (ModuleMap)
@@ -20,21 +23,22 @@ import Language.PureScript.Lsp.Cache
 import Language.PureScript.Lsp.State (cacheRebuild)
 import Language.PureScript.Lsp.Types (LspConfig (..), LspEnvironment (lspConfig))
 import Language.PureScript.Make (ffiCodegen')
+import Language.PureScript.Make qualified as P
+import Language.PureScript.ModuleDependencies qualified as P
+import Language.PureScript.Names qualified as P
+import Language.PureScript.Options qualified as P
 import Protolude hiding (moduleName)
-import System.FilePath.Glob (glob)
-import "monad-logger" Control.Monad.Logger (logWarnN, MonadLogger)
+import "monad-logger" Control.Monad.Logger (MonadLogger, logDebugN)
 
-rebuildAllFiles ::
+rebuildFileAndDeps ::
   ( MonadIO m,
     MonadError IdeError m,
     MonadReader LspEnvironment m,
     MonadLogger m
   ) =>
-  m [(FilePath, P.MultipleErrors)]
-rebuildAllFiles = do
-  globs <- asks (confGlobs . lspConfig)
-  files <- liftIO $ concat <$> traverse glob globs
-  traverse rebuildFile files
+  FilePath ->
+  m (FilePath, P.MultipleErrors)
+rebuildFileAndDeps = rebuildFile' True
 
 rebuildFile ::
   ( MonadIO m,
@@ -44,8 +48,19 @@ rebuildFile ::
   ) =>
   FilePath ->
   m (FilePath, P.MultipleErrors)
-rebuildFile srcPath = do
-  logWarnN $ "Rebuilding file: " <> T.pack srcPath
+rebuildFile = rebuildFile' False
+
+rebuildFile' ::
+  ( MonadIO m,
+    MonadError IdeError m,
+    MonadReader LspEnvironment m,
+    MonadLogger m
+  ) =>
+  Bool ->
+  FilePath ->
+  m (FilePath, P.MultipleErrors)
+rebuildFile' rebuildDeps srcPath = do
+  logDebugN $ "Rebuilding file: " <> T.pack srcPath
   (fp, input) <-
     case List.stripPrefix "data:" srcPath of
       Just source -> pure ("", T.pack source)
@@ -56,6 +71,12 @@ rebuildFile srcPath = do
     Right m -> pure m
   let moduleName = P.getModuleName m
   externs <- sortExterns m =<< selectAllExternsMap
+  logDebugN $ "Sorted externs: " <> T.pack (show $ map P.efModuleName externs)
+  when rebuildDeps do 
+    forM_ externs \ef -> do
+      let depSrcPath = P.spanName $ P.efSourceSpan ef
+      logDebugN $ "Rebuilding dependency: " <> T.pack depSrcPath
+      rebuildFile' False depSrcPath
   outputDirectory <- asks (confOutputPath . lspConfig)
   let filePathMap = M.singleton moduleName (Left P.RebuildAlways)
   let pureRebuild = fp == ""
@@ -70,14 +91,14 @@ rebuildFile srcPath = do
     unless pureRebuild $
       updateCacheDb codegenTargets outputDirectory srcPath Nothing moduleName
     pure newExterns
-  logWarnN $ "Rebuilt file: " <> T.pack srcPath
   case result of
     Left errors ->
       throwError (RebuildError [(fp, input)] errors)
     Right newExterns -> do
       insertModule fp m
-      insertExtern outputDirectory newExterns
+      insertExtern newExterns
       rebuildModuleOpen makeEnv externs m
+      logDebugN $ "Rebuilt file: " <> T.pack srcPath
       pure (fp, CST.toMultipleWarnings fp pwarnings <> warnings)
   where
     codegenTargets = Set.singleton P.JS

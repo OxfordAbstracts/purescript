@@ -1,4 +1,6 @@
 {-# OPTIONS_GHC -Wno-unused-imports #-}
+{-# OPTIONS_GHC -Wno-unused-matches #-}
+{-# OPTIONS_GHC -Wno-redundant-constraints #-}
 
 module Language.PureScript.Lsp.Cache.Query where
 
@@ -12,7 +14,10 @@ import Data.Set qualified as Set
 import Data.Text qualified as T
 import Database.SQLite.Simple
 import Language.LSP.Protocol.Types (Position)
-import Language.PureScript qualified as P
+import Language.PureScript.AST qualified as P
+import Language.PureScript.Comments qualified as P
+import Language.PureScript.Externs qualified as P
+import Language.PureScript.Names qualified as P
 import Language.PureScript.AST.Declarations (declSourceAnn)
 import Language.PureScript.AST.Traversals (accumTypes)
 import Language.PureScript.Externs (ExternsFile (efModuleName), externsFileName)
@@ -21,14 +26,15 @@ import Language.PureScript.Ide.Externs (readExternFile)
 import Language.PureScript.Ide.Types (ModuleMap)
 import Language.PureScript.Lsp.DB qualified as DB
 import Language.PureScript.Lsp.Types (LspConfig (..), LspEnvironment (lspConfig))
-import Language.PureScript.Lsp.Util (printName)
 import Language.PureScript.Pretty.Types (prettyPrintType)
 import Protolude
 import System.Directory (doesDirectoryExist, doesFileExist, getDirectoryContents)
 import System.FilePath (normalise, (</>))
+import Control.Monad.Trans.Writer (execWriterT)
+import Language.PureScript.Lsp.Print (printName)
 
--- getDeclarationAt :: (MonadIO m, MonadReader LspEnvironment m) => Position -> m (Maybe P.Declaration)
--- getDeclarationAt pos = do
+-- getEfDeclarationAt :: (MonadIO m, MonadReader LspEnvironment m) => Position -> m (Maybe P.Declaration)
+-- getEfDeclarationAt pos = do
 --   decls <-
 --     DB.queryNamed
 --       "SELECT * FROM declarations WHERE startLine <= :line AND endLine >= :line AND startColumn <= :column AND endColumn >= :column"
@@ -36,9 +42,7 @@ import System.FilePath (normalise, (</>))
 --       , ":column" := column
 --       ]
 --   pure $ listToMaybe decls
-
 -- getImportedModules
-
 
 getEfImports :: (MonadIO m, MonadReader LspEnvironment m) => P.ModuleName -> m [P.ExternsImport]
 getEfImports moduleName' = do
@@ -54,24 +58,29 @@ importMightContainIdent ident import' = case P.eiImportType import' of
   P.Explicit refs -> any ((==) ident . printName . P.declRefName) refs
   P.Hiding refs -> not $ any ((==) ident . printName . P.declRefName) refs
 
-getDeclaration :: (MonadIO m, MonadReader LspEnvironment m) => P.ModuleName -> Text -> m (Maybe P.ExternsDeclaration)
-getDeclaration moduleName' name = do 
+getEfDeclaration :: (MonadIO m, MonadReader LspEnvironment m) => P.ModuleName -> Text -> m (Maybe (P.ModuleName, P.ExternsDeclaration))
+getEfDeclaration moduleName' name = do
   inModule <- getEfDeclarationOnlyInModule moduleName' name
   case inModule of
-    Just decl -> pure $ Just decl
-    Nothing -> getImportedDeclaration moduleName' name
+    Just decl -> pure $ Just (moduleName', decl)
+    Nothing -> getEFImportedDeclaration moduleName' name
 
-
-getImportedDeclaration :: (MonadIO m, MonadReader LspEnvironment m) => P.ModuleName -> Text -> m (Maybe P.ExternsDeclaration)
-getImportedDeclaration moduleName' name = do
+getEFImportedDeclaration :: (MonadIO m, MonadReader LspEnvironment m) => P.ModuleName -> Text -> m (Maybe (P.ModuleName, P.ExternsDeclaration))
+getEFImportedDeclaration moduleName' name = do
   imports <- filter (importMightContainIdent name) <$> getEfImports moduleName'
   foldM go Nothing imports
   where
-    go :: (MonadIO m, MonadReader LspEnvironment m) => Maybe P.ExternsDeclaration -> P.ExternsImport -> m (Maybe P.ExternsDeclaration)
+    go ::
+      (MonadIO m, MonadReader LspEnvironment m) =>
+      Maybe (P.ModuleName, P.ExternsDeclaration) ->
+      P.ExternsImport ->
+      m (Maybe (P.ModuleName, P.ExternsDeclaration))
     go acc import' = do
       case acc of
         Just _ -> pure acc
-        Nothing -> getEfDeclarationOnlyInModule (P.eiModule import') name
+        Nothing -> fmap (toTup $ P.eiModule import') <$> getEfDeclarationOnlyInModule (P.eiModule import') name
+
+    toTup a b = (a, b)
 
 getEfDeclarationOnlyInModule :: (MonadIO m, MonadReader LspEnvironment m) => P.ModuleName -> Text -> m (Maybe P.ExternsDeclaration)
 getEfDeclarationOnlyInModule moduleName' name = do
@@ -82,3 +91,21 @@ getEfDeclarationOnlyInModule moduleName' name = do
         ":name" := name
       ]
   pure $ deserialise . fromOnly <$> listToMaybe decls
+
+getDeclaration :: (MonadIO m, MonadReader LspEnvironment m) => P.ModuleName -> Text -> m (Maybe P.Declaration)
+getDeclaration moduleName' name = do
+  decls <-
+    DB.queryNamed
+      "SELECT value FROM declarations WHERE module_name = :module_name AND name = :name"
+      [ ":module_name" := P.runModuleName moduleName',
+        ":name" := name
+      ]
+  pure $ deserialise . fromOnly <$> listToMaybe decls
+
+
+getDeclarationDocumentation :: (MonadIO m, MonadReader LspEnvironment m) => P.Module -> P.Declaration -> m [P.Comment]
+getDeclarationDocumentation module' decl = 
+   execWriterT $ do 
+    P.everywhereOnValuesM handleDecl pure pure ^. _1 $ decl
+  where 
+    handleDecl = pure

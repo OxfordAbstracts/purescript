@@ -342,7 +342,9 @@ library
     Language.PureScript.Lsp
     Language.PureScript.Lsp.DB
     Language.PureScript.Lsp.Cache
+    Language.PureScript.Lsp.Cache.IO
     Language.PureScript.Lsp.Cache.Query
+    Language.PureScript.Lsp.Print
     Language.PureScript.Lsp.Rebuild
     Language.PureScript.Lsp.State
     Language.PureScript.Lsp.Types

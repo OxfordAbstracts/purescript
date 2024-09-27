@@ -28,7 +28,7 @@ command = Opts.helper <*> subcommands
             "server"
             ( Opts.info
                 (fmap server serverOptions <**> Opts.helper)
-                (Opts.progDesc "Start a server process")
+                (Opts.progDesc "Start a server LSP process")
             )
         ]
 
@@ -36,13 +36,13 @@ command = Opts.helper <*> subcommands
     server opts'@(ServerOptions dir globs _globsFromFile _globsExcluded outputPath logLevel) = do
       when
         (logLevel == LogDebug || logLevel == LogAll)
-        (putText "Parsed Options:" *> print opts')
+        (hPutStrLn stderr ("Parsed Options:" :: Text) *> hPutStrLn stderr (show opts' :: Text))
       maybe (pure ()) setCurrentDirectory dir
       let conf =
             LspConfig
               { confOutputPath = outputPath,
-                confGlobs = globs,
-                confLogLevel = logLevel
+                confGlobs = globs
+                -- confLogLevel = logLevel
               }
       env <- mkEnv conf
       startServer env
