@@ -39,5 +39,5 @@ printEfDeclName = \case
   P.EDTypeSynonym name _ _ -> P.runProperName name
   P.EDDataConstructor name _ _ _ _ -> P.runProperName name
   P.EDValue ident _ -> P.runIdent ident
-  P.EDClass name _ _ _ _ _ _ -> P.runProperName name
+  P.EDClass name _ _ _ _ _ -> P.runProperName name
   P.EDInstance name _ _ _ _ _ _ _ _ _ -> P.runProperName $ P.disqualify name

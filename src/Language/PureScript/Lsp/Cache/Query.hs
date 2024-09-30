@@ -1,6 +1,6 @@
-{-# OPTIONS_GHC -Wno-unused-imports #-}
-{-# OPTIONS_GHC -Wno-unused-matches #-}
+{-# LANGUAGE PackageImports #-}
 {-# OPTIONS_GHC -Wno-redundant-constraints #-}
+{-# OPTIONS_GHC -Wno-unused-imports #-}
 
 module Language.PureScript.Lsp.Cache.Query where
 
@@ -8,30 +8,35 @@ module Language.PureScript.Lsp.Cache.Query where
 
 import Codec.Serialise (deserialise, serialise)
 import Control.Lens (Field1 (_1), (^.), _1)
+import Control.Monad.Trans.Writer (execWriterT)
 import Data.Aeson (encode)
+import Data.ByteString.Lazy qualified as Lazy
+import Data.List qualified as List
 import Data.Map qualified as Map
 import Data.Set qualified as Set
 import Data.Text qualified as T
-import Database.SQLite.Simple
+import Database.SQLite.Simple (NamedParam ((:=)), fromOnly)
 import Language.LSP.Protocol.Types (Position)
 import Language.PureScript.AST qualified as P
-import Language.PureScript.Comments qualified as P
-import Language.PureScript.Externs qualified as P
-import Language.PureScript.Names qualified as P
-import Language.PureScript.AST.Declarations (declSourceAnn)
+import Language.PureScript.AST.Declarations (declRefName, declSourceAnn)
 import Language.PureScript.AST.Traversals (accumTypes)
+import Language.PureScript.Comments qualified as P
 import Language.PureScript.Externs (ExternsFile (efModuleName), externsFileName)
+import Language.PureScript.Externs qualified as P
 import Language.PureScript.Ide.Error (IdeError (GeneralError))
 import Language.PureScript.Ide.Externs (readExternFile)
 import Language.PureScript.Ide.Types (ModuleMap)
 import Language.PureScript.Lsp.DB qualified as DB
+import Language.PureScript.Lsp.Print (printName)
 import Language.PureScript.Lsp.Types (LspConfig (..), LspEnvironment (lspConfig))
+import Language.PureScript.Names qualified as P
 import Language.PureScript.Pretty.Types (prettyPrintType)
 import Protolude
 import System.Directory (doesDirectoryExist, doesFileExist, getDirectoryContents)
 import System.FilePath (normalise, (</>))
-import Control.Monad.Trans.Writer (execWriterT)
-import Language.PureScript.Lsp.Print (printName)
+import "monad-logger" Control.Monad.Logger (LoggingT, MonadLogger, logDebugN, logErrorN, logWarnN, mapLoggingT)
+
+-- import Control.Monad.Logger (logDebugN)
 
 -- getEfDeclarationAt :: (MonadIO m, MonadReader LspEnvironment m) => Position -> m (Maybe P.Declaration)
 -- getEfDeclarationAt pos = do
@@ -44,6 +49,9 @@ import Language.PureScript.Lsp.Print (printName)
 --   pure $ listToMaybe decls
 -- getImportedModules
 
+getEfImportsMap :: (MonadIO f, MonadReader LspEnvironment f) => [P.ModuleName] -> f (Map P.ModuleName [P.DeclarationRef])
+getEfImportsMap mNames = Map.fromListWith (++) . fmap (fmap List.singleton) <$> getEfExports mNames
+
 getEfImports :: (MonadIO m, MonadReader LspEnvironment m) => P.ModuleName -> m [P.ExternsImport]
 getEfImports moduleName' = do
   imports <-
@@ -52,37 +60,71 @@ getEfImports moduleName' = do
       [":module_name" := P.runModuleName moduleName']
   pure $ deserialise . fromOnly <$> imports
 
-importMightContainIdent :: Text -> P.ExternsImport -> Bool
-importMightContainIdent ident import' = case P.eiImportType import' of
-  P.Implicit -> True
-  P.Explicit refs -> any ((==) ident . printName . P.declRefName) refs
-  P.Hiding refs -> not $ any ((==) ident . printName . P.declRefName) refs
+getEfExports :: (MonadIO m, MonadReader LspEnvironment m) => [P.ModuleName] -> m [(P.ModuleName, P.DeclarationRef)]
+getEfExports moduleNames = do
+  exports :: [(Text, Lazy.ByteString)] <-
+    DB.queryNamed
+      "SELECT module_name, value FROM ef_exports WHERE module_name IN (SELECT value FROM json_each(:module_names))"
+      [ ":module_names" := encode (fmap P.runModuleName moduleNames)
+      ]
+  pure $ bimap P.ModuleName deserialise <$> exports
 
-getEfDeclaration :: (MonadIO m, MonadReader LspEnvironment m) => P.ModuleName -> Text -> m (Maybe (P.ModuleName, P.ExternsDeclaration))
+importContainsIdent :: Text -> P.ExternsImport -> Maybe Bool
+importContainsIdent ident import' = case P.eiImportType import' of
+  P.Implicit -> Nothing
+  P.Explicit refs -> Just $ any ((==) ident . printName . P.declRefName) refs
+  P.Hiding refs ->
+    if any ((==) ident . printName . P.declRefName) refs
+      then Just False
+      else Nothing
+
+getEfDeclaration :: (MonadIO m, MonadLogger m, MonadReader LspEnvironment m) => P.ModuleName -> Text -> m (Maybe (P.ModuleName, P.ExternsDeclaration))
 getEfDeclaration moduleName' name = do
   inModule <- getEfDeclarationOnlyInModule moduleName' name
   case inModule of
     Just decl -> pure $ Just (moduleName', decl)
     Nothing -> getEFImportedDeclaration moduleName' name
 
-getEFImportedDeclaration :: (MonadIO m, MonadReader LspEnvironment m) => P.ModuleName -> Text -> m (Maybe (P.ModuleName, P.ExternsDeclaration))
+getEFImportedDeclaration :: forall m. (MonadIO m, MonadLogger m, MonadReader LspEnvironment m) => P.ModuleName -> Text -> m (Maybe (P.ModuleName, P.ExternsDeclaration))
 getEFImportedDeclaration moduleName' name = do
-  imports <- filter (importMightContainIdent name) <$> getEfImports moduleName'
-  foldM go Nothing imports
+  imports <- getEfImports moduleName'
+  exported <- getEfImportsMap (fmap P.eiModule imports)
+  foldM (getFromModule exported) Nothing imports
   where
-    go ::
-      (MonadIO m, MonadReader LspEnvironment m) =>
-      Maybe (P.ModuleName, P.ExternsDeclaration) ->
-      P.ExternsImport ->
-      m (Maybe (P.ModuleName, P.ExternsDeclaration))
-    go acc import' = do
+    getFromModule exported acc import' = do
       case acc of
         Just _ -> pure acc
-        Nothing -> fmap (toTup $ P.eiModule import') <$> getEfDeclarationOnlyInModule (P.eiModule import') name
+        Nothing -> case importContainsIdent name import' of
+          Just False -> pure acc
+          _ -> do
+            inModule <- getEfDeclarationOnlyInModule importModName name
+            case inModule of
+              Just decl -> pure $ Just (importModName, decl)
+              Nothing -> getFromExports
+      where
+        importModName = P.eiModule import'
+        moduleExports = fromMaybe [] $ Map.lookup importModName exported
 
-    toTup a b = (a, b)
+        getFromExports :: m (Maybe (P.ModuleName, P.ExternsDeclaration))
+        getFromExports = foldM getFromExport Nothing moduleExports
 
-getEfDeclarationOnlyInModule :: (MonadIO m, MonadReader LspEnvironment m) => P.ModuleName -> Text -> m (Maybe P.ExternsDeclaration)
+        getFromExport ::
+          Maybe (P.ModuleName, P.ExternsDeclaration) ->
+          P.DeclarationRef ->
+          m (Maybe (P.ModuleName, P.ExternsDeclaration))
+        getFromExport acc' export' = do
+          case acc of
+            Just _ -> pure acc'
+            Nothing -> do
+              case export' of
+                P.ModuleRef _ mName -> getEfDeclaration mName name
+                P.ReExportRef _ss (P.ExportSource _ definedIn) ref
+                  | printName (declRefName ref) == name ->
+                      fmap (definedIn,) <$> getEfDeclarationOnlyInModule definedIn name
+                _ -> pure acc'
+
+
+getEfDeclarationOnlyInModule :: (MonadIO m, MonadLogger m, MonadReader LspEnvironment m) => P.ModuleName -> Text -> m (Maybe P.ExternsDeclaration)
 getEfDeclarationOnlyInModule moduleName' name = do
   decls <-
     DB.queryNamed
@@ -90,22 +132,15 @@ getEfDeclarationOnlyInModule moduleName' name = do
       [ ":module_name" := P.runModuleName moduleName',
         ":name" := name
       ]
+  logDebugN $ "getEfDeclarationOnlyInModule decls: " <> show moduleName' <> " . " <> show name <> " : " <> T.pack (show $ length decls)
   pure $ deserialise . fromOnly <$> listToMaybe decls
 
 getDeclaration :: (MonadIO m, MonadReader LspEnvironment m) => P.ModuleName -> Text -> m (Maybe P.Declaration)
-getDeclaration moduleName' name = do
+getDeclaration moduleName' printed_name = do
   decls <-
     DB.queryNamed
-      "SELECT value FROM declarations WHERE module_name = :module_name AND name = :name"
+      "SELECT value FROM declarations WHERE module_name = :module_name AND printed_name = :printed_name"
       [ ":module_name" := P.runModuleName moduleName',
-        ":name" := name
+        ":printed_name" := printed_name
       ]
   pure $ deserialise . fromOnly <$> listToMaybe decls
-
-
-getDeclarationDocumentation :: (MonadIO m, MonadReader LspEnvironment m) => P.Module -> P.Declaration -> m [P.Comment]
-getDeclarationDocumentation module' decl = 
-   execWriterT $ do 
-    P.everywhereOnValuesM handleDecl pure pure ^. _1 $ decl
-  where 
-    handleDecl = pure

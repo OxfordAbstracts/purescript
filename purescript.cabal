@@ -344,6 +344,7 @@ library
     Language.PureScript.Lsp.Cache
     Language.PureScript.Lsp.Cache.IO
     Language.PureScript.Lsp.Cache.Query
+    Language.PureScript.Lsp.Prim
     Language.PureScript.Lsp.Print
     Language.PureScript.Lsp.Rebuild
     Language.PureScript.Lsp.State

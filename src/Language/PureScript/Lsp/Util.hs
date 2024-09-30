@@ -124,7 +124,7 @@ efDeclSourceType = \case
 
 efDeclSourceSpan :: P.ExternsDeclaration -> P.SourceSpan
 efDeclSourceSpan = \case
-  P.EDClass _ _ _ _ _ _ span -> span
+  P.EDClass _ _ _ _ _ _ -> P.nullSourceSpan
   P.EDInstance _ _ _ _ _ _ _ _ _ span -> span
   ed ->
     fromMaybe P.nullSourceSpan $ foldr (\(ss, _) _ -> Just ss) Nothing (efDeclSourceType ed)

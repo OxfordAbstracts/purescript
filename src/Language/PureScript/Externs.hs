@@ -143,7 +143,6 @@ data ExternsDeclaration =
       , edClassConstraints        :: [SourceConstraint]
       , edFunctionalDependencies  :: [FunctionalDependency]
       , edIsEmpty                 :: Bool
-      , edSourceSpan              :: SourceSpan 
       }
   -- | An instance declaration
   | EDInstance
@@ -177,7 +176,7 @@ applyExternsFileToEnvironment ExternsFile{..} = flip (foldl' applyDecl) efDeclar
   applyDecl env (EDTypeSynonym pn args ty) = env { typeSynonyms = M.insert (qual pn) (args, ty) (typeSynonyms env) }
   applyDecl env (EDDataConstructor pn dTy tNm ty nms) = env { dataConstructors = M.insert (qual pn) (dTy, tNm, ty, nms) (dataConstructors env) }
   applyDecl env (EDValue ident ty) = env { names = M.insert (Qualified (ByModuleName efModuleName) ident) (ty, External, Defined) (names env) }
-  applyDecl env (EDClass pn args members cs deps tcIsEmpty _) = env { typeClasses = M.insert (qual pn) (makeTypeClassData args members cs deps tcIsEmpty) (typeClasses env) }
+  applyDecl env (EDClass pn args members cs deps tcIsEmpty) = env { typeClasses = M.insert (qual pn) (makeTypeClassData args members cs deps tcIsEmpty) (typeClasses env) }
   applyDecl env (EDInstance className ident vars kinds tys cs ch idx ns ss) =
     env { typeClassDictionaries =
             updateMap
@@ -248,7 +247,7 @@ moduleToExternsFile (Module ss _ mn ds (Just exps)) env renamedIdents = ExternsF
   toExternsDeclaration (ValueRef _ ident)
     | Just (ty, _, _) <- Qualified (ByModuleName mn) ident `M.lookup` names env
     = [ EDValue (lookupRenamedIdent ident) ty ]
-  toExternsDeclaration (TypeClassRef ss' className)
+  toExternsDeclaration (TypeClassRef _ss className)
     | let dictName = dictTypeName . coerceProperName $ className
     , Just TypeClassData{..} <- Qualified (ByModuleName mn) className `M.lookup` typeClasses env
     , Just (kind, tk) <- Qualified (ByModuleName mn) (coerceProperName className) `M.lookup` types env
@@ -257,7 +256,7 @@ moduleToExternsFile (Module ss _ mn ds (Just exps)) env renamedIdents = ExternsF
     = [ EDType (coerceProperName className) kind tk
       , EDType dictName dictKind dictData
       , EDDataConstructor dctor dty dictName ty args
-      , EDClass className typeClassArguments ((\(a, b, _) -> (a, b)) <$> typeClassMembers) typeClassSuperclasses typeClassDependencies typeClassIsEmpty ss'
+      , EDClass className typeClassArguments ((\(a, b, _) -> (a, b)) <$> typeClassMembers) typeClassSuperclasses typeClassDependencies typeClassIsEmpty
       ]
   toExternsDeclaration (TypeInstanceRef ss' ident ns)
     = [ EDInstance tcdClassName (lookupRenamedIdent ident) tcdForAll tcdInstanceKinds tcdInstanceTypes tcdDependencies tcdChain tcdIndex ns ss'

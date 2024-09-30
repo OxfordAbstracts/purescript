@@ -24,6 +24,7 @@ import Protolude
 import System.Directory (doesDirectoryExist, doesFileExist, getDirectoryContents, makeAbsolute)
 import System.FilePath (normalise, (</>))
 import "monad-logger" Control.Monad.Logger (MonadLogger)
+-- import Language.PureScript.Lsp.Prim (primExterns)
 
 dropTables :: (MonadIO m, MonadReader LspEnvironment m) => m ()
 dropTables = do
@@ -42,6 +43,7 @@ initDb = do
   DB.execute_ "CREATE TABLE IF NOT EXISTS ef_imports (module_name TEXT, imported_module TEXT, import_type TEXT, imported_as TEXT, value BLOB)"
   DB.execute_ "CREATE TABLE IF NOT EXISTS ef_exports (module_name TEXT, export_name TEXT, value BLOB, name BLOB, printed_name TEXT, start_col INTEGER, start_line INTEGER, end_col INTEGER, end_line INTEGER)"
   DB.execute_ "CREATE TABLE IF NOT EXISTS ef_declarations (module_name TEXT, name TEXT, value BLOB, start_col INTEGER, start_line INTEGER, end_col INTEGER, end_line INTEGER, category TEXT, shown TEXT)"
+  -- traverse_ insertExtern primExterns
 
 selectAllExternsMap :: (MonadIO m, MonadReader LspEnvironment m) => m (Map P.ModuleName ExternsFile)
 selectAllExternsMap = do

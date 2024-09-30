@@ -72,11 +72,14 @@ rebuildFile' rebuildDeps srcPath = do
   let moduleName = P.getModuleName m
   externs <- sortExterns m =<< selectAllExternsMap
   logDebugN $ "Sorted externs: " <> T.pack (show $ map P.efModuleName externs)
-  when rebuildDeps do 
+  when rebuildDeps do
     forM_ externs \ef -> do
       let depSrcPath = P.spanName $ P.efSourceSpan ef
-      logDebugN $ "Rebuilding dependency: " <> T.pack depSrcPath
-      rebuildFile' False depSrcPath
+          modName = P.runModuleName $ P.efModuleName ef
+      when (modName /= "Prim" && T.take 5 modName /= "Prim.") do
+        logDebugN $ "Rebuilding dependency: " <> T.pack depSrcPath
+        void $ rebuildFile' False depSrcPath
+
   outputDirectory <- asks (confOutputPath . lspConfig)
   let filePathMap = M.singleton moduleName (Left P.RebuildAlways)
   let pureRebuild = fp == ""
@@ -87,7 +90,7 @@ rebuildFile' rebuildDeps srcPath = do
           & (if pureRebuild then enableForeignCheck foreigns codegenTargets . shushCodegen else identity)
           & shushProgress
   (result, warnings) <- liftIO $ P.runMake (P.defaultOptions {P.optionsCodegenTargets = codegenTargets}) do
-    newExterns <- P.rebuildModule makeEnv externs m
+    (newExterns, coreFn, docs) <- P.rebuildModuleAndGetArtifacts makeEnv externs m
     unless pureRebuild $
       updateCacheDb codegenTargets outputDirectory srcPath Nothing moduleName
     pure newExterns
