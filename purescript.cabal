@@ -281,6 +281,7 @@ library
     Language.PureScript.Comments
     Language.PureScript.Constants.Prim
     Language.PureScript.Crash
+    Language.PureScript.DB
     Language.PureScript.Docs
     Language.PureScript.Docs.AsHtml
     Language.PureScript.Docs.AsMarkdown
@@ -355,6 +356,7 @@ library
     Language.PureScript.Make.Actions
     Language.PureScript.Make.BuildPlan
     Language.PureScript.Make.Cache
+    Language.PureScript.Make.Index
     Language.PureScript.Make.Monad
     Language.PureScript.ModuleDependencies
     Language.PureScript.Names

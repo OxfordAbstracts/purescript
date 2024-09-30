@@ -4,6 +4,7 @@ import Prelude
 
 import Control.Applicative (Alternative(..))
 import Control.Monad (when)
+import Control.Monad.IO.Class (liftIO)
 import Data.Aeson qualified as A
 import Data.Bool (bool)
 import Data.ByteString.Lazy.UTF8 qualified as LBU8
@@ -24,6 +25,8 @@ import System.Exit (exitSuccess, exitFailure)
 import System.Directory (getCurrentDirectory)
 import System.IO (hPutStr, stderr, stdout)
 import System.IO.UTF8 (readUTF8FilesT)
+import Language.PureScript.Make.Index (addCoreFnIndexing, initDb)
+import Language.PureScript.DB (mkConnection)
 
 data PSCMakeOptions = PSCMakeOptions
   { pscmInput        :: [FilePath]
@@ -72,7 +75,10 @@ compile PSCMakeOptions{..} = do
     ms <- CST.parseModulesFromFiles id moduleFiles
     let filePathMap = M.fromList $ map (\(fp, pm) -> (P.getModuleName $ CST.resPartial pm, Right fp)) ms
     foreigns <- inferForeignModules filePathMap
-    let makeActions = buildMakeActions pscmOutputDir filePathMap foreigns pscmUsePrefix
+    conn <- liftIO $ mkConnection pscmOutputDir
+    liftIO $ initDb conn
+    let makeActions 
+          = addCoreFnIndexing conn $ buildMakeActions pscmOutputDir filePathMap foreigns pscmUsePrefix
     P.make makeActions (map snd ms)
   printWarningsAndErrors (P.optionsVerboseErrors pscmOpts) pscmJSONErrors moduleFiles makeWarnings makeErrors
   exitSuccess

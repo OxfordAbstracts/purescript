@@ -21,7 +21,7 @@ import Language.PureScript.Ide.Types (ModuleMap)
 import Language.PureScript.Ide.Util (ideReadFile)
 import Language.PureScript.Lsp.Cache
 import Language.PureScript.Lsp.State (cacheRebuild)
-import Language.PureScript.Lsp.Types (LspConfig (..), LspEnvironment (lspConfig))
+import Language.PureScript.Lsp.Types (LspConfig (..), LspEnvironment (lspConfig, lspDbConnection))
 import Language.PureScript.Make (ffiCodegen')
 import Language.PureScript.Make qualified as P
 import Language.PureScript.ModuleDependencies qualified as P
@@ -29,6 +29,7 @@ import Language.PureScript.Names qualified as P
 import Language.PureScript.Options qualified as P
 import Protolude hiding (moduleName)
 import "monad-logger" Control.Monad.Logger (MonadLogger, logDebugN)
+import Language.PureScript.Make.Index (addCoreFnIndexing)
 
 rebuildFileAndDeps ::
   ( MonadIO m,
@@ -85,12 +86,15 @@ rebuildFile' rebuildDeps srcPath = do
   let pureRebuild = fp == ""
   let modulePath = if pureRebuild then fp else srcPath
   foreigns <- P.inferForeignModules (M.singleton moduleName (Right modulePath))
+  conn <- asks lspDbConnection
   let makeEnv =
         P.buildMakeActions outputDirectory filePathMap foreigns False
           & (if pureRebuild then enableForeignCheck foreigns codegenTargets . shushCodegen else identity)
           & shushProgress
+          & addCoreFnIndexing conn
   (result, warnings) <- liftIO $ P.runMake (P.defaultOptions {P.optionsCodegenTargets = codegenTargets}) do
     (newExterns, coreFn, docs) <- P.rebuildModuleAndGetArtifacts makeEnv externs m
+    putErrLn $ "Rebuilt module: " <> T.pack (show coreFn)
     unless pureRebuild $
       updateCacheDb codegenTargets outputDirectory srcPath Nothing moduleName
     pure newExterns
@@ -138,6 +142,8 @@ shushCodegen ma =
     { P.codegen = \_ _ _ -> pure (),
       P.ffiCodegen = \_ -> pure ()
     }
+
+-- add
 
 enableForeignCheck ::
   M.Map P.ModuleName FilePath ->
