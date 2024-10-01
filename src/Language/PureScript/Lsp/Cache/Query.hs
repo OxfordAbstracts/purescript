@@ -10,17 +10,26 @@ import Codec.Serialise (deserialise, serialise)
 import Control.Lens (Field1 (_1), (^.), _1)
 import Control.Monad.Trans.Writer (execWriterT)
 import Data.Aeson (encode)
+import Data.Aeson.Types qualified as A
 import Data.ByteString.Lazy qualified as Lazy
 import Data.List qualified as List
 import Data.Map qualified as Map
 import Data.Set qualified as Set
+import Data.String (fromString)
 import Data.Text qualified as T
 import Database.SQLite.Simple (NamedParam ((:=)), fromOnly)
+import Database.SQLite.Simple qualified as SQL
+import GHC.Base (String)
+import GHC.Real (Integral (toInteger))
 import Language.LSP.Protocol.Types (Position)
+import Language.LSP.Protocol.Types qualified as LSP
 import Language.PureScript.AST qualified as P
 import Language.PureScript.AST.Declarations (declRefName, declSourceAnn)
 import Language.PureScript.AST.Traversals (accumTypes)
 import Language.PureScript.Comments qualified as P
+import Language.PureScript.CoreFn qualified as CF
+import Language.PureScript.CoreFn.Expr as CF
+import Language.PureScript.CoreFn.FromJSON qualified as CF
 import Language.PureScript.Externs (ExternsFile (efModuleName), externsFileName)
 import Language.PureScript.Externs qualified as P
 import Language.PureScript.Ide.Error (IdeError (GeneralError))
@@ -32,9 +41,11 @@ import Language.PureScript.Lsp.Types (LspConfig (..), LspEnvironment (lspConfig)
 import Language.PureScript.Names qualified as P
 import Language.PureScript.Pretty.Types (prettyPrintType)
 import Protolude
+import Protolude qualified as Either
 import System.Directory (doesDirectoryExist, doesFileExist, getDirectoryContents)
 import System.FilePath (normalise, (</>))
 import "monad-logger" Control.Monad.Logger (LoggingT, MonadLogger, logDebugN, logErrorN, logWarnN, mapLoggingT)
+import Language.PureScript (Ident)
 
 -- import Control.Monad.Logger (logDebugN)
 
@@ -48,6 +59,61 @@ import "monad-logger" Control.Monad.Logger (LoggingT, MonadLogger, logDebugN, lo
 --       ]
 --   pure $ listToMaybe decls
 -- getImportedModules
+
+getCoreFnExprAt :: (MonadIO m, MonadReader LspEnvironment m) => FilePath -> LSP.Position -> m (Maybe (CF.Expr CF.Ann))
+getCoreFnExprAt path (LSP.Position line col) = do
+  decls :: [SQL.Only String] <-
+    DB.queryNamed
+      "SELECT corefn_expressions.value FROM corefn_expressions \
+      \INNER JOIN corefn_modules on corefn_expressions.module_name = corefn_modules.name \
+      \WHERE startLine <= :line AND endLine >= :line \
+      \AND startColumn <= :column AND endColumn >= :column\
+      \AND path = :path\
+      \AND lines = 0\
+      \ORDER BY cols ASC\
+      \LIMIT 1"
+      [ ":line" := toInteger line,
+        ":column" := toInteger col,
+        ":path" := path
+      ]
+  pure $
+    A.parseMaybe (CF.exprFromJSON path)
+      =<< fromString
+      . fromOnly
+      <$> listToMaybe decls
+
+getCodeFnBindAt :: (MonadIO m, MonadReader LspEnvironment m) => FilePath -> LSP.Position -> m (Maybe (CF.Bind CF.Ann))
+getCodeFnBindAt path (LSP.Position line col) = do
+  decls :: [SQL.Only String] <-
+    DB.queryNamed
+      "SELECT corefn_declarations.value FROM corefn_declarations \
+      \INNER JOIN corefn_modules on corefn_declarations.module_name = corefn_modules.name \
+      \WHERE startLine <= :line AND endLine >= :line \
+      \AND startColumn <= :column AND endColumn >= :column\
+      \AND path = :path\
+      \AND lines = 0\
+      \ORDER BY cols ASC\
+      \LIMIT 1"
+      [ ":line" := toInteger (line + 1),
+        ":column" := toInteger (col + 1),
+        ":path" := path
+      ]
+  pure $
+    A.parseMaybe (CF.bindFromJSON path)
+      =<< fromString
+      . fromOnly
+      <$> listToMaybe decls
+
+-- findLocalBinding :: (P.Ident -> Bool) -> Expr a -> Maybe (CF.Binder a)
+-- findLocalBinding f = go
+--   where
+--     go (Abs _ ident _) | f ident = Just (VarBinder nullSourceAnn ident)
+--     go (Let _ binds _) = asum (fmap (go . binder) binds)
+--     go _ = Nothing
+
+------------------------------------------------------------------------------------------------------------------------
+------------ Externs ---------------------------------------------------------------------------------------------------
+------------------------------------------------------------------------------------------------------------------------
 
 getEfImportsMap :: (MonadIO f, MonadReader LspEnvironment f) => [P.ModuleName] -> f (Map P.ModuleName [P.DeclarationRef])
 getEfImportsMap mNames = Map.fromListWith (++) . fmap (fmap List.singleton) <$> getEfExports mNames
@@ -122,7 +188,6 @@ getEFImportedDeclaration moduleName' name = do
                   | printName (declRefName ref) == name ->
                       fmap (definedIn,) <$> getEfDeclarationOnlyInModule definedIn name
                 _ -> pure acc'
-
 
 getEfDeclarationOnlyInModule :: (MonadIO m, MonadLogger m, MonadReader LspEnvironment m) => P.ModuleName -> Text -> m (Maybe P.ExternsDeclaration)
 getEfDeclarationOnlyInModule moduleName' name = do

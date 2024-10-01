@@ -249,8 +249,6 @@ buildMakeActions outputDir filePathMap foreigns usePrefix =
   codegen m docs exts = do
     let mn = CF.moduleName m
     lift $ writeCborFile (outputFilename mn externsFileName) exts
-    -- lift initDb
-
     codegenTargets <- lift $ asks optionsCodegenTargets
     when (S.member CoreFn codegenTargets) $ do
       let coreFnFile = targetFilename mn CoreFn

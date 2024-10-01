@@ -5,6 +5,8 @@
 module Language.PureScript.CoreFn.FromJSON
   ( moduleFromJSON
   , parseVersion'
+  , bindFromJSON
+  , exprFromJSON
   ) where
 
 import Prelude

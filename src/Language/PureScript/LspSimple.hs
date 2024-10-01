@@ -39,10 +39,10 @@ import Language.PureScript.Errors.JSON qualified as JsonErrors
 import Language.PureScript.Ide.Error (IdeError (GeneralError, RebuildError), prettyPrintTypeSingleLine, textError)
 import Language.PureScript.Ide.Logging (runErrLogger)
 import Language.PureScript.Ide.Types (Completion (Completion, complDocumentation, complExpandedType, complType), IdeLogLevel (LogAll))
-import Language.PureScript.Lsp.Cache (dropTables, initDb, insertAllExterns, selectExternModuleNameFromFilePath)
+import Language.PureScript.Lsp.Cache (selectExternModuleNameFromFilePath)
 import Language.PureScript.Lsp.Cache.Query (getDeclaration, getEfDeclaration)
 import Language.PureScript.Lsp.Print (printDeclarationType)
-import Language.PureScript.Lsp.Rebuild (rebuildFile, rebuildFileAndDeps)
+import Language.PureScript.Lsp.Rebuild (rebuildFile)
 import Language.PureScript.Lsp.State (initFinished, waitForInit)
 import Language.PureScript.Lsp.Types (LspEnvironment)
 import Language.PureScript.Lsp.Util (efDeclComments, efDeclSourceSpan, efDeclSourceType, getWordAt)
@@ -91,13 +91,10 @@ handlers diagErrs =
   mconcat
     [ Server.notificationHandler Message.SMethod_Initialized $ \_not -> do
         res <- liftLspWithErr do
-          dropTables
-          initDb
-          insertAllExterns
           logDebugN "Externs inserted"
           initFinished
           logDebugN "Init finished"
-          void $ rebuildFileAndDeps "src/Main.purs"
+          -- void $ rebuildFileAndDeps "src/Main.purs"
           logDebugN "Rebuilt Main.purs"
 
         case res of

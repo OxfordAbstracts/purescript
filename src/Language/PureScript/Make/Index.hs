@@ -5,6 +5,7 @@
 
 module Language.PureScript.Make.Index where
 
+import Codec.Serialise (serialise)
 import Control.Monad.Cont (MonadIO)
 import Control.Monad.Supply (SupplyT (SupplyT))
 import Data.Aeson qualified as A
@@ -14,14 +15,16 @@ import Data.Maybe (fromJust)
 import Data.Set qualified as S
 import Data.Set qualified as Set
 import Data.Text qualified as T
-import Database.SQLite.Simple (Connection)
+import Database.SQLite.Simple (Connection, NamedParam ((:=)))
 import Database.SQLite.Simple qualified as SQL
+import Language.PureScript (declRefName)
 import Language.PureScript.AST qualified as P
 import Language.PureScript.CST qualified as CST
 import Language.PureScript.CoreFn qualified as CF
 import Language.PureScript.CoreFn.FromJSON qualified as CFJ
 import Language.PureScript.CoreFn.ToJSON qualified as CFJ
 import Language.PureScript.CoreFn.Traversals (traverseCoreFn)
+import Language.PureScript.Docs.Types qualified as Docs
 import Language.PureScript.Errors qualified as P
 import Language.PureScript.Externs (ExternsFile (efModuleName))
 import Language.PureScript.Externs qualified as P
@@ -29,9 +32,9 @@ import Language.PureScript.Ide.Error (IdeError (GeneralError, RebuildError))
 import Language.PureScript.Ide.Rebuild (updateCacheDb)
 import Language.PureScript.Ide.Types (ModuleMap)
 import Language.PureScript.Ide.Util (ideReadFile)
-import Language.PureScript.Lsp.Cache
-import Language.PureScript.Lsp.State (cacheRebuild)
+import Language.PureScript.Lsp.Print (printEfDeclName, printName)
 import Language.PureScript.Lsp.Types (LspConfig (..), LspEnvironment (lspConfig))
+import Language.PureScript.Lsp.Util (efDeclCategory, efDeclSourceSpan)
 import Language.PureScript.Make (ffiCodegen')
 import Language.PureScript.Make qualified as P
 import Language.PureScript.ModuleDependencies qualified as P
@@ -40,89 +43,219 @@ import Language.PureScript.Options qualified as P
 import Paths_purescript qualified as Paths
 import Protolude hiding (moduleName)
 import "monad-logger" Control.Monad.Logger (MonadLogger, logDebugN)
-
-initDb :: Connection -> IO ()
-initDb conn = do
-  SQL.execute_ conn "CREATE TABLE IF NOT EXISTS corefn_modules (name TEXT PRIMARY KEY, path TEXT)"
-  SQL.execute_ conn "CREATE TABLE IF NOT EXISTS corefn_imports (module TEXT, imported_module TEXT)"
-  SQL.execute_ conn "CREATE TABLE IF NOT EXISTS corefn_declarations (module_name TEXT, ident TEXT, top_level BOOLEAN, value TEXT, start_line INTEGER, end_line INTEGER, start_col INTEGER, end_col INTEGER)"
-  SQL.execute_ conn "CREATE TABLE IF NOT EXISTS corefn_expressions (module_name TEXT, value TEXT, start_line INTEGER, end_line INTEGER, start_col INTEGER, end_col INTEGER, lines INTEGER, cols INTEGER)"
+import Distribution.Compat.Directory (makeAbsolute)
+import Database.SQLite.Simple qualified as SQL
 
 addCoreFnIndexing :: (MonadIO m) => Connection -> P.MakeActions m -> P.MakeActions m
-addCoreFnIndexing getConn ma =
+addCoreFnIndexing conn ma =
   ma
-    { P.codegen = \m docs ext -> lift (indexCoreFn getConn m) <* P.codegen ma m docs ext
+    { P.codegen = \m docs ext -> lift (indexCoreFn conn m) <* P.codegen ma m docs ext
     }
 
 indexCoreFn :: forall m. (MonadIO m) => Connection -> CF.Module CF.Ann -> m ()
 indexCoreFn conn m = do
   liftIO do
     let mName = P.runModuleName $ CF.moduleName m
+    path <- makeAbsolute $ CF.modulePath m
+    SQL.execute conn "DELETE FROM corefn_modules WHERE name = ?" (SQL.Only mName)
     SQL.execute
       conn
-      (SQL.Query "INSERT INTO corefn_modules (name, path) VALUES (?, ?)")
+      (SQL.Query "INSERT INTO corefn_modules (name, path, value) VALUES (?, ?, ?)")
       ( mName,
-        T.pack $ CF.modulePath m
+        path,
+        A.encode $ CFJ.moduleToJSON Paths.version m
       )
 
     forM_ (CF.moduleImports m) \((span, _, _), importedModule) -> do
       SQL.execute
         conn
-        (SQL.Query "INSERT INTO corefn_imports (module, imported_module) VALUES (?, ?)")
+        (SQL.Query "INSERT INTO corefn_imports (module_name, imported_module) VALUES (?, ?)")
         ( mName,
           P.runModuleName importedModule
         )
 
-    forM_ (CF.moduleDecls m) \bind -> do
-      void $ insertBind mName True bind
-      let (insertBind', _, _, _) = traverseCoreFn (insertBind mName False) (insertExpr mName) pure pure
-      void $ insertBind' bind
-  where
-    insertBind :: Text -> Bool -> CF.Bind CF.Ann -> IO (CF.Bind CF.Ann)
-    insertBind mName topLevel bind = do
-      case bind of
-        CF.NonRec (ss, _comments, _meta) ident expr -> do
-          let
-          SQL.execute
-            conn
-            ( SQL.Query
-                "INSERT INTO corefn_declarations (module_name, ident, top_level, value, start_line, end_line, start_col, end_col) \
-                \VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
-            )
-            ( mName,
-              P.runIdent ident,
-              topLevel,
-              A.encode $ CFJ.bindToJSON bind,
-              P.sourcePosLine $ P.spanStart ss,
-              P.sourcePosLine $ P.spanEnd ss,
-              P.sourcePosColumn $ P.spanStart ss,
-              P.sourcePosColumn $ P.spanEnd ss
-            )
-        CF.Rec binds -> forM_ binds $ \((ann, ident), expr) ->
-          void $ insertBind mName topLevel (CF.NonRec ann ident expr)
-      pure bind
+    forM_ (CF.moduleDecls m) \b ->
+      do
+        let insertBindQuery topLevel ss ident bind =
+              SQL.execute
+                conn
+                ( SQL.Query
+                    "INSERT INTO corefn_declarations (module_name, ident, top_level, value, start_line, end_line, start_col, end_col) \
+                    \VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+                )
+                ( mName,
+                  P.runIdent ident,
+                  topLevel,
+                  A.encode $ CFJ.bindToJSON bind,
+                  P.sourcePosLine $ P.spanStart ss,
+                  P.sourcePosLine $ P.spanEnd ss,
+                  P.sourcePosColumn $ P.spanStart ss,
+                  P.sourcePosColumn $ P.spanEnd ss
+                )
+            (insertBind', insertExpr', handleBinder, handleCaseAlternative) =
+              traverseCoreFn (insertBind False) insertExpr handleBinder handleCaseAlternative
+            insertBind :: Bool -> CF.Bind CF.Ann -> IO (CF.Bind CF.Ann)
+            insertBind topLevel bind = do
+              case bind of
+                CF.NonRec (ss, _comments, _meta) ident expr -> do
+                  insertBindQuery topLevel ss ident bind
+                  void $ insertExpr' expr
+                CF.Rec binds -> forM_ binds $ \(((ss, _, _), ident), expr) -> do
+                  insertBindQuery topLevel ss ident bind
+                  insertExpr' expr
+              pure bind
 
-    insertExpr :: Text -> CF.Expr CF.Ann -> IO (CF.Expr CF.Ann)
-    insertExpr mName expr = do
-      SQL.execute
-        conn
-        ( SQL.Query
-            "INSERT INTO corefn_expressions (module_name, value, start_line, end_line, start_col, end_col, lines, cols)\
-            \ VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
-        )
-        ( mName,
-          A.encode $ CFJ.exprToJSON expr,
-          P.sourcePosLine start,
-          P.sourcePosLine end,
-          P.sourcePosColumn start,
-          P.sourcePosColumn end,
-          lines',
-          cols
-        )
-      pure expr
-      where
-        (ss, _comments, _meta) = CF.extractAnn expr
-        start = P.spanStart ss
-        end = P.spanEnd ss
-        lines' = P.sourcePosLine end - P.sourcePosLine start
-        cols = P.sourcePosColumn end - P.sourcePosColumn start
+            insertExpr :: CF.Expr CF.Ann -> IO (CF.Expr CF.Ann)
+            insertExpr expr = do
+              SQL.execute
+                conn
+                ( SQL.Query
+                    "INSERT INTO corefn_expressions (module_name, value, start_line, end_line, start_col, end_col, lines, cols)\
+                    \ VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+                )
+                ( mName,
+                  A.encode $ CFJ.exprToJSON expr,
+                  P.sourcePosLine start,
+                  P.sourcePosLine end,
+                  P.sourcePosColumn start,
+                  P.sourcePosColumn end,
+                  lines',
+                  cols
+                )
+              case expr of
+                CF.Let _ binds _ -> do
+                  traverse_ insertBind' binds
+                _ -> pure ()
+              pure expr
+              where
+                (ss, _comments, _meta) = CF.extractAnn expr
+                start = P.spanStart ss
+                end = P.spanEnd ss
+                lines' = P.sourcePosLine end - P.sourcePosLine start
+                cols = P.sourcePosColumn end - P.sourcePosColumn start
+
+        void $ insertBind True b
+        void $ insertBind' b
+
+addExternIndexing :: (MonadIO m) => Connection -> P.MakeActions m -> P.MakeActions m
+addExternIndexing conn ma =
+  ma
+    { P.codegen = \m docs ext -> lift (indexExtern conn ext) <* P.codegen ma m docs ext
+    }
+
+indexExtern :: (MonadIO m) => Connection -> ExternsFile -> m ()
+indexExtern conn extern = liftIO do
+  path <- liftIO $ makeAbsolute externPath
+  SQL.executeNamed
+    conn
+    (SQL.Query "DELETE FROM externs WHERE path = :path")
+    [":path" := path]
+  SQL.executeNamed
+    conn
+    (SQL.Query "INSERT OR REPLACE INTO externs (path, ef_version, value, module_name, shown) VALUES (:path, :ef_version, :value, :module_name, :shown)")
+    [ ":path" := path,
+      ":ef_version" := P.efVersion extern,
+      ":value" := serialise extern,
+      ":module_name" := P.runModuleName name,
+      ":shown" := (show extern :: Text)
+    ]
+  forM_ (P.efImports extern) $ insertEfImport conn name
+  forM_ (P.efExports extern) $ insertEfExport conn name
+  forM_ (P.efDeclarations extern) $ insertEfDeclaration conn name
+  where
+    name = efModuleName extern
+    externPath = P.spanName (P.efSourceSpan extern)
+
+insertEfImport :: Connection -> P.ModuleName -> P.ExternsImport -> IO ()
+insertEfImport conn moduleName' ei = do
+  SQL.executeNamed
+    conn
+    (SQL.Query "INSERT OR REPLACE INTO ef_imports (module_name, imported_module, import_type, imported_as, value) VALUES (:module_name, :imported_module, :import_type, :imported_as, :value)")
+    [ ":module_name" := P.runModuleName moduleName',
+      ":imported_module" := P.runModuleName (P.eiModule ei),
+      ":import_type" := serialise (P.eiImportType ei),
+      ":imported_as" := fmap P.runModuleName (P.eiImportedAs ei),
+      ":value" := serialise ei
+    ]
+
+insertEfDeclaration :: Connection -> P.ModuleName -> P.ExternsDeclaration -> IO ()
+insertEfDeclaration conn moduleName' decl = do
+  SQL.executeNamed
+    conn
+    (SQL.Query "INSERT OR REPLACE INTO ef_declarations (module_name, value, shown, name, start_col, start_line, end_col, end_line, category) VALUES (:module_name, :value, :shown, :name, :start_col, :start_line, :end_col, :end_line, :category)")
+    [ ":module_name" := P.runModuleName moduleName',
+      ":name" := printEfDeclName decl,
+      ":value" := serialise decl,
+      ":shown" := (show decl :: Text),
+      ":start_col" := (P.sourcePosColumn . P.spanStart) span,
+      ":start_line" := (P.sourcePosLine . P.spanStart) span,
+      ":end_col" := (P.sourcePosColumn . P.spanEnd) span,
+      ":end_line" := (P.sourcePosLine . P.spanEnd) span,
+      ":category" := efDeclCategory decl
+    ]
+  where
+    span = efDeclSourceSpan decl
+
+insertEfExport :: Connection -> P.ModuleName -> P.DeclarationRef -> IO ()
+insertEfExport conn moduleName' dr = do
+  SQL.executeNamed
+    conn
+    (SQL.Query "INSERT OR REPLACE INTO ef_exports (module_name, value, name, printed_name, start_col, start_line, end_col, end_line) VALUES (:module_name, :value, :name, :printed_name, :start_col, :start_line, :end_col, :end_line)")
+    [ ":module_name" := P.runModuleName moduleName',
+      ":value" := serialise dr,
+      ":name" := serialise (declRefName dr),
+      ":printed_name" := printName (declRefName dr),
+      ":start_col" := (P.sourcePosColumn . P.spanStart) span,
+      ":start_line" := (P.sourcePosLine . P.spanStart) span,
+      ":end_col" := (P.sourcePosColumn . P.spanEnd) span,
+      ":end_line" := (P.sourcePosLine . P.spanEnd) span
+    ]
+  where
+    span = P.declRefSourceSpan dr
+
+initDb :: Connection -> IO ()
+initDb conn = do
+  dropTables conn
+  SQL.execute_ conn "pragma journal_mode=wal;"
+  SQL.execute_ conn "pragma foreign_keys = ON;"
+  SQL.execute_ conn "CREATE TABLE IF NOT EXISTS corefn_modules (name TEXT PRIMARY KEY, path TEXT, value TEXT, UNIQUE(name) on conflict replace, UNIQUE(path) on conflict replace)"
+  SQL.execute_ conn "CREATE TABLE IF NOT EXISTS corefn_imports (module_name TEXT references corefn_modules(name), imported_module TEXT, UNIQUE(module_name, imported_module) on conflict replace)"
+  SQL.execute_ conn "CREATE TABLE IF NOT EXISTS corefn_declarations (module_name TEXT references corefn_modules(name), ident TEXT, top_level BOOLEAN, value TEXT, start_line INTEGER, end_line INTEGER, start_col INTEGER, end_col INTEGER)"
+  SQL.execute_ conn "CREATE TABLE IF NOT EXISTS corefn_expressions (module_name TEXT references corefn_modules(name), value TEXT, start_line INTEGER, end_line INTEGER, start_col INTEGER, end_col INTEGER, lines INTEGER, cols INTEGER)"
+  SQL.execute_ conn "CREATE TABLE IF NOT EXISTS externs (path TEXT PRIMARY KEY, ef_version TEXT, value BLOB, module_name TEXT, shown TEXT, UNIQUE(path) on conflict replace, UNIQUE(module_name) on conflict replace)"
+  SQL.execute_ conn "CREATE TABLE IF NOT EXISTS ef_imports (module_name TEXT references externs(module_name), imported_module TEXT, import_type TEXT, imported_as TEXT, value BLOB)"
+  SQL.execute_ conn "CREATE TABLE IF NOT EXISTS ef_exports (module_name TEXT references externs(module_name), export_name TEXT, value BLOB, name BLOB, printed_name TEXT, start_col INTEGER, start_line INTEGER, end_col INTEGER, end_line INTEGER)"
+  SQL.execute_ conn "CREATE TABLE IF NOT EXISTS ef_declarations (module_name TEXT references externs(module_name), name TEXT, value BLOB, start_col INTEGER, start_line INTEGER, end_col INTEGER, end_line INTEGER, category TEXT, shown TEXT)"
+
+  addDbIndexes conn
+
+addDbIndexes :: Connection -> IO ()
+addDbIndexes conn = do
+  SQL.execute_ conn "CREATE INDEX IF NOT EXISTS corefn_modules_name ON corefn_modules (name)"
+  SQL.execute_ conn "CREATE INDEX IF NOT EXISTS corefn_modules_path ON corefn_modules (path)"
+  SQL.execute_ conn "CREATE INDEX IF NOT EXISTS corefn_imports_module ON corefn_imports (module_name)"
+  SQL.execute_ conn "CREATE INDEX IF NOT EXISTS corefn_imports_imported_module ON corefn_imports (imported_module)"
+  SQL.execute_ conn "CREATE INDEX IF NOT EXISTS corefn_declarations_module_name ON corefn_declarations (module_name)"
+  SQL.execute_ conn "CREATE INDEX IF NOT EXISTS corefn_declarations_start_line ON corefn_declarations (start_line)"
+  SQL.execute_ conn "CREATE INDEX IF NOT EXISTS corefn_declarations_end_line ON corefn_declarations (end_line)"
+  SQL.execute_ conn "CREATE INDEX IF NOT EXISTS corefn_expressions_start_line ON corefn_expressions (start_line)"
+  SQL.execute_ conn "CREATE INDEX IF NOT EXISTS corefn_expressions_end_line ON corefn_expressions (end_line)"
+  SQL.execute_ conn "CREATE INDEX IF NOT EXISTS corefn_expressions_lines ON corefn_expressions (lines)"
+  SQL.execute_ conn "CREATE INDEX IF NOT EXISTS corefn_expressions_cols ON corefn_expressions (cols)"
+  SQL.execute_ conn "CREATE INDEX IF NOT EXISTS externs_path ON externs (path)"
+  SQL.execute_ conn "CREATE INDEX IF NOT EXISTS externs_module_name ON externs (module_name)"
+  SQL.execute_ conn "CREATE INDEX IF NOT EXISTS ef_imports_module_name ON ef_imports (module_name)"
+  SQL.execute_ conn "CREATE INDEX IF NOT EXISTS ef_imports_imported_module ON ef_imports (imported_module)"
+  SQL.execute_ conn "CREATE INDEX IF NOT EXISTS ef_imports_import_type ON ef_imports (import_type)"
+  SQL.execute_ conn "CREATE INDEX IF NOT EXISTS ef_imports_imported_as ON ef_imports (imported_as)"
+  SQL.execute_ conn "CREATE INDEX IF NOT EXISTS ef_exports_module_name ON ef_exports (module_name)"
+  SQL.execute_ conn "CREATE INDEX IF NOT EXISTS ef_exports_export_name ON ef_exports (export_name)"
+  SQL.execute_ conn "CREATE INDEX IF NOT EXISTS ef_declarations_module_name ON ef_declarations (module_name)"
+  SQL.execute_ conn "CREATE INDEX IF NOT EXISTS ef_declarations_name ON ef_declarations (name)"
+
+dropTables :: Connection -> IO ()
+dropTables conn = do
+  SQL.execute_ conn "DROP TABLE IF EXISTS corefn_modules"
+  SQL.execute_ conn "DROP TABLE IF EXISTS corefn_imports"
+  SQL.execute_ conn "DROP TABLE IF EXISTS corefn_declarations"
+  SQL.execute_ conn "DROP TABLE IF EXISTS corefn_expressions"
