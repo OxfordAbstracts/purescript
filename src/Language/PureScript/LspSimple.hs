@@ -6,11 +6,11 @@
 {-# LANGUAGE PackageImports #-}
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE UndecidableInstances #-}
+{-# OPTIONS_GHC -Wno-unused-imports #-}
 -- {-# OPTIONS_GHC -Wno-unused-imports #-}
 {-# OPTIONS_GHC -Wno-unused-local-binds #-}
 {-# OPTIONS_GHC -Wno-unused-matches #-}
 {-# OPTIONS_GHC -Wno-unused-top-binds #-}
-{-# OPTIONS_GHC -Wno-unused-imports #-}
 
 module Language.PureScript.LspSimple (main) where
 
@@ -32,6 +32,8 @@ import Language.LSP.Protocol.Types qualified as Types
 import Language.LSP.Server (getConfig)
 import Language.LSP.Server qualified as Server
 import Language.LSP.VFS qualified as VFS
+import Language.PureScript qualified as P
+import Language.PureScript.CoreFn.Expr qualified as CF
 import Language.PureScript.Docs.Convert.Single (convertComments)
 import Language.PureScript.Errors (ErrorMessage (ErrorMessage), MultipleErrors (runMultipleErrors), errorCode, errorDocUri, errorSpan, noColorPPEOptions, prettyPrintSingleError)
 import Language.PureScript.Errors qualified as Errors
@@ -41,12 +43,14 @@ import Language.PureScript.Ide.Error (IdeError (GeneralError, RebuildError), pre
 import Language.PureScript.Ide.Logging (runErrLogger)
 import Language.PureScript.Ide.Types (Completion (Completion, complDocumentation, complExpandedType, complType), IdeLogLevel (LogAll))
 import Language.PureScript.Lsp.Cache (selectExternModuleNameFromFilePath)
-import Language.PureScript.Lsp.Cache.Query (getEfDeclaration, getCoreFnExprAt)
+import Language.PureScript.Lsp.Cache.Query (getCoreFnExprAt, getEfDeclaration, getEfDeclarationOnlyInModule)
 import Language.PureScript.Lsp.Print (printDeclarationType)
 import Language.PureScript.Lsp.Rebuild (rebuildFile)
 import Language.PureScript.Lsp.State (initFinished, waitForInit)
 import Language.PureScript.Lsp.Types (LspEnvironment)
 import Language.PureScript.Lsp.Util (efDeclComments, efDeclSourceSpan, efDeclSourceType, getWordAt)
+import Language.PureScript.Names (runIdent)
+import Language.PureScript.Names qualified as P
 import Protolude hiding (to)
 import System.Directory (createDirectoryIfMissing)
 import Text.PrettyPrint.Boxes (render)
@@ -179,20 +183,62 @@ handlers diagErrs =
                 ^. LSP.uri
                   . to Types.toNormalizedUri
             nullRes = res $ Right $ Types.InR Types.Null
+
+            markdownRes :: Text -> Maybe Text -> [P.Comment] -> HandlerM () ()
+            markdownRes word type' comments =
+              res $
+                Right $
+                  Types.InL $
+                    Types.Hover
+                      ( Types.InL $
+                          Types.MarkupContent
+                            Types.MarkupKind_Markdown
+                            ( "```purescript\n"
+                                <> word
+                                <> annotation
+                                <> "\n"
+                                <> fold (convertComments comments)
+                                <> "\n```"
+                            )
+                      )
+                      Nothing
+              where
+                annotation = case type' of
+                  Just t -> " :: " <> t
+                  Nothing -> ""
             forLsp :: Maybe a -> (a -> HandlerM () ()) -> HandlerM () ()
             forLsp val f = maybe nullRes f val
         liftLsp $ logDebugN $ "filePathMb: " <> show filePathMb
         liftLsp $ logDebugN $ "docUri: " <> show docUri
 
         forLsp filePathMb \filePath -> do
-          corefnExpr <- liftLsp $ getCoreFnExprAt filePath pos
-          liftLsp $ logDebugN $ "corefnExpr: " <> show corefnExpr
-          vfMb <- Server.getVirtualFile docUri
-          liftLsp $ logDebugN $ "vfMb exists: " <> show (isJust vfMb)
-          forLsp vfMb \vf -> do
-            let word = getWordAt (VFS._file_text vf) pos
-            liftLsp $ logWarnN $ "word: " <> show word
-            nullRes 
+          corefnExprMb <- liftLsp $ getCoreFnExprAt filePath pos
+          forLsp corefnExprMb \case
+            CF.Literal _ _ -> nullRes
+            CF.Constructor (_ss, comments, meta) tName cMame _ -> do
+              markdownRes (P.runProperName cMame) (Just $ P.runProperName tName) comments
+            CF.Var (_ss, comments, meta) (P.Qualified qb ident) -> do
+              typeMb <- liftLsp $ case qb of
+                P.ByModuleName mName ->
+                  fmap (prettyPrintTypeSingleLine . efDeclSourceType)
+                    <$> getEfDeclarationOnlyInModule mName (runIdent ident)
+                P.BySourcePos _pos -> pure $ Just "local var"
+
+              markdownRes (P.runIdent ident) typeMb comments
+
+            -- forLsp declMb \decl -> do
+            --   let declSpan = efDeclSourceSpan decl
+            --       declType = prettyPrintTypeSingleLine $ efDeclSourceType decl
+            --       declComments = convertComments $ efDeclComments decl
+            --   markdownRes (P.runIdent qIdent) declType declComments
+            _ -> nullRes
+
+            -- vfMb <- Server.getVirtualFile docUri
+            -- liftLsp $ logDebugN $ "vfMb exists: " <> show (isJust vfMb)
+            -- forLsp vfMb \vf -> do
+            --   let word = getWordAt (VFS._file_text vf) pos
+            --   liftLsp $ logWarnN $ "word: " <> show word
+            --   nullRes
             -- if word == ""
             --   then nullRes
             --   else do
@@ -207,128 +253,128 @@ handlers diagErrs =
             --         let declSpan = efDeclSourceSpan decl
             --             declType = prettyPrintTypeSingleLine $ efDeclSourceType decl
             --             declComments = maybe (convertComments $ efDeclComments decl) (Just . printDeclarationType) astDeclMb
-            --             hoverInfo =
-            --               Types.InL $
-            --                 Types.Hover
-            --                   ( Types.InL $
-            --                       Types.MarkupContent
-            --                         Types.MarkupKind_Markdown
-            --                         ( "```purescript\n"
-            --                             <> word
-            --                             <> " :: "
-            --                             <> declType
-            --                             <> "\n"
-            --                             <> fold declComments
-            --                             <> "\n```"
-            --                         )
-            --                   )
-            --                   Nothing
+            -- hoverInfo =
+            --   Types.InL $
+            --     Types.Hover
+            --       ( Types.InL $
+            --           Types.MarkupContent
+            --             Types.MarkupKind_Markdown
+            --             ( "```purescript\n"
+            --                 <> word
+            --                 <> " :: "
+            --                 <> declType
+            --                 <> "\n"
+            --                 <> fold declComments
+            --                 <> "\n```"
+            --             )
+            --       )
+            --       Nothing
             --         liftLsp $ logWarnN $ "Comments: " <> show declComments
             --         res $ Right hoverInfo
-                    -- let moduleName' = case cache of
-                    --       Just (CurrentFile mName _ _ ) -> Just mName
-                    --       _ -> Nothing
+            -- let moduleName' = case cache of
+            --       Just (CurrentFile mName _ _ ) -> Just mName
+            --       _ -> Nothing
 
-                    -- imports <-
-                    --   filePathMb
-                    --     & maybe (pure Nothing) (liftLsp . parseImportsFromFile)
+            -- imports <-
+            --   filePathMb
+            --     & maybe (pure Nothing) (liftLsp . parseImportsFromFile)
 
-                    -- let filters :: [Filter]
-                    --     filters =
-                    --       imports
-                    --         & maybe [] (pure . (moduleFilter . insertCurrentModule . Set.fromList . fmap getInputModName) . snd)
+            -- let filters :: [Filter]
+            --     filters =
+            --       imports
+            --         & maybe [] (pure . (moduleFilter . insertCurrentModule . Set.fromList . fmap getInputModName) . snd)
 
-                    --     getInputModName (n, _, _) = n
+            --     getInputModName (n, _, _) = n
 
-                    --     insertCurrentModule :: Set P.ModuleName -> Set P.ModuleName
-                    --     insertCurrentModule mods = maybe mods (flip Set.insert mods) moduleName'
+            --     insertCurrentModule :: Set P.ModuleName -> Set P.ModuleName
+            --     insertCurrentModule mods = maybe mods (flip Set.insert mods) moduleName'
 
-                    -- completions <- liftLsp $ get_actCompletionsWithPrim word filters moduleName'
+            -- completions <- liftLsp $ get_actCompletionsWithPrim word filters moduleName'
 
-                    -- let hoverInfo = case head <$> completions of
-                    --       Right (Just completion) -> completionToHoverInfo word completion
-                    --       _ -> word
+            -- let hoverInfo = case head <$> completions of
+            --       Right (Just completion) -> completionToHoverInfo word completion
+            --       _ -> word
 
-                    -- res $
-                    --   Right $
-                    --     Types.InL $
-                    --       Types.Hover
-                    --         ( Types.InL $
-                    --             Types.MarkupContent Types.MarkupKind_Markdown hoverInfo
-                    --         )
-                    --         Nothing
-                    --             ,
-                    -- Server.requestHandler Message.SMethod_TextDocumentDefinition $ \req res -> do
-                    --   sendInfoMsg "SMethod_TextDocumentDefinition"
-                    --   let Types.DefinitionParams docIdent pos _prog _prog' = req ^. LSP.params
-                    --       filePathMb = Types.uriToFilePath $ docIdent ^. LSP.uri
-                    --       uri =
-                    --         req
-                    --           ^. LSP.params
-                    --             . LSP.textDocument
-                    --             . LSP.uri
-                    --             . to Types.toNormalizedUri
+            -- res $
+            --   Right $
+            --     Types.InL $
+            --       Types.Hover
+            --         ( Types.InL $
+            --             Types.MarkupContent Types.MarkupKind_Markdown hoverInfo
+            --         )
+            --         Nothing
+            --             ,
+            -- Server.requestHandler Message.SMethod_TextDocumentDefinition $ \req res -> do
+            --   sendInfoMsg "SMethod_TextDocumentDefinition"
+            --   let Types.DefinitionParams docIdent pos _prog _prog' = req ^. LSP.params
+            --       filePathMb = Types.uriToFilePath $ docIdent ^. LSP.uri
+            --       uri =
+            --         req
+            --           ^. LSP.params
+            --             . LSP.textDocument
+            --             . LSP.uri
+            --             . to Types.toNormalizedUri
 
-                    --       nullRes = res $ Right $ Types.InR $ Types.InR Types.Null
+            --       nullRes = res $ Right $ Types.InR $ Types.InR Types.Null
 
-                    --   vfMb <- Server.getVirtualFile uri
+            --   vfMb <- Server.getVirtualFile uri
 
-                    --   for_ vfMb \vf -> do
-                    --     let word = getWordAt (VFS._file_text vf) pos
-                    --     cache <- liftLsp cachedRebuild
-                    --     let moduleName' = case cache of
-                    --           Right (Just (mName, _)) -> Just mName
-                    --           _ -> Nothing
+            --   for_ vfMb \vf -> do
+            --     let word = getWordAt (VFS._file_text vf) pos
+            --     cache <- liftLsp cachedRebuild
+            --     let moduleName' = case cache of
+            --           Right (Just (mName, _)) -> Just mName
+            --           _ -> Nothing
 
-                    --     imports <-
-                    --       filePathMb
-                    --         & maybe (pure Nothing) (fmap hush . liftLsp . parseImportsFromFile)
+            --     imports <-
+            --       filePathMb
+            --         & maybe (pure Nothing) (fmap hush . liftLsp . parseImportsFromFile)
 
-                    --     let filters :: [Filter]
-                    --         filters =
-                    --           imports
-                    --             & maybe [] (pure . (moduleFilter . insertCurrentModule . Set.fromList . fmap getInputModName) . snd)
+            --     let filters :: [Filter]
+            --         filters =
+            --           imports
+            --             & maybe [] (pure . (moduleFilter . insertCurrentModule . Set.fromList . fmap getInputModName) . snd)
 
-                    --         getInputModName (n, _, _) = n
+            --         getInputModName (n, _, _) = n
 
-                    --         insertCurrentModule :: Set P.ModuleName -> Set P.ModuleName
-                    --         insertCurrentModule mods = maybe mods (flip Set.insert mods) moduleName'
+            --         insertCurrentModule :: Set P.ModuleName -> Set P.ModuleName
+            --         insertCurrentModule mods = maybe mods (flip Set.insert mods) moduleName'
 
-                    --     completions :: Either IdeError [Completion] <- liftLsp $ getExactCompletionsWithPrim word filters moduleName'
+            --     completions :: Either IdeError [Completion] <- liftLsp $ getExactCompletionsWithPrim word filters moduleName'
 
-                    --     sendInfoMsg $ "Completions: " <> show completions
-                    --     let withLocation =
-                    --           fold completions
-                    --             & mapMaybe
-                    --               ( \c -> case complLocation c of
-                    --                   Just loc -> Just (c, loc)
-                    --                   Nothing -> Nothing
-                    --               )
-                    --             & head
+            --     sendInfoMsg $ "Completions: " <> show completions
+            --     let withLocation =
+            --           fold completions
+            --             & mapMaybe
+            --               ( \c -> case complLocation c of
+            --                   Just loc -> Just (c, loc)
+            --                   Nothing -> Nothing
+            --               )
+            --             & head
 
-                    --     paths <- liftLsp $ Map.map snd . fsModules <$> getFileState
+            --     paths <- liftLsp $ Map.map snd . fsModules <$> getFileState
 
-                    --     case withLocation of
-                    --       Just (completion, location) -> do
-                    --         let fpMb =
-                    --               Map.lookup (P.ModuleName . complModule $ completion) (either mempty identity paths)
+            --     case withLocation of
+            --       Just (completion, location) -> do
+            --         let fpMb =
+            --               Map.lookup (P.ModuleName . complModule $ completion) (either mempty identity paths)
 
-                    --         case fpMb of
-                    --           Nothing -> do
-                    --             sendInfoMsg "No file path for module"
-                    --             nullRes
-                    --           Just fp ->
-                    --             res $
-                    --               Right $
-                    --                 Types.InL $
-                    --                   Types.Definition $
-                    --                     Types.InL $
-                    --                       Types.Location
-                    --                         (Types.filePathToUri fp)
-                    --                         (spanToRange location)
-                    --       _ -> do
-                    --         sendInfoMsg "No location for completion"
-                    --         nullRes
+            --         case fpMb of
+            --           Nothing -> do
+            --             sendInfoMsg "No file path for module"
+            --             nullRes
+            --           Just fp ->
+            --             res $
+            --               Right $
+            --                 Types.InL $
+            --                   Types.Definition $
+            --                     Types.InL $
+            --                       Types.Location
+            --                         (Types.filePathToUri fp)
+            --                         (spanToRange location)
+            --       _ -> do
+            --         sendInfoMsg "No location for completion"
+            --         nullRes
     ]
   where
     getFileDiagnotics :: (LSP.HasUri a2 Uri, LSP.HasTextDocument a1 a2, LSP.HasParams s a1) => s -> HandlerM config ([ErrorMessage], [Types.Diagnostic])
