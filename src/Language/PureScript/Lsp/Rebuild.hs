@@ -72,7 +72,6 @@ rebuildFile' rebuildDeps srcPath = do
     Right m -> pure m
   let moduleName = P.getModuleName m
   externs <- sortExterns m =<< selectAllExternsMap
-  logDebugN $ "Sorted externs: " <> T.pack (show $ map P.efModuleName externs)
   when rebuildDeps do
     forM_ externs \ef -> do
       let depSrcPath = P.spanName $ P.efSourceSpan ef

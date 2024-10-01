@@ -92,12 +92,8 @@ handlers diagErrs =
   mconcat
     [ Server.notificationHandler Message.SMethod_Initialized $ \_not -> do
         res <- liftLspWithErr do
-          logDebugN "Externs inserted"
           initFinished
           logDebugN "Init finished"
-          -- void $ rebuildFileAndDeps "src/Main.purs"
-          logDebugN "Rebuilt Main.purs"
-
         case res of
           Left err -> do
             liftLsp $ logErrorN $ "Initalise error: " <> show err
@@ -131,9 +127,6 @@ handlers diagErrs =
       Server.requestHandler Message.SMethod_TextDocumentDiagnostic $ \req res -> do
         liftLsp $ logDebugN "SMethod_TextDocumentDiagnostic"
         (errs, diagnostics) <- getFileDiagnotics req
-        unless (null errs) $ liftLsp do
-          logDebugN $ "Errors: " <> show errs
-          logDebugN $ "diagnostics: " <> show diagnostics
         insertDiagnosticErrors diagErrs errs diagnostics
         res $
           Right $
@@ -141,14 +134,11 @@ handlers diagErrs =
               Types.InL $
                 Types.RelatedFullDocumentDiagnosticReport Types.AString Nothing diagnostics Nothing,
       Server.requestHandler Message.SMethod_TextDocumentCodeAction $ \req res -> do
-        liftLsp $ logDebugN "SMethod_TextDocumentCodeAction"
         let params = req ^. LSP.params
             diags = params ^. LSP.context . LSP.diagnostics
             uri = getMsgUri req
-        liftLsp $ logDebugN "SMethod_TextDocumentCodeAction 0"
 
         errs <- Map.toList <$> getDiagnosticErrors diagErrs diags
-        liftLsp $ logDebugN "SMethod_TextDocumentCodeAction 1"
         res $
           Right $
             Types.InL $
@@ -366,7 +356,7 @@ handlers diagErrs =
             diags = errorMessageDiagnostic Types.DiagnosticSeverity_Error <$> errors
         pure (errors, diags)
       Left err -> do
-        liftLsp $ logErrorN $ "Rebuild error: " <> show err
+        liftLsp $ logErrorN $ "Rebuild error: " <> textError err
         pure ([], [])
       Right errs | Errors.nonEmpty errs -> do
         let errors = runMultipleErrors errs
