@@ -67,10 +67,10 @@ getCoreFnExprAt path (LSP.Position line col) = do
       "SELECT corefn_expressions.value FROM corefn_expressions \
       \INNER JOIN corefn_modules on corefn_expressions.module_name = corefn_modules.name \
       \WHERE startLine <= :line AND endLine >= :line \
-      \AND startColumn <= :column AND endColumn >= :column\
-      \AND path = :path\
-      \AND lines = 0\
-      \ORDER BY cols ASC\
+      \AND startColumn <= :column AND endColumn >= :column \
+      \AND path = :path \
+      \AND lines = 0 \
+      \ORDER BY cols ASC \
       \LIMIT 1"
       [ ":line" := toInteger line,
         ":column" := toInteger col,
@@ -89,10 +89,10 @@ getCodeFnBindAt path (LSP.Position line col) = do
       "SELECT corefn_declarations.value FROM corefn_declarations \
       \INNER JOIN corefn_modules on corefn_declarations.module_name = corefn_modules.name \
       \WHERE startLine <= :line AND endLine >= :line \
-      \AND startColumn <= :column AND endColumn >= :column\
-      \AND path = :path\
-      \AND lines = 0\
-      \ORDER BY cols ASC\
+      \AND startColumn <= :column AND endColumn >= :column \
+      \AND path = :path \
+      \AND lines = 0 \
+      \ORDER BY cols ASC \
       \LIMIT 1"
       [ ":line" := toInteger (line + 1),
         ":column" := toInteger (col + 1),
@@ -200,12 +200,3 @@ getEfDeclarationOnlyInModule moduleName' name = do
   logDebugN $ "getEfDeclarationOnlyInModule decls: " <> show moduleName' <> " . " <> show name <> " : " <> T.pack (show $ length decls)
   pure $ deserialise . fromOnly <$> listToMaybe decls
 
-getDeclaration :: (MonadIO m, MonadReader LspEnvironment m) => P.ModuleName -> Text -> m (Maybe P.Declaration)
-getDeclaration moduleName' printed_name = do
-  decls <-
-    DB.queryNamed
-      "SELECT value FROM declarations WHERE module_name = :module_name AND printed_name = :printed_name"
-      [ ":module_name" := P.runModuleName moduleName',
-        ":printed_name" := printed_name
-      ]
-  pure $ deserialise . fromOnly <$> listToMaybe decls

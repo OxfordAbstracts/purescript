@@ -10,6 +10,7 @@
 {-# OPTIONS_GHC -Wno-unused-local-binds #-}
 {-# OPTIONS_GHC -Wno-unused-matches #-}
 {-# OPTIONS_GHC -Wno-unused-top-binds #-}
+{-# OPTIONS_GHC -Wno-unused-imports #-}
 
 module Language.PureScript.LspSimple (main) where
 
@@ -40,7 +41,7 @@ import Language.PureScript.Ide.Error (IdeError (GeneralError, RebuildError), pre
 import Language.PureScript.Ide.Logging (runErrLogger)
 import Language.PureScript.Ide.Types (Completion (Completion, complDocumentation, complExpandedType, complType), IdeLogLevel (LogAll))
 import Language.PureScript.Lsp.Cache (selectExternModuleNameFromFilePath)
-import Language.PureScript.Lsp.Cache.Query (getDeclaration, getEfDeclaration)
+import Language.PureScript.Lsp.Cache.Query (getEfDeclaration, getCoreFnExprAt)
 import Language.PureScript.Lsp.Print (printDeclarationType)
 import Language.PureScript.Lsp.Rebuild (rebuildFile)
 import Language.PureScript.Lsp.State (initFinished, waitForInit)
@@ -192,44 +193,48 @@ handlers diagErrs =
             forLsp val f = maybe nullRes f val
         liftLsp $ logDebugN $ "filePathMb: " <> show filePathMb
         liftLsp $ logDebugN $ "docUri: " <> show docUri
+
         forLsp filePathMb \filePath -> do
+          corefnExpr <- liftLsp $ getCoreFnExprAt filePath pos
+          liftLsp $ logDebugN $ "corefnExpr: " <> show corefnExpr
           vfMb <- Server.getVirtualFile docUri
           liftLsp $ logDebugN $ "vfMb exists: " <> show (isJust vfMb)
           forLsp vfMb \vf -> do
             let word = getWordAt (VFS._file_text vf) pos
             liftLsp $ logWarnN $ "word: " <> show word
-            if word == ""
-              then nullRes
-              else do
-                mNameMb <- liftLspWithErr $ selectExternModuleNameFromFilePath filePath
-                liftLsp $ logDebugN $ "mNameMb: " <> show mNameMb
-                forLsp (join $ hush mNameMb) $ \mName -> do
-                  declMb <- liftLsp $ getEfDeclaration mName word
-                  forLsp declMb $ \(importedMod, decl) -> do
-                    liftLsp $ logWarnN $ "importedMod: " <> show importedMod
-                    astDeclMb <- liftLsp $ getDeclaration importedMod word
-                    liftLsp $ logWarnN $ "astDeclMb: " <> show astDeclMb
-                    let declSpan = efDeclSourceSpan decl
-                        declType = prettyPrintTypeSingleLine $ efDeclSourceType decl
-                        declComments = maybe (convertComments $ efDeclComments decl) (Just . printDeclarationType) astDeclMb
-                        hoverInfo =
-                          Types.InL $
-                            Types.Hover
-                              ( Types.InL $
-                                  Types.MarkupContent
-                                    Types.MarkupKind_Markdown
-                                    ( "```purescript\n"
-                                        <> word
-                                        <> " :: "
-                                        <> declType
-                                        <> "\n"
-                                        <> fold declComments
-                                        <> "\n```"
-                                    )
-                              )
-                              Nothing
-                    liftLsp $ logWarnN $ "Comments: " <> show declComments
-                    res $ Right hoverInfo
+            nullRes 
+            -- if word == ""
+            --   then nullRes
+            --   else do
+            --     mNameMb <- liftLspWithErr $ selectExternModuleNameFromFilePath filePath
+            --     liftLsp $ logDebugN $ "mNameMb: " <> show mNameMb
+            --     forLsp (join $ hush mNameMb) $ \mName -> do
+            --       declMb <- liftLsp $ getEfDeclaration mName word
+            --       forLsp declMb $ \(importedMod, decl) -> do
+            --         liftLsp $ logWarnN $ "importedMod: " <> show importedMod
+            --         astDeclMb <- pure Nothing -- liftLsp $ getDeclaration importedMod word
+            --         liftLsp $ logWarnN $ "astDeclMb: " <> show astDeclMb
+            --         let declSpan = efDeclSourceSpan decl
+            --             declType = prettyPrintTypeSingleLine $ efDeclSourceType decl
+            --             declComments = maybe (convertComments $ efDeclComments decl) (Just . printDeclarationType) astDeclMb
+            --             hoverInfo =
+            --               Types.InL $
+            --                 Types.Hover
+            --                   ( Types.InL $
+            --                       Types.MarkupContent
+            --                         Types.MarkupKind_Markdown
+            --                         ( "```purescript\n"
+            --                             <> word
+            --                             <> " :: "
+            --                             <> declType
+            --                             <> "\n"
+            --                             <> fold declComments
+            --                             <> "\n```"
+            --                         )
+            --                   )
+            --                   Nothing
+            --         liftLsp $ logWarnN $ "Comments: " <> show declComments
+            --         res $ Right hoverInfo
                     -- let moduleName' = case cache of
                     --       Just (CurrentFile mName _ _ ) -> Just mName
                     --       _ -> Nothing

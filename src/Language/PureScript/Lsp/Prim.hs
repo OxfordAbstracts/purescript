@@ -7,10 +7,13 @@ import Data.Version (showVersion)
 import Language.PureScript (primEnv)
 import Language.PureScript qualified as P
 import Language.PureScript.AST.SourcePos (nullSourceSpan)
-
 import Protolude
 
--- primExternsMap :: Map P.ModuleName (P.SourceSpan, P.Imports, P.Exports)
+primExternsMap :: Map P.ModuleName [P.ExternsFile]
+primExternsMap =
+  primExterns
+    <&> (\ef -> (P.efModuleName ef, [ef]))
+    & Map.fromListWith (<>)
 
 primExterns :: [P.ExternsFile]
 primExterns = Map.toList primEnv <&> toExtern
@@ -131,20 +134,19 @@ primExterns = Map.toList primEnv <&> toExtern
         toEfImportModule mn = P.ExternsImport mn P.Implicit Nothing
 
         efDeclarations :: [P.ExternsDeclaration]
-        efDeclarations = efExports >>= \case 
-          P.TypeClassRef _ss name -> pure $ P.EDClass  name [] [] [] [] False
-          P.TypeOpRef _ss name -> pure $ P.EDValue (P.Ident $ P.runOpName name) P.srcREmpty
-          P.TypeRef _ss name _ctrs -> pure $ P.EDType name P.srcREmpty (P.DataType P.Data [] [])
-          P.ValueRef _ss name -> pure $ P.EDValue name P.srcREmpty
-          P.ValueOpRef _ss name -> pure $ P.EDValue (P.Ident $ P.runOpName name) P.srcREmpty
-          -- P.TypeInstanceRef _ss name source -> pure $ P.EDInstance (_ modName name) _ _ _ _ _ _ _ _ _
-          _ -> []
-          
-         
-            --  TypeClassRef SourceSpan (ProperName 'ClassName)
-            -- -- |
-            -- -- A type operator
-            -- --
+        efDeclarations =
+          efExports >>= \case
+            P.TypeClassRef _ss name -> pure $ P.EDClass name [] [] [] [] False
+            P.TypeOpRef _ss name -> pure $ P.EDValue (P.Ident $ P.runOpName name) P.srcREmpty
+            P.TypeRef _ss name _ctrs -> pure $ P.EDType name P.srcREmpty (P.DataType P.Data [] [])
+            P.ValueRef _ss name -> pure $ P.EDValue name P.srcREmpty
+            P.ValueOpRef _ss name -> pure $ P.EDValue (P.Ident $ P.runOpName name) P.srcREmpty
+            _ -> []
+
+--  TypeClassRef SourceSpan (ProperName 'ClassName)
+-- -- |
+-- -- A type operator
+-- --
 
 -- | The data which will be serialized to an externs file
 -- data ExternsFile = ExternsFile
