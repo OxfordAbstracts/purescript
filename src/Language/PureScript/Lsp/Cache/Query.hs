@@ -46,6 +46,7 @@ import System.Directory (doesDirectoryExist, doesFileExist, getDirectoryContents
 import System.FilePath (normalise, (</>))
 import "monad-logger" Control.Monad.Logger (LoggingT, MonadLogger, logDebugN, logErrorN, logWarnN, mapLoggingT)
 import Language.PureScript (Ident)
+import Data.Aeson qualified as A
 
 -- import Control.Monad.Logger (logDebugN)
 
@@ -62,34 +63,35 @@ import Language.PureScript (Ident)
 
 getCoreFnExprAt :: (MonadIO m, MonadReader LspEnvironment m) => FilePath -> LSP.Position -> m (Maybe (CF.Expr CF.Ann))
 getCoreFnExprAt path (LSP.Position line col) = do
-  decls :: [SQL.Only String] <-
+  decls :: [SQL.Only Lazy.ByteString] <-
     DB.queryNamed
       "SELECT corefn_expressions.value FROM corefn_expressions \
       \INNER JOIN corefn_modules on corefn_expressions.module_name = corefn_modules.name \
       \WHERE start_line <= :line AND end_line >= :line \
-      \AND start_column <= :column AND end_column >= :column \
+      \AND start_col <= :column AND end_col >= :column \
       \AND path = :path \
       \AND lines = 0 \
       \ORDER BY cols ASC \
       \LIMIT 1"
-      [ ":line" := toInteger line,
-        ":column" := toInteger col,
+      [ ":line" := toInteger (line + 1),
+        ":column" := toInteger (col + 1),
         ":path" := path
       ]
+
   pure $
     A.parseMaybe (CF.exprFromJSON path)
-      =<< fromString
-      . fromOnly
+      =<< A.decode'
+      =<< fromOnly
       <$> listToMaybe decls
 
 getCodeFnBindAt :: (MonadIO m, MonadReader LspEnvironment m) => FilePath -> LSP.Position -> m (Maybe (CF.Bind CF.Ann))
 getCodeFnBindAt path (LSP.Position line col) = do
-  decls :: [SQL.Only String] <-
+  decls :: [SQL.Only Lazy.ByteString] <-
     DB.queryNamed
       "SELECT corefn_declarations.value FROM corefn_declarations \
       \INNER JOIN corefn_modules on corefn_declarations.module_name = corefn_modules.name \
       \WHERE start_line <= :line AND end_line >= :line \
-      \AND start_column <= :column AND end_column >= :column \
+      \AND start_col <= :column AND end_col >= :column \
       \AND path = :path \
       \AND lines = 0 \
       \ORDER BY cols ASC \
@@ -100,8 +102,8 @@ getCodeFnBindAt path (LSP.Position line col) = do
       ]
   pure $
     A.parseMaybe (CF.bindFromJSON path)
-      =<< fromString
-      . fromOnly
+      =<< A.decode'
+      =<< fromOnly
       <$> listToMaybe decls
 
 -- findLocalBinding :: (P.Ident -> Bool) -> Expr a -> Maybe (CF.Binder a)

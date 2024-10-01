@@ -17,6 +17,7 @@ import Data.Set qualified as Set
 import Data.Text qualified as T
 import Database.SQLite.Simple (Connection, NamedParam ((:=)))
 import Database.SQLite.Simple qualified as SQL
+import Distribution.Compat.Directory (makeAbsolute)
 import Language.PureScript (declRefName)
 import Language.PureScript.AST qualified as P
 import Language.PureScript.CST qualified as CST
@@ -43,8 +44,6 @@ import Language.PureScript.Options qualified as P
 import Paths_purescript qualified as Paths
 import Protolude hiding (moduleName)
 import "monad-logger" Control.Monad.Logger (MonadLogger, logDebugN)
-import Distribution.Compat.Directory (makeAbsolute)
-import Database.SQLite.Simple qualified as SQL
 
 addCoreFnIndexing :: (MonadIO m) => Connection -> P.MakeActions m -> P.MakeActions m
 addCoreFnIndexing conn ma =
@@ -92,26 +91,25 @@ indexCoreFn conn m = do
                   P.sourcePosColumn $ P.spanStart ss,
                   P.sourcePosColumn $ P.spanEnd ss
                 )
-            (insertBind', insertExpr', handleBinder, handleCaseAlternative) =
+            (handleBind, handleExpr, handleBinder, handleCaseAlternative) =
               traverseCoreFn (insertBind False) insertExpr handleBinder handleCaseAlternative
+
             insertBind :: Bool -> CF.Bind CF.Ann -> IO (CF.Bind CF.Ann)
             insertBind topLevel bind = do
               case bind of
                 CF.NonRec (ss, _comments, _meta) ident expr -> do
                   insertBindQuery topLevel ss ident bind
-                  void $ insertExpr' expr
                 CF.Rec binds -> forM_ binds $ \(((ss, _, _), ident), expr) -> do
                   insertBindQuery topLevel ss ident bind
-                  insertExpr' expr
-              pure bind
+              handleBind bind
 
             insertExpr :: CF.Expr CF.Ann -> IO (CF.Expr CF.Ann)
             insertExpr expr = do
               SQL.execute
                 conn
                 ( SQL.Query
-                    "INSERT INTO corefn_expressions (module_name, value, start_line, end_line, start_col, end_col, lines, cols)\
-                    \ VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+                    "INSERT INTO corefn_expressions (module_name, value, start_line, end_line, start_col, end_col, lines, cols, shown)\
+                    \ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
                 )
                 ( mName,
                   A.encode $ CFJ.exprToJSON expr,
@@ -120,13 +118,10 @@ indexCoreFn conn m = do
                   P.sourcePosColumn start,
                   P.sourcePosColumn end,
                   lines',
-                  cols
+                  cols,
+                  show expr :: Text
                 )
-              case expr of
-                CF.Let _ binds _ -> do
-                  traverse_ insertBind' binds
-                _ -> pure ()
-              pure expr
+              handleExpr expr
               where
                 (ss, _comments, _meta) = CF.extractAnn expr
                 start = P.spanStart ss
@@ -135,7 +130,7 @@ indexCoreFn conn m = do
                 cols = P.sourcePosColumn end - P.sourcePosColumn start
 
         void $ insertBind True b
-        void $ insertBind' b
+        void $ handleBind b
 
 addExternIndexing :: (MonadIO m) => Connection -> P.MakeActions m -> P.MakeActions m
 addExternIndexing conn ma =
@@ -221,7 +216,7 @@ initDb conn = do
   SQL.execute_ conn "CREATE TABLE IF NOT EXISTS corefn_modules (name TEXT PRIMARY KEY, path TEXT, value TEXT, UNIQUE(name) on conflict replace, UNIQUE(path) on conflict replace)"
   SQL.execute_ conn "CREATE TABLE IF NOT EXISTS corefn_imports (module_name TEXT references corefn_modules(name), imported_module TEXT, UNIQUE(module_name, imported_module) on conflict replace)"
   SQL.execute_ conn "CREATE TABLE IF NOT EXISTS corefn_declarations (module_name TEXT references corefn_modules(name), ident TEXT, top_level BOOLEAN, value TEXT, start_line INTEGER, end_line INTEGER, start_col INTEGER, end_col INTEGER)"
-  SQL.execute_ conn "CREATE TABLE IF NOT EXISTS corefn_expressions (module_name TEXT references corefn_modules(name), value TEXT, start_line INTEGER, end_line INTEGER, start_col INTEGER, end_col INTEGER, lines INTEGER, cols INTEGER)"
+  SQL.execute_ conn "CREATE TABLE IF NOT EXISTS corefn_expressions (module_name TEXT references corefn_modules(name), value TEXT, start_line INTEGER, end_line INTEGER, start_col INTEGER, end_col INTEGER, lines INTEGER, cols INTEGER, shown TEXT)"
   SQL.execute_ conn "CREATE TABLE IF NOT EXISTS externs (path TEXT PRIMARY KEY, ef_version TEXT, value BLOB, module_name TEXT, shown TEXT, UNIQUE(path) on conflict replace, UNIQUE(module_name) on conflict replace)"
   SQL.execute_ conn "CREATE TABLE IF NOT EXISTS ef_imports (module_name TEXT references externs(module_name), imported_module TEXT, import_type TEXT, imported_as TEXT, value BLOB)"
   SQL.execute_ conn "CREATE TABLE IF NOT EXISTS ef_exports (module_name TEXT references externs(module_name), export_name TEXT, value BLOB, name BLOB, printed_name TEXT, start_col INTEGER, start_line INTEGER, end_col INTEGER, end_line INTEGER)"
@@ -242,6 +237,7 @@ addDbIndexes conn = do
   SQL.execute_ conn "CREATE INDEX IF NOT EXISTS corefn_expressions_end_line ON corefn_expressions (end_line)"
   SQL.execute_ conn "CREATE INDEX IF NOT EXISTS corefn_expressions_lines ON corefn_expressions (lines)"
   SQL.execute_ conn "CREATE INDEX IF NOT EXISTS corefn_expressions_cols ON corefn_expressions (cols)"
+  SQL.execute_ conn "CREATE INDEX IF NOT EXISTS corefn_expressions_module_name ON corefn_expressions (module_name)"
   SQL.execute_ conn "CREATE INDEX IF NOT EXISTS externs_path ON externs (path)"
   SQL.execute_ conn "CREATE INDEX IF NOT EXISTS externs_module_name ON externs (module_name)"
   SQL.execute_ conn "CREATE INDEX IF NOT EXISTS ef_imports_module_name ON ef_imports (module_name)"
