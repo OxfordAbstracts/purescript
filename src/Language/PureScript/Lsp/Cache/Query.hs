@@ -47,6 +47,7 @@ import System.FilePath (normalise, (</>))
 import "monad-logger" Control.Monad.Logger (LoggingT, MonadLogger, logDebugN, logErrorN, logWarnN, mapLoggingT)
 import Language.PureScript (Ident)
 import Data.Aeson qualified as A
+import Language.PureScript.AST.SourcePos (SourcePos (SourcePos))
 
 -- import Control.Monad.Logger (logDebugN)
 
@@ -146,59 +147,28 @@ importContainsIdent ident import' = case P.eiImportType import' of
       then Just False
       else Nothing
 
-getEfDeclaration :: (MonadIO m, MonadLogger m, MonadReader LspEnvironment m) => P.ModuleName -> Text -> m (Maybe (P.ModuleName, P.ExternsDeclaration))
-getEfDeclaration moduleName' name = do
-  inModule <- getEfDeclarationOnlyInModule moduleName' name
-  case inModule of
-    Just decl -> pure $ Just (moduleName', decl)
-    Nothing -> getEFImportedDeclaration moduleName' name
-
-getEFImportedDeclaration :: forall m. (MonadIO m, MonadLogger m, MonadReader LspEnvironment m) => P.ModuleName -> Text -> m (Maybe (P.ModuleName, P.ExternsDeclaration))
-getEFImportedDeclaration moduleName' name = do
-  imports <- getEfImports moduleName'
-  exported <- getEfImportsMap (fmap P.eiModule imports)
-  foldM (getFromModule exported) Nothing imports
-  where
-    getFromModule exported acc import' = do
-      case acc of
-        Just _ -> pure acc
-        Nothing -> case importContainsIdent name import' of
-          Just False -> pure acc
-          _ -> do
-            inModule <- getEfDeclarationOnlyInModule importModName name
-            case inModule of
-              Just decl -> pure $ Just (importModName, decl)
-              Nothing -> getFromExports
-      where
-        importModName = P.eiModule import'
-        moduleExports = fromMaybe [] $ Map.lookup importModName exported
-
-        getFromExports :: m (Maybe (P.ModuleName, P.ExternsDeclaration))
-        getFromExports = foldM getFromExport Nothing moduleExports
-
-        getFromExport ::
-          Maybe (P.ModuleName, P.ExternsDeclaration) ->
-          P.DeclarationRef ->
-          m (Maybe (P.ModuleName, P.ExternsDeclaration))
-        getFromExport acc' export' = do
-          case acc of
-            Just _ -> pure acc'
-            Nothing -> do
-              case export' of
-                P.ModuleRef _ mName -> getEfDeclaration mName name
-                P.ReExportRef _ss (P.ExportSource _ definedIn) ref
-                  | printName (declRefName ref) == name ->
-                      fmap (definedIn,) <$> getEfDeclarationOnlyInModule definedIn name
-                _ -> pure acc'
-
-getEfDeclarationOnlyInModule :: (MonadIO m, MonadLogger m, MonadReader LspEnvironment m) => P.ModuleName -> Text -> m (Maybe P.ExternsDeclaration)
-getEfDeclarationOnlyInModule moduleName' name = do
+getEfDeclarationInModule :: (MonadIO m, MonadLogger m, MonadReader LspEnvironment m) => P.ModuleName -> Text -> m (Maybe P.ExternsDeclaration)
+getEfDeclarationInModule moduleName' name = do
   decls <-
     DB.queryNamed
       "SELECT value FROM ef_declarations WHERE module_name = :module_name AND name = :name"
       [ ":module_name" := P.runModuleName moduleName',
         ":name" := name
       ]
-  logDebugN $ "getEfDeclarationOnlyInModule decls: " <> show moduleName' <> " . " <> show name <> " : " <> T.pack (show $ length decls)
+  logDebugN $ "getEfDeclarationInModule decls: " <> show moduleName' <> " . " <> show name <> " : " <> T.pack (show $ length decls)
   pure $ deserialise . fromOnly <$> listToMaybe decls
 
+getEfDeclarationsAtSrcPos :: (MonadIO m, MonadReader LspEnvironment m) => FilePath -> SourcePos -> m [P.ExternsDeclaration]
+getEfDeclarationsAtSrcPos path (SourcePos line col) = do
+  decls <-
+    DB.queryNamed
+      "SELECT value FROM ef_declarations \
+      \inner join externs on ef_declarations.module_name = externs.module_name \
+      \WHERE start_line <= :line AND end_line >= :line \
+      \AND start_col <= :column AND end_col >= :column \
+      \AND path = :path"
+      [ ":line" := line,
+        ":column" := col,
+        ":path" := path
+      ]
+  pure $ deserialise . fromOnly <$> decls

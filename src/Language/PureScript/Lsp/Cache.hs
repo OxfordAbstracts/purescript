@@ -37,6 +37,10 @@ selectExternModuleNameFromFilePath path = do
   res <- DB.queryNamed (Query "SELECT module_name FROM externs WHERE path = :path") [":path" := absPath]
   pure $ P.ModuleName . fromOnly <$> listToMaybe res
 
+selectExternPathFromModuleName :: (MonadIO m, MonadReader LspEnvironment m) => P.ModuleName -> m (Maybe FilePath)
+selectExternPathFromModuleName mName = 
+  DB.queryNamed (Query "SELECT path FROM externs WHERE module_name = :module_name") [":module_name" := P.runModuleName mName] <&> listToMaybe . fmap fromOnly
+
 
 -- | Finds all the externs inside the output folder and returns the
 -- corresponding module names
