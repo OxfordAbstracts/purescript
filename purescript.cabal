@@ -342,6 +342,7 @@ library
     Language.PureScript.Linter.Wildcards
     Language.PureScript.Lsp
     Language.PureScript.Lsp.DB
+    Language.PureScript.Lsp.Docs
     Language.PureScript.Lsp.Cache
     Language.PureScript.Lsp.Cache.IO
     Language.PureScript.Lsp.Cache.Query

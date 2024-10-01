@@ -34,7 +34,7 @@ import Data.Text.Encoding qualified as TE
 import Data.Time.Clock (UTCTime)
 import Data.Version (showVersion)
 import Language.JavaScript.Parser qualified as JS
-import Language.PureScript.AST (SourcePos(..))
+import Language.PureScript.AST (SourcePos(..), Module)
 import Language.PureScript.Bundle qualified as Bundle
 import Language.PureScript.CodeGen.JS qualified as J
 import Language.PureScript.CodeGen.JS.Printer (prettyPrintJS, prettyPrintJSWithSourceMaps)
@@ -58,6 +58,7 @@ import System.Directory (getCurrentDirectory)
 import System.FilePath ((</>), makeRelative, splitPath, normalise, splitDirectories)
 import System.FilePath.Posix qualified as Posix
 import System.IO (stderr)
+import Language.PureScript.Environment (Environment)
 
 -- | Determines when to rebuild a module
 data RebuildPolicy
@@ -112,7 +113,7 @@ data MakeActions m = MakeActions
   , readExterns :: ModuleName -> m (FilePath, Maybe ExternsFile)
   -- ^ Read the externs file for a module as a string and also return the actual
   -- path for the file.
-  , codegen :: CF.Module CF.Ann -> Docs.Module -> ExternsFile -> SupplyT m ()
+  , codegen :: Environment -> Module -> CF.Module CF.Ann -> Docs.Module -> ExternsFile -> SupplyT m ()
   -- ^ Run the code generator for the module and write any required output files.
   , ffiCodegen :: CF.Module CF.Ann -> m ()
   -- ^ Check ffi and print it in the output directory.
@@ -245,8 +246,8 @@ buildMakeActions outputDir filePathMap foreigns usePrefix =
     when (S.member Docs codegenTargets) $ for_ Docs.Prim.primModules $ \docsMod@Docs.Module{..} ->
       writeJSONFile (outputFilename modName "docs.json") docsMod
 
-  codegen :: CF.Module CF.Ann -> Docs.Module -> ExternsFile -> SupplyT Make ()
-  codegen m docs exts = do
+  codegen :: Environment -> Module -> CF.Module CF.Ann -> Docs.Module -> ExternsFile -> SupplyT Make ()
+  codegen _env _m m docs exts = do
     let mn = CF.moduleName m
     lift $ writeCborFile (outputFilename mn externsFileName) exts
     codegenTargets <- lift $ asks optionsCodegenTargets

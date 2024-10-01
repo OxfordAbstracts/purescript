@@ -19,17 +19,17 @@ import Language.PureScript.Ide.Error (IdeError (GeneralError, RebuildError))
 import Language.PureScript.Ide.Rebuild (updateCacheDb)
 import Language.PureScript.Ide.Types (ModuleMap)
 import Language.PureScript.Ide.Util (ideReadFile)
+import Language.PureScript.Lsp.Cache (selectAllExternsMap)
 import Language.PureScript.Lsp.State (cacheRebuild)
 import Language.PureScript.Lsp.Types (LspConfig (..), LspEnvironment (lspConfig, lspDbConnection))
 import Language.PureScript.Make (ffiCodegen')
 import Language.PureScript.Make qualified as P
+import Language.PureScript.Make.Index (addAllIndexing)
 import Language.PureScript.ModuleDependencies qualified as P
 import Language.PureScript.Names qualified as P
 import Language.PureScript.Options qualified as P
 import Protolude hiding (moduleName)
 import "monad-logger" Control.Monad.Logger (MonadLogger, logDebugN)
-import Language.PureScript.Make.Index (addCoreFnIndexing, addExternIndexing)
-import Language.PureScript.Lsp.Cache (selectAllExternsMap)
 
 rebuildFileAndDeps ::
   ( MonadIO m,
@@ -90,8 +90,7 @@ rebuildFile' rebuildDeps srcPath = do
         P.buildMakeActions outputDirectory filePathMap foreigns False
           & (if pureRebuild then enableForeignCheck foreigns codegenTargets . shushCodegen else identity)
           & shushProgress
-          & addCoreFnIndexing conn
-          & addExternIndexing conn
+          & addAllIndexing conn
   (result, warnings) <- liftIO $ P.runMake (P.defaultOptions {P.optionsCodegenTargets = codegenTargets}) do
     newExterns <- P.rebuildModule makeEnv externs m
     unless pureRebuild $
@@ -105,7 +104,7 @@ rebuildFile' rebuildDeps srcPath = do
       logDebugN $ "Rebuilt file: " <> T.pack srcPath
       pure (fp, CST.toMultipleWarnings fp pwarnings <> warnings)
   where
-    codegenTargets = Set.singleton P.JS
+    codegenTargets = Set.fromList [P.JS, P.CoreFn, P.Docs]
 
 -- | Rebuilds a module but opens up its export list first and stores the result
 -- inside the rebuild cache
@@ -121,7 +120,7 @@ rebuildModuleOpen makeEnv externs m = void $ runExceptT do
   (openResult, _) <-
     liftIO $
       P.runMake P.defaultOptions $
-        P.rebuildModule ( shushProgress (shushCodegen makeEnv)) externs (openModuleExports m)
+        P.rebuildModule (shushProgress (shushCodegen makeEnv)) externs (openModuleExports m)
   case openResult of
     Left _ ->
       throwError (GeneralError "Failed when rebuilding with open exports")
@@ -136,7 +135,7 @@ shushProgress ma =
 shushCodegen :: (Monad m) => P.MakeActions m -> P.MakeActions m
 shushCodegen ma =
   ma
-    { P.codegen = \_ _ _ -> pure (),
+    { P.codegen = \_ _ _ _ _ -> pure (),
       P.ffiCodegen = \_ -> pure ()
     }
 

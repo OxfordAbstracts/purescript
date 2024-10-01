@@ -150,13 +150,13 @@ rebuildModuleWithIndex MakeActions{..} exEnv externs m@(Module _ _ moduleName _ 
   -- a bug in the compiler, which should be reported as such.
   -- 2. We do not want to perform any extra work generating docs unless the
   -- user has asked for docs to be generated.
-  let docs = case Docs.convertModule externs exEnv env' m of
+  let docs = case Docs.convertModule externs exEnv env' withPrim of
                Left errs -> internalError $
                  "Failed to produce docs for " ++ T.unpack (runModuleName moduleName)
                  ++ "; details:\n" ++ prettyPrintMultipleErrors defaultPPEOptions errs
                Right d -> d
 
-  evalSupplyT nextVar'' $ codegen renamed docs exts
+  evalSupplyT nextVar'' $ codegen env' mod' renamed docs exts
   return (exts, optimized, docs)
 
 -- | Compiles in "make" mode, compiling each module separately to a @.js@ file and an @externs.cbor@ file.

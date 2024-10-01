@@ -772,6 +772,35 @@ data Expr
   | PositionedValue SourceSpan [Comment] Expr
   deriving (Eq, Ord, Show, Generic, Serialise, NFData)
 
+exprSourceSpan :: Expr -> Maybe SourceSpan
+exprSourceSpan (Literal ss _) = Just ss
+exprSourceSpan (UnaryMinus ss _) = Just ss
+exprSourceSpan (BinaryNoParens _ _ _) = Nothing
+exprSourceSpan (Parens _) = Nothing
+exprSourceSpan (Accessor _ _) = Nothing
+exprSourceSpan (ObjectUpdate _ _) = Nothing
+exprSourceSpan (ObjectUpdateNested _ _) = Nothing
+exprSourceSpan (Abs _ _) = Nothing
+exprSourceSpan (App _ _) = Nothing
+exprSourceSpan (VisibleTypeApp _ _) = Nothing
+exprSourceSpan (Unused _) = Nothing
+exprSourceSpan (Var ss _) = Just ss
+exprSourceSpan (Op ss _) = Just ss
+exprSourceSpan (IfThenElse _ _ _) = Nothing
+exprSourceSpan (Constructor ss _) = Just ss
+exprSourceSpan (Case _ _) = Nothing
+exprSourceSpan (TypedValue _ _ _) = Nothing
+exprSourceSpan (Let _ _ _) = Nothing
+exprSourceSpan (Do _ _) = Nothing
+exprSourceSpan (Ado _ _ _) = Nothing
+exprSourceSpan (TypeClassDictionary _ _ _) = Nothing
+exprSourceSpan (DeferredDictionary _ _) = Nothing
+exprSourceSpan (DerivedInstancePlaceholder _ _) = Nothing
+exprSourceSpan AnonymousArgument = Nothing
+exprSourceSpan (Hole _) = Nothing
+exprSourceSpan (PositionedValue ss _ _) = Just ss
+
+
 -- |
 -- Metadata that tells where a let binding originated
 --

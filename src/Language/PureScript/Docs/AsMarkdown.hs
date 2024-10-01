@@ -2,6 +2,7 @@ module Language.PureScript.Docs.AsMarkdown
   ( Docs
   , runDocs
   , moduleAsMarkdown
+  , declAsMarkdown
   , codeToString
   ) where
 

@@ -10,6 +10,7 @@ import Codec.Serialise (deserialise, serialise)
 import Control.Lens (Field1 (_1), (^.), _1)
 import Control.Monad.Trans.Writer (execWriterT)
 import Data.Aeson (encode)
+import Data.Aeson qualified as A
 import Data.Aeson.Types qualified as A
 import Data.ByteString.Lazy qualified as Lazy
 import Data.List qualified as List
@@ -23,8 +24,10 @@ import GHC.Base (String)
 import GHC.Real (Integral (toInteger))
 import Language.LSP.Protocol.Types (Position)
 import Language.LSP.Protocol.Types qualified as LSP
+import Language.PureScript (Ident)
 import Language.PureScript.AST qualified as P
 import Language.PureScript.AST.Declarations (declRefName, declSourceAnn)
+import Language.PureScript.AST.SourcePos (SourcePos (SourcePos))
 import Language.PureScript.AST.Traversals (accumTypes)
 import Language.PureScript.Comments qualified as P
 import Language.PureScript.CoreFn qualified as CF
@@ -45,9 +48,6 @@ import Protolude qualified as Either
 import System.Directory (doesDirectoryExist, doesFileExist, getDirectoryContents)
 import System.FilePath (normalise, (</>))
 import "monad-logger" Control.Monad.Logger (LoggingT, MonadLogger, logDebugN, logErrorN, logWarnN, mapLoggingT)
-import Language.PureScript (Ident)
-import Data.Aeson qualified as A
-import Language.PureScript.AST.SourcePos (SourcePos (SourcePos))
 
 -- import Control.Monad.Logger (logDebugN)
 
@@ -107,12 +107,6 @@ getCodeFnBindAt path (LSP.Position line col) = do
       =<< fromOnly
       <$> listToMaybe decls
 
--- findLocalBinding :: (P.Ident -> Bool) -> Expr a -> Maybe (CF.Binder a)
--- findLocalBinding f = go
---   where
---     go (Abs _ ident _) | f ident = Just (VarBinder nullSourceAnn ident)
---     go (Let _ binds _) = asum (fmap (go . binder) binds)
---     go _ = Nothing
 
 ------------------------------------------------------------------------------------------------------------------------
 ------------ Externs ---------------------------------------------------------------------------------------------------
@@ -138,15 +132,6 @@ getEfExports moduleNames = do
       ]
   pure $ bimap P.ModuleName deserialise <$> exports
 
-importContainsIdent :: Text -> P.ExternsImport -> Maybe Bool
-importContainsIdent ident import' = case P.eiImportType import' of
-  P.Implicit -> Nothing
-  P.Explicit refs -> Just $ any ((==) ident . printName . P.declRefName) refs
-  P.Hiding refs ->
-    if any ((==) ident . printName . P.declRefName) refs
-      then Just False
-      else Nothing
-
 getEfDeclarationInModule :: (MonadIO m, MonadLogger m, MonadReader LspEnvironment m) => P.ModuleName -> Text -> m (Maybe P.ExternsDeclaration)
 getEfDeclarationInModule moduleName' name = do
   decls <-
@@ -162,7 +147,7 @@ getEfDeclarationsAtSrcPos :: (MonadIO m, MonadReader LspEnvironment m) => FilePa
 getEfDeclarationsAtSrcPos path (SourcePos line col) = do
   decls <-
     DB.queryNamed
-      "SELECT value FROM ef_declarations \
+      "SELECT ef_declarations.value FROM ef_declarations \
       \inner join externs on ef_declarations.module_name = externs.module_name \
       \WHERE start_line <= :line AND end_line >= :line \
       \AND start_col <= :column AND end_col >= :column \

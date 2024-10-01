@@ -17,7 +17,7 @@ import Language.PureScript.DB (mkConnection)
 import Language.PureScript.Errors.JSON (JSONResult (..), toJSONErrors)
 import Language.PureScript.Glob (PSCGlobs (..), toInputGlobs, warnFileTypeNotFound)
 import Language.PureScript.Make (buildMakeActions, inferForeignModules, runMake)
-import Language.PureScript.Make.Index (addCoreFnIndexing, addExternIndexing, initDb)
+import Language.PureScript.Make.Index (addAllIndexing, initDb)
 import Options.Applicative qualified as Opts
 import SharedCLI qualified
 import System.Console.ANSI qualified as ANSI
@@ -83,8 +83,7 @@ compile PSCMakeOptions {..} = do
     conn <- liftIO $ mkConnection pscmOutputDir
     liftIO $ initDb conn
     let makeActions =
-          addCoreFnIndexing conn $
-            addExternIndexing conn $
+          addAllIndexing conn $
               buildMakeActions pscmOutputDir filePathMap foreigns pscmUsePrefix
     P.make makeActions (map snd ms)
   printWarningsAndErrors (P.optionsVerboseErrors pscmOpts) pscmJSONErrors moduleFiles makeWarnings makeErrors

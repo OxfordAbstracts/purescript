@@ -25,6 +25,7 @@ import Data.Set qualified as Set
 import Data.Text qualified as T
 import Data.Time (getCurrentTime)
 import GHC.IO (unsafePerformIO)
+import Language.Haskell.TH (listT)
 import Language.LSP.Protocol.Lens qualified as LSP
 import Language.LSP.Protocol.Message qualified as Message
 import Language.LSP.Protocol.Types (Diagnostic, Uri)
@@ -46,6 +47,7 @@ import Language.PureScript.Ide.Logging (runErrLogger)
 import Language.PureScript.Ide.Types (Completion (Completion, complDocumentation, complExpandedType, complType), IdeLogLevel (LogAll))
 import Language.PureScript.Lsp.Cache (selectExternModuleNameFromFilePath, selectExternPathFromModuleName)
 import Language.PureScript.Lsp.Cache.Query (getCoreFnExprAt, getEfDeclarationInModule, getEfDeclarationsAtSrcPos)
+import Language.PureScript.Lsp.Docs (readDeclarationDocsAsMarkdown)
 import Language.PureScript.Lsp.Print (printDeclarationType)
 import Language.PureScript.Lsp.Rebuild (rebuildFile)
 import Language.PureScript.Lsp.State (initFinished, waitForInit)
@@ -57,7 +59,6 @@ import Protolude hiding (to)
 import System.Directory (createDirectoryIfMissing)
 import Text.PrettyPrint.Boxes (render)
 import "monad-logger" Control.Monad.Logger (LoggingT, logDebug, logDebugN, logErrorN, logWarnN, mapLoggingT)
-import Language.Haskell.TH (listT)
 
 type HandlerM config = Server.LspT config (ReaderT LspEnvironment (LoggingT IO))
 
@@ -187,24 +188,20 @@ handlers diagErrs =
                   . to Types.toNormalizedUri
             nullRes = res $ Right $ Types.InR Types.Null
 
+            markdownRes :: Text -> HandlerM () ()
+            markdownRes md = res $ Right $ Types.InL $ Types.Hover (Types.InL $ Types.MarkupContent Types.MarkupKind_Markdown md) Nothing
+
             markdownTypeRes :: Text -> Maybe Text -> [P.Comment] -> HandlerM () ()
             markdownTypeRes word type' comments =
-              res $
-                Right $
-                  Types.InL $
-                    Types.Hover
-                      ( Types.InL $
-                          Types.MarkupContent
-                            Types.MarkupKind_Markdown
-                            ( "```purescript\n"
-                                <> word
-                                <> annotation
-                                <> "\n"
-                                <> fold (convertComments comments)
-                                <> "\n```"
-                            )
-                      )
-                      Nothing
+              markdownRes $ pursTypeStr word type' comments
+
+            pursTypeStr word type' comments =
+              "```purescript\n"
+                <> word
+                <> annotation
+                <> "\n"
+                <> fold (convertComments comments)
+                <> "\n```"
               where
                 annotation = case type' of
                   Just t -> " :: " <> t
@@ -215,23 +212,23 @@ handlers diagErrs =
 
         forLsp filePathMb \filePath -> do
           corefnExprMb <- liftLsp $ getCoreFnExprAt filePath pos
+          liftLsp $ logDebugN $ "Corefn expr: " <> show corefnExprMb
           forLsp corefnExprMb \case
             CF.Literal _ _ -> nullRes
             CF.Constructor (_ss, comments, meta) tName cMame _ -> do
               markdownTypeRes (P.runProperName cMame) (Just $ P.runProperName tName) comments
             CF.Var (_ss, comments, meta) (P.Qualified qb ident) -> do
-              typeMb <- liftLsp $ case qb of
-                P.ByModuleName mName ->
-                  fmap (prettyPrintTypeSingleLine . efDeclSourceType)
-                    <$> getEfDeclarationInModule mName (runIdent ident)
-                P.BySourcePos pos' -> do
-                  decls <- getEfDeclarationsAtSrcPos filePath pos'
-                  logDebugN $ "pos: " <> T.pack (show pos')
-                  logDebugN $ "$ length decls at pos: " <> T.pack (show $ length decls)
-                  logDebugN $ "decls at pos: " <> T.pack (show decls)
-                  pure (prettyPrintTypeSingleLine . efDeclSourceType <$> listToMaybe decls)
+              case qb of
+                P.ByModuleName mName -> do
+                  docsMb <- liftLsp $ readDeclarationDocsAsMarkdown mName (P.runIdent ident)
+                  case docsMb of
+                    Just docs -> markdownRes docs
+                    _ -> do
+                      declMb <- liftLsp $ getEfDeclarationInModule mName (runIdent ident)
+                      markdownTypeRes (P.runIdent ident) (prettyPrintTypeSingleLine . efDeclSourceType <$> declMb) comments
 
-              markdownTypeRes (P.runIdent ident) typeMb comments
+                P.BySourcePos pos' ->
+                  markdownTypeRes (P.runIdent ident) Nothing []
             _ -> nullRes,
       Server.requestHandler Message.SMethod_TextDocumentDefinition $ \req res -> do
         sendInfoMsg "SMethod_TextDocumentDefinition"
