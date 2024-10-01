@@ -66,8 +66,8 @@ getCoreFnExprAt path (LSP.Position line col) = do
     DB.queryNamed
       "SELECT corefn_expressions.value FROM corefn_expressions \
       \INNER JOIN corefn_modules on corefn_expressions.module_name = corefn_modules.name \
-      \WHERE startLine <= :line AND endLine >= :line \
-      \AND startColumn <= :column AND endColumn >= :column \
+      \WHERE start_line <= :line AND end_line >= :line \
+      \AND start_column <= :column AND end_column >= :column \
       \AND path = :path \
       \AND lines = 0 \
       \ORDER BY cols ASC \
@@ -88,8 +88,8 @@ getCodeFnBindAt path (LSP.Position line col) = do
     DB.queryNamed
       "SELECT corefn_declarations.value FROM corefn_declarations \
       \INNER JOIN corefn_modules on corefn_declarations.module_name = corefn_modules.name \
-      \WHERE startLine <= :line AND endLine >= :line \
-      \AND startColumn <= :column AND endColumn >= :column \
+      \WHERE start_line <= :line AND end_line >= :line \
+      \AND start_column <= :column AND end_column >= :column \
       \AND path = :path \
       \AND lines = 0 \
       \ORDER BY cols ASC \
