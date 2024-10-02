@@ -187,7 +187,7 @@ getAstDeclarationsStartingWith :: (MonadIO m, MonadReader LspEnvironment m) => P
 getAstDeclarationsStartingWith moduleName' prefix = do
   decls :: [(Text, Lazy.ByteString )] <-
     DB.queryNamed
-      "SELECT value, module_name FROM ast_declarations \
+      "SELECT module_name, value FROM ast_declarations \
       \WHERE (module_name = :module_name OR exported) \
       \AND name LIKE :prefix \
       \ORDER BY name ASC \

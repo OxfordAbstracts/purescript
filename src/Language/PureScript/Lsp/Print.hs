@@ -21,6 +21,11 @@ printDeclarationType decl =
       accumTypes (pure . T.pack . P.prettyPrintType maxBound) ^. _1 $
         decl
 
+printDeclarationTypeMb :: P.Declaration -> Maybe Text
+printDeclarationTypeMb decl =
+    (head :: [Text] -> Maybe Text) $
+      accumTypes (pure . T.pack . P.prettyPrintType maxBound) ^. _1 $
+        decl
 
 printName :: P.Name -> Text
 printName = \case

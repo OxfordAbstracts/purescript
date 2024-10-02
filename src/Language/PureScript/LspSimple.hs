@@ -54,7 +54,7 @@ import Language.PureScript.Ide.Types (Completion (Completion, complDocumentation
 import Language.PureScript.Lsp.Cache (selectExternModuleNameFromFilePath, selectExternPathFromModuleName)
 import Language.PureScript.Lsp.Cache.Query (getAstDeclarationInModule, getAstDeclarationsStartingWith, getCoreFnExprAt, getEfDeclarationInModule, getEfDeclarationsAtSrcPos)
 import Language.PureScript.Lsp.Docs (readDeclarationDocsAsMarkdown, readQualifiedNameDocsAsMarkdown, readQualifiedNameDocsSourceSpan)
-import Language.PureScript.Lsp.Print (printDeclarationType, printName)
+import Language.PureScript.Lsp.Print (printDeclarationType, printDeclarationTypeMb, printName)
 import Language.PureScript.Lsp.Rebuild (rebuildFile)
 import Language.PureScript.Lsp.State (initFinished, waitForInit)
 import Language.PureScript.Lsp.Types (LspEnvironment)
@@ -361,55 +361,56 @@ handlers diagErrs =
                     Right $
                       Types.InL $
                         decls <&> \(declModule, decl) ->
-                          Types.CompletionItem
-                            { _label = foldMap printName (P.declName decl),
-                              _labelDetails =
-                                Just $
-                                  Types.CompletionItemLabelDetails
-                                    (Just $ printDeclarationType decl)
-                                    (convertComments $ snd $ P.declSourceAnn decl),
-                              _kind = declToCompletionItemKind decl,
-                              _tags = Nothing, --  Maybe [Types.CompletionItemTag]
-                              _detail = Just $ printDeclarationType decl,
-                              _documentation =
-                                Types.InR . Types.MarkupContent Types.MarkupKind_Markdown
-                                  <$> Map.lookup decl declDocs, 
-                              _deprecated = Nothing, --  Maybe Bool
-                              _preselect = Nothing, --  Maybe Bool
-                              _sortText = Nothing, --  Maybe Text
-                              _filterText = Nothing, --  Maybe Text
-                              _insertText = Nothing, --  Maybe Text
-                              _insertTextFormat = Nothing, --  Maybe Types.InsertTextFormat
-                              _insertTextMode = Nothing, --  Maybe Types.InsertTextMode
-                              _textEdit = Nothing, --  Maybe
-                              --                (Types.TextEdit Types.|? Types.InsertReplaceEdit)
-                              _textEditText = Nothing, --  Maybe Text
-                              _additionalTextEdits = Nothing, --  Maybe [Types.TextEdit]
-                              _commitCharacters = Nothing, --  Maybe [Text]
-                              _command = Nothing, --  Maybe Types.Command
-                              _data_ = Nothing --  Maybe aeson-2.0.3.0:Data.Aeson.Types.Internal.Value
-                            }
+                          let label = foldMap printName (P.declName decl)
+                           in Types.CompletionItem
+                                { _label = label,
+                                  _labelDetails =
+                                    Just $
+                                      Types.CompletionItemLabelDetails
+                                        (Just $ " " <> printDeclarationType decl)
+                                        (Just $ " " <> P.runModuleName declModule),
+                                  _kind = declToCompletionItemKind decl,
+                                  _tags = Nothing, --  Maybe [Types.CompletionItemTag]
+                                  _detail = Nothing, --  Just $ wrapPursMd $ "  " <> label <> foldMap (" :: " <>) (printDeclarationTypeMb decl),
+                                  _documentation =
+                                    Types.InR . Types.MarkupContent Types.MarkupKind_Markdown
+                                      <$> (Map.lookup decl declDocs <|> fmap wrapPursMd (printDeclarationTypeMb decl)),
+                                  _deprecated = Nothing, --  Maybe Bool
+                                  _preselect = Nothing, --  Maybe Bool
+                                  _sortText = Nothing, --  Maybe Text
+                                  _filterText = Nothing, --  Maybe Text
+                                  _insertText = Nothing, --  Maybe Text
+                                  _insertTextFormat = Nothing, --  Maybe Types.InsertTextFormat
+                                  _insertTextMode = Nothing, --  Maybe Types.InsertTextMode
+                                  _textEdit = Nothing, --  Maybe
+                                  --                (Types.TextEdit Types.|? Types.InsertReplaceEdit)
+                                  _textEditText = Nothing, --  Maybe Text
+                                  _additionalTextEdits = Nothing, --  Maybe [Types.TextEdit]
+                                  _commitCharacters = Nothing, --  Maybe [Text]
+                                  _command = Nothing, --  Maybe Types.Command
+                                  _data_ = Nothing --  Maybe aeson-2.0.3.0:Data.Aeson.Types.Internal.Value
+                                }
 
-                            --                           _label :: Text
-                            -- _labelDetails :: Maybe Types.CompletionItemLabelDetails
-                            -- _kind :: Maybe Types.CompletionItemKind
-                            -- _tags :: Maybe [Types.CompletionItemTag]
-                            -- _detail :: Maybe Text
-                            -- _documentation :: Maybe (Text Types.|? Types.MarkupContent)
-                            -- _deprecated :: Maybe Bool
-                            -- _preselect :: Maybe Bool
-                            -- _sortText :: Maybe Text
-                            -- _filterText :: Maybe Text
-                            -- _insertText :: Maybe Text
-                            -- _insertTextFormat :: Maybe Types.InsertTextFormat
-                            -- _insertTextMode :: Maybe Types.InsertTextMode
-                            -- _textEdit :: Maybe
-                            --                (Types.TextEdit Types.|? Types.InsertReplaceEdit)
-                            -- _textEditText :: Maybe Text
-                            -- _additionalTextEdits :: Maybe [Types.TextEdit]
-                            -- _commitCharacters :: Maybe [Text]
-                            -- _command :: Maybe Types.Command
-                            -- _data_ :: Maybe aeson-2.0.3.0:Data.Aeson.Types.Internal.Value
+                                --                           _label :: Text
+                                -- _labelDetails :: Maybe Types.CompletionItemLabelDetails
+                                -- _kind :: Maybe Types.CompletionItemKind
+                                -- _tags :: Maybe [Types.CompletionItemTag]
+                                -- _detail :: Maybe Text
+                                -- _documentation :: Maybe (Text Types.|? Types.MarkupContent)
+                                -- _deprecated :: Maybe Bool
+                                -- _preselect :: Maybe Bool
+                                -- _sortText :: Maybe Text
+                                -- _filterText :: Maybe Text
+                                -- _insertText :: Maybe Text
+                                -- _insertTextFormat :: Maybe Types.InsertTextFormat
+                                -- _insertTextMode :: Maybe Types.InsertTextMode
+                                -- _textEdit :: Maybe
+                                --                (Types.TextEdit Types.|? Types.InsertReplaceEdit)
+                                -- _textEditText :: Maybe Text
+                                -- _additionalTextEdits :: Maybe [Types.TextEdit]
+                                -- _commitCharacters :: Maybe [Text]
+                                -- _command :: Maybe Types.Command
+                                -- _data_ :: Maybe aeson-2.0.3.0:Data.Aeson.Types.Internal.Value
     ]
   where
     getFileDiagnotics :: (LSP.HasUri a2 Uri, LSP.HasTextDocument a1 a2, LSP.HasParams s a1) => s -> HandlerM config ([ErrorMessage], [Types.Diagnostic])
@@ -550,6 +551,9 @@ logToFile txt =
           writeFile ("logs/" <> time <> "-----" <> T.unpack txt) $ txt <> "\n"
       )
       (const $ pure ())
+
+wrapPursMd :: Text -> Text
+wrapPursMd txt = "```purescript\n" <> txt <> "\n```"
 
 -- getCompletionsWithPrim ::
 --   (Ide m) =>
