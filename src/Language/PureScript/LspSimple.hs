@@ -277,6 +277,7 @@ handlers diagErrs =
             forLsp mNameMb \mName -> do
               names <- liftLsp $ getNamesAtPosition pos mName (VFS._file_text vf)
               liftLsp $ logDebugN $ "Found names: " <> show names
+              
               case head names of
                 Just name -> do
                   liftLsp $ logDebugN $ "Found name: " <> show name
