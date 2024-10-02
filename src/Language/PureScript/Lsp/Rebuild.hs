@@ -29,29 +29,15 @@ import Language.PureScript.ModuleDependencies qualified as P
 import Language.PureScript.Names qualified as P
 import Language.PureScript.Options qualified as P
 import Protolude hiding (moduleName)
-import "monad-logger" Control.Monad.Logger (MonadLogger, logDebugN)
 
 rebuildFile ::
   ( MonadIO m,
     MonadError IdeError m,
-    MonadReader LspEnvironment m,
-    MonadLogger m
+    MonadReader LspEnvironment m
   ) =>
   FilePath ->
   m (FilePath, P.MultipleErrors)
-rebuildFile = rebuildFile' False
-
-rebuildFile' ::
-  ( MonadIO m,
-    MonadError IdeError m,
-    MonadReader LspEnvironment m,
-    MonadLogger m
-  ) =>
-  Bool ->
-  FilePath ->
-  m (FilePath, P.MultipleErrors)
-rebuildFile' rebuildDeps srcPath = do
-  logDebugN $ "Rebuilding file: " <> T.pack srcPath
+rebuildFile srcPath = do
   (fp, input) <-
     case List.stripPrefix "data:" srcPath of
       Just source -> pure ("", T.pack source)
@@ -62,14 +48,6 @@ rebuildFile' rebuildDeps srcPath = do
     Right m -> pure m
   let moduleName = P.getModuleName m
   externs <- sortExterns m =<< selectAllExternsMap
-  when rebuildDeps do
-    forM_ externs \ef -> do
-      let depSrcPath = P.spanName $ P.efSourceSpan ef
-          modName = P.runModuleName $ P.efModuleName ef
-      when (modName /= "Prim" && T.take 5 modName /= "Prim.") do
-        logDebugN $ "Rebuilding dependency: " <> T.pack depSrcPath
-        void $ rebuildFile' False depSrcPath
-
   outputDirectory <- asks (confOutputPath . lspConfig)
   let filePathMap = M.singleton moduleName (Left P.RebuildAlways)
   let pureRebuild = fp == ""
@@ -91,7 +69,6 @@ rebuildFile' rebuildDeps srcPath = do
       throwError (RebuildError [(fp, input)] errors)
     Right newExterns -> do
       rebuildModuleOpen makeEnv externs m
-      logDebugN $ "Rebuilt file: " <> T.pack srcPath
       pure (fp, CST.toMultipleWarnings fp pwarnings <> warnings)
   where
     codegenTargets = Set.fromList [P.JS, P.CoreFn, P.Docs]

@@ -119,7 +119,6 @@ handlers diagErrs =
             fileName = Types.uriToFilePath uri
         void $ liftLspWithErr do
           waitForInit
-          logDebugN "Rebuilding file from open"
           traverse rebuildFile fileName,
       Server.notificationHandler Message.SMethod_TextDocumentDidChange $ \msg -> do
         liftLsp $ logDebugN "TextDocumentDidChange",
@@ -130,7 +129,6 @@ handlers diagErrs =
             fileName = Types.uriToFilePath uri
         void $ liftLspWithErr do
           waitForInit
-          logDebugN "Rebuilding file from save"
           traverse rebuildFile fileName,
       Server.notificationHandler Message.SMethod_WorkspaceDidChangeConfiguration $ \msg -> do
         cfg <- getConfig
@@ -271,27 +269,30 @@ handlers diagErrs =
             forLsp val f = maybe nullRes f val
 
         forLsp filePathMb \filePath -> do
-          corefnExprMb <- liftLsp $ getCoreFnExprAt filePath pos
-          case corefnExprMb of
-            Just (CF.Var (ss, _comments, _meta) (P.Qualified qb ident)) -> do
-              liftLsp $ logDebugN $ "Found Corefn Var source span: " <> show ss
-              let name = P.runIdent ident
-              case qb of
-                P.ByModuleName mName -> do
-                  declMb <- liftLsp $ getEfDeclarationInModule mName name
-                  forLsp declMb \decl -> do
-                    modFpMb <- liftLsp $ selectExternPathFromModuleName mName
-                    forLsp modFpMb \modFp -> do
-                      let sourceSpan = efDeclSourceSpan decl
-                      locationRes modFp (spanToRange sourceSpan)
-                P.BySourcePos srcPos ->
-                  locationRes filePath (Types.Range (sourcePosToPosition srcPos) (sourcePosToPosition srcPos))
-            _ -> do
+          -- corefnExprMb <- liftLsp $ getCoreFnExprAt filePath pos
+          -- case corefnExprMb of
+          --   Just (CF.Var (ss, _comments, _meta) (P.Qualified qb ident)) -> do
+          --     liftLsp $ logDebugN $ "Found Corefn Var source span: " <> show ss
+          --     let name = P.runIdent ident
+          --     case qb of
+          --       P.ByModuleName mName -> do
+          --         declMb <- liftLsp $ getEfDeclarationInModule mName name
+          --         forLsp declMb \decl -> do
+          --           modFpMb <- liftLsp $ selectExternPathFromModuleName mName
+          --           forLsp modFpMb \modFp -> do
+          --             let sourceSpan = efDeclSourceSpan decl
+          --             locationRes modFp (spanToRange sourceSpan)
+          --       P.BySourcePos srcPos ->
+          --         locationRes filePath (Types.Range (sourcePosToPosition srcPos) (sourcePosToPosition srcPos))
+            -- _ -> do
               vfMb <- Server.getVirtualFile uri
               forLsp vfMb \vf -> do
                 mNameMb <- liftLsp $ selectExternModuleNameFromFilePath filePath
+                liftLsp $ logDebugN $ "Module name: " <> show mNameMb
+                liftLsp $ logDebugN $ "Pos: " <> show pos
                 forLsp mNameMb \mName -> do
                   names <- liftLsp $ getNamesAtPosition pos mName (VFS._file_text vf)
+                  liftLsp $ logDebugN $ "Found names: " <> show names
                   forLsp (head names) \name -> do
                     liftLsp $ logDebugN $ "Found name: " <> show name
                     spanMb <- liftLsp $ readQualifiedNameDocsSourceSpan name
@@ -323,11 +324,9 @@ handlers diagErrs =
       let uri :: Uri
           uri = getMsgUri msg
           fileName = Types.uriToFilePath uri
-      logT $ "Rebuilding file: " <> show (uri, fileName)
       case fileName of
         Just file -> do
-          res <- fmap snd <$> liftLspWithErr (waitForInit *> logWarnN "rebuilding for diagnostics" *> rebuildFile file)
-          logT $ "Rebuild result: " <> show res
+          res <- fmap snd <$> liftLspWithErr (rebuildFile file)
           getResultDiagnostics res
         Nothing -> do
           sendInfoMsg $ "No file path for uri: " <> show uri

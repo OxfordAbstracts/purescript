@@ -68,13 +68,13 @@ getWordOnLine line' col =
 getNamesAtPosition :: (MonadIO m, MonadLogger m, MonadReader LspEnvironment m) => Types.Position -> P.ModuleName -> Rope -> m (Set (P.Qualified P.Name))
 getNamesAtPosition pos modName src = do
   let search = getWordAt src pos
+  logDebugN $ "Looking up " <> search <> " in module " <> P.runModuleName modName
   decls <- getAstDeclarationsAtSrcPos modName (positionToSourcePos pos)
   case head decls of
     Nothing -> do
-      logDebugN $ "No declaration found at position " <> show pos
+      logDebugN "No declaration found at position"
       pure mempty
     Just decl -> do
-      logDebugN $ "Found declaration: " <> show decl
       let goDef _ = mempty
           getDeclName :: P.Declaration -> Set (P.Qualified P.Name)
           getDeclName decl' = case decl' of

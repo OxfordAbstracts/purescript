@@ -140,7 +140,6 @@ getEfDeclarationInModule moduleName' name = do
       [ ":module_name" := P.runModuleName moduleName',
         ":name" := name
       ]
-  logDebugN $ "getEfDeclarationInModule decls: " <> show moduleName' <> " . " <> show name <> " : " <> T.pack (show $ length decls)
   pure $ deserialise . fromOnly <$> listToMaybe decls
 
 getEfDeclarationsAtSrcPos :: (MonadIO m, MonadReader LspEnvironment m) => FilePath -> SourcePos -> m [P.ExternsDeclaration]
