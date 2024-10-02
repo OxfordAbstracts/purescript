@@ -8,10 +8,10 @@ import Language.PureScript.AST.Declarations qualified as P
 -- import Language.PureScript.Ide.Types (IdeLogLevel)
 
 import Language.PureScript.DB (mkConnection)
+import Language.PureScript.Environment qualified as P
 import Language.PureScript.Externs qualified as P
 import Language.PureScript.Names qualified as P
 import Protolude
-import Language.PureScript.Environment qualified as P
 
 data LspEnvironment = LspEnvironment
   { lspConfig :: LspConfig,
@@ -42,5 +42,13 @@ data CurrentFile = CurrentFile
     currentModule :: P.Module,
     currentExternsFile :: P.ExternsFile,
     currentEnv :: P.Environment
+  }
+  deriving (Show)
+
+data CompleteItemData = CompleteItemData
+  { cidPath :: FilePath,
+    cidModuleName :: P.ModuleName,
+    cidImportedModuleName :: Text,
+    cidImportedValue :: Text
   }
   deriving (Show)

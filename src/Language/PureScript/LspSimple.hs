@@ -17,6 +17,7 @@ module Language.PureScript.LspSimple (main) where
 
 import Control.Lens (Field1 (_1), view, (^.))
 import Control.Lens.Getter (to)
+import Control.Lens.Setter (set)
 import Control.Monad.Cont (MonadTrans (lift))
 import Control.Monad.IO.Unlift
 import Control.Monad.Reader (mapReaderT)
@@ -344,7 +345,7 @@ handlers diagErrs =
           forLsp vfMb \vf -> do
             let word = getWordAt (VFS._file_text vf) pos
             liftLsp $ logDebugN $ "Word: " <> show word <> " len " <> show (T.length word)
-            if word == ""
+            if T.length word < 2
               then nullRes
               else do
                 mNameMb <- liftLsp $ selectExternModuleNameFromFilePath filePath
@@ -370,8 +371,8 @@ handlers diagErrs =
                                         (Just $ " " <> printDeclarationType decl)
                                         (Just $ " " <> P.runModuleName declModule),
                                   _kind = declToCompletionItemKind decl,
-                                  _tags = Nothing, --  Maybe [Types.CompletionItemTag]
-                                  _detail = Nothing, --  Just $ wrapPursMd $ "  " <> label <> foldMap (" :: " <>) (printDeclarationTypeMb decl),
+                                  _tags = Nothing,
+                                  _detail = Nothing,
                                   _documentation =
                                     Types.InR . Types.MarkupContent Types.MarkupKind_Markdown
                                       <$> (Map.lookup decl declDocs <|> fmap wrapPursMd (printDeclarationTypeMb decl)),
@@ -388,29 +389,20 @@ handlers diagErrs =
                                   _additionalTextEdits = Nothing, --  Maybe [Types.TextEdit]
                                   _commitCharacters = Nothing, --  Maybe [Text]
                                   _command = Nothing, --  Maybe Types.Command
-                                  _data_ = Nothing --  Maybe aeson-2.0.3.0:Data.Aeson.Types.Internal.Value
-                                }
-
-                                --                           _label :: Text
-                                -- _labelDetails :: Maybe Types.CompletionItemLabelDetails
-                                -- _kind :: Maybe Types.CompletionItemKind
-                                -- _tags :: Maybe [Types.CompletionItemTag]
-                                -- _detail :: Maybe Text
-                                -- _documentation :: Maybe (Text Types.|? Types.MarkupContent)
-                                -- _deprecated :: Maybe Bool
-                                -- _preselect :: Maybe Bool
-                                -- _sortText :: Maybe Text
-                                -- _filterText :: Maybe Text
-                                -- _insertText :: Maybe Text
-                                -- _insertTextFormat :: Maybe Types.InsertTextFormat
-                                -- _insertTextMode :: Maybe Types.InsertTextMode
-                                -- _textEdit :: Maybe
-                                --                (Types.TextEdit Types.|? Types.InsertReplaceEdit)
-                                -- _textEditText :: Maybe Text
-                                -- _additionalTextEdits :: Maybe [Types.TextEdit]
-                                -- _commitCharacters :: Maybe [Text]
-                                -- _command :: Maybe Types.Command
-                                -- _data_ :: Maybe aeson-2.0.3.0:Data.Aeson.Types.Internal.Value
+                                  _data_ = Just $ A.toJSON (mName, declModule, label) --  Maybe aeson-2.0.3.0:Data.Aeson.Types.Internal.Value
+                                },
+      Server.requestHandler Message.SMethod_CompletionItemResolve $ \req res -> do
+        let completionItem = req ^. LSP.params
+        -- filePathMb = Types.uriToFilePath $ docIdent ^. LSP.uri
+        -- uri :: Types.NormalizedUri
+        -- uri =
+        --   req
+        --     ^. LSP.params
+        --       . LSP.textDocument
+        --       . LSP.uri
+        --       . to Types.toNormalizedUri
+        liftLsp $ logDebugN "SMethod_TextDocumentCompletionItemResolve"
+        res $ Right (set LSP.documentation Nothing completionItem)
     ]
   where
     getFileDiagnotics :: (LSP.HasUri a2 Uri, LSP.HasTextDocument a1 a2, LSP.HasParams s a1) => s -> HandlerM config ([ErrorMessage], [Types.Diagnostic])
