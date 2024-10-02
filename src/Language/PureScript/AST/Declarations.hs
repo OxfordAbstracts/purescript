@@ -3,37 +3,37 @@
 
 -- |
 -- Data types for modules and declarations
---
 module Language.PureScript.AST.Declarations where
 
-import Prelude
-import Protolude.Exceptions (hush)
-
 import Codec.Serialise (Serialise)
+import Codec.Serialise qualified as S
 import Control.DeepSeq (NFData)
-import Data.Functor.Identity (Identity(..))
-
-import Data.Aeson.TH (Options(..), SumEncoding(..), defaultOptions, deriveJSON)
+import Data.Aeson (ToJSON (toJSON))
+import Data.Aeson qualified as A
+import Data.Aeson.TH (Options (..), SumEncoding (..), defaultOptions, deriveJSON)
+import Data.Functor.Identity (Identity (..))
+import Data.List.NonEmpty qualified as NEL
 import Data.Map qualified as M
 import Data.Text (Text)
-import Data.List.NonEmpty qualified as NEL
 import GHC.Generics (Generic)
-
 import Language.PureScript.AST.Binders (Binder)
-import Language.PureScript.AST.Literals (Literal(..))
+import Language.PureScript.AST.Declarations.ChainId (ChainId)
+import Language.PureScript.AST.Literals (Literal (..))
 import Language.PureScript.AST.Operators (Fixity)
 import Language.PureScript.AST.SourcePos (SourceAnn, SourceSpan)
-import Language.PureScript.AST.Declarations.ChainId (ChainId)
-import Language.PureScript.Types (SourceConstraint, SourceType)
-import Language.PureScript.PSString (PSString)
+import Language.PureScript.Comments (Comment)
+import Language.PureScript.Constants.Prim qualified as C
+import Language.PureScript.Environment (DataDeclType, Environment, FunctionalDependency, NameKind)
 import Language.PureScript.Label (Label)
-import Language.PureScript.Names (pattern ByNullSourcePos, Ident(..), ModuleName(..), Name(..), OpName, OpNameType(..), ProperName, ProperNameType(..), Qualified(..), QualifiedBy(..), toMaybeModuleName)
+import Language.PureScript.Names (Ident (..), ModuleName (..), Name (..), OpName, OpNameType (..), ProperName, ProperNameType (..), Qualified (..), QualifiedBy (..), toMaybeModuleName, pattern ByNullSourcePos)
+import Language.PureScript.PSString (PSString)
 import Language.PureScript.Roles (Role)
 import Language.PureScript.TypeClassDictionaries (NamedDict)
-import Language.PureScript.Comments (Comment)
-import Language.PureScript.Environment (DataDeclType, Environment, FunctionalDependency, NameKind)
-import Language.PureScript.Constants.Prim qualified as C
-import Codec.Serialise qualified as S
+import Language.PureScript.Types (SourceConstraint, SourceType)
+import Protolude (ConvertText (toS), readMaybe)
+import Protolude.Exceptions (hush)
+import Prelude
+import Data.ByteString.Lazy qualified as Lazy
 
 -- | A map of locally-bound names in scope.
 type Context = [(Ident, SourceType)]
@@ -447,6 +447,18 @@ data Declaration
   -- annotation for the type class and its arguments.
   | TypeInstanceDeclaration SourceAnn SourceAnn ChainId Integer (Either Text Ident) [SourceConstraint] (Qualified (ProperName 'ClassName)) [SourceType] TypeInstanceBody
   deriving (Eq, Ord, Show, Generic, Serialise, NFData)
+
+instance A.ToJSON Declaration where
+  toJSON = A.toJSON . show . S.serialise
+
+instance A.FromJSON Declaration where
+  parseJSON = A.withText "Declaration" $ \t ->
+    case readMaybe (toS t :: Text) :: Maybe Lazy.ByteString of
+      Nothing -> fail "Unable to read declaration"
+      Just bs ->
+        case S.deserialiseOrFail bs of
+          Left e -> fail $ show e
+          Right x -> pure x
 
 data ValueFixity = ValueFixity Fixity (Qualified (Either Ident (ProperName 'ConstructorName))) (OpName 'ValueOpName)
   deriving (Eq, Ord, Show, Generic, Serialise, NFData)

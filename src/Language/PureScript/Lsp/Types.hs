@@ -1,4 +1,5 @@
 {-# LANGUAGE PackageImports #-}
+{-# LANGUAGE DeriveAnyClass #-}
 
 module Language.PureScript.Lsp.Types where
 
@@ -12,6 +13,8 @@ import Language.PureScript.Environment qualified as P
 import Language.PureScript.Externs qualified as P
 import Language.PureScript.Names qualified as P
 import Protolude
+import Data.Aeson (ToJSON, FromJSON)
+import Data.Aeson qualified as A
 
 data LspEnvironment = LspEnvironment
   { lspConfig :: LspConfig,
@@ -48,7 +51,11 @@ data CurrentFile = CurrentFile
 data CompleteItemData = CompleteItemData
   { cidPath :: FilePath,
     cidModuleName :: P.ModuleName,
-    cidImportedModuleName :: Text,
-    cidImportedValue :: Text
+    cidImportedModuleName :: P.ModuleName,
+    cidImportedDeclaration :: P.Declaration
   }
-  deriving (Show)
+  deriving (Show, Eq, Generic, ToJSON, FromJSON)
+
+decodeCompleteItemData :: Maybe A.Value -> A.Result (Maybe CompleteItemData)
+decodeCompleteItemData Nothing = pure Nothing 
+decodeCompleteItemData (Just v) = A.fromJSON v

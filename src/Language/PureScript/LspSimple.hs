@@ -58,7 +58,7 @@ import Language.PureScript.Lsp.Docs (readDeclarationDocsAsMarkdown, readQualifie
 import Language.PureScript.Lsp.Print (printDeclarationType, printDeclarationTypeMb, printName)
 import Language.PureScript.Lsp.Rebuild (rebuildFile)
 import Language.PureScript.Lsp.State (initFinished, waitForInit)
-import Language.PureScript.Lsp.Types (LspEnvironment)
+import Language.PureScript.Lsp.Types (CompleteItemData (CompleteItemData), LspEnvironment, decodeCompleteItemData)
 import Language.PureScript.Lsp.Util (declToCompletionItemKind, efDeclComments, efDeclSourceSpan, efDeclSourceType, getNamesAtPosition, getWordAt, lookupTypeInEnv, sourcePosToPosition)
 import Language.PureScript.Names (disqualify, runIdent)
 import Language.PureScript.Names qualified as P
@@ -389,10 +389,11 @@ handlers diagErrs =
                                   _additionalTextEdits = Nothing, --  Maybe [Types.TextEdit]
                                   _commitCharacters = Nothing, --  Maybe [Text]
                                   _command = Nothing, --  Maybe Types.Command
-                                  _data_ = Just $ A.toJSON (mName, declModule, label) --  Maybe aeson-2.0.3.0:Data.Aeson.Types.Internal.Value
+                                  _data_ = Just $ A.toJSON $ Just $ CompleteItemData filePath mName declModule decl
                                 },
       Server.requestHandler Message.SMethod_CompletionItemResolve $ \req res -> do
         let completionItem = req ^. LSP.params
+            data_ = completionItem ^. LSP.data_ & decodeCompleteItemData
         -- filePathMb = Types.uriToFilePath $ docIdent ^. LSP.uri
         -- uri :: Types.NormalizedUri
         -- uri =

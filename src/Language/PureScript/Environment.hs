@@ -51,6 +51,16 @@ data Environment = Environment
 
 instance NFData Environment
 
+
+data EnvironmentLazy m = EnvironmentLazy 
+  { namesLazy :: Qualified Ident -> m (Maybe (SourceType, NameKind, NameVisibility))
+  , typesLazy :: Qualified (ProperName 'TypeName) -> m (Maybe (SourceType, TypeKind))
+  , dataConstructorsLazy :: Qualified (ProperName 'ConstructorName) -> m (Maybe (DataDeclType, ProperName 'TypeName, SourceType, [Ident]))
+  , typeSynonymsLazy :: Qualified (ProperName 'TypeName) -> m (Maybe ([(Text, Maybe SourceType)], SourceType))
+  , typeClassDictionariesLazy :: QualifiedBy -> m (Maybe (M.Map (Qualified (ProperName 'ClassName)) (M.Map (Qualified Ident) (NEL.NonEmpty NamedDict))))
+  , typeClassesLazy :: Qualified (ProperName 'ClassName) -> m (Maybe TypeClassData)
+  }
+
 -- | Information about a type class
 data TypeClassData = TypeClassData
   { typeClassArguments :: [(Text, Maybe SourceType)]
