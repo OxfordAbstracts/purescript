@@ -9,6 +9,7 @@ import Language.PureScript.Lsp.Print (printName)
 import Language.PureScript.Lsp.Types (LspConfig (confOutputPath), LspEnvironment (lspConfig))
 import Language.PureScript.Names qualified as P
 import Protolude
+import Language.PureScript.AST.SourcePos qualified as P
 
 readDeclarationDocs :: (MonadIO m, MonadReader LspEnvironment m) => P.ModuleName -> Text -> m (Maybe Docs.Declaration)
 readDeclarationDocs modName ident = do
@@ -22,4 +23,12 @@ readDeclarationDocsAsMarkdown modName ident = fmap (runDocs . declAsMarkdown) <$
 readQualifiedNameDocsAsMarkdown :: (MonadIO m, MonadReader LspEnvironment m) => P.Qualified P.Name -> m (Maybe Text)
 readQualifiedNameDocsAsMarkdown = \case
   (P.Qualified (P.ByModuleName modName) ident) -> readDeclarationDocsAsMarkdown modName (printName ident)
+  _ -> pure Nothing
+
+readDeclarationDocsSourceSpan :: (MonadIO m, MonadReader LspEnvironment m) => P.ModuleName -> Text -> m (Maybe P.SourceSpan)
+readDeclarationDocsSourceSpan modName ident = readDeclarationDocs modName ident <&> (=<<) P.declSourceSpan
+
+readQualifiedNameDocsSourceSpan :: (MonadIO m, MonadReader LspEnvironment m) => P.Qualified P.Name -> m (Maybe P.SourceSpan)
+readQualifiedNameDocsSourceSpan = \case
+  (P.Qualified (P.ByModuleName modName) ident) -> readDeclarationDocsSourceSpan modName (printName ident)
   _ -> pure Nothing

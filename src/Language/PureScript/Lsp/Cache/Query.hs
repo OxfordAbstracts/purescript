@@ -158,6 +158,16 @@ getEfDeclarationsAtSrcPos path (SourcePos line col) = do
       ]
   pure $ deserialise . fromOnly <$> decls
 
+getAstDeclarationInModule :: (MonadIO m, MonadReader LspEnvironment m) => P.ModuleName -> Text -> m (Maybe P.Declaration)
+getAstDeclarationInModule moduleName' name = do
+  decls <-
+    DB.queryNamed
+      "SELECT value FROM ast_declarations WHERE module_name = :module_name AND name = :name"
+      [ ":module_name" := P.runModuleName moduleName',
+        ":name" := name
+      ]
+  pure $ deserialise . fromOnly <$> listToMaybe decls
+
 getAstDeclarationsAtSrcPos :: (MonadIO m, MonadReader LspEnvironment m) => P.ModuleName -> SourcePos -> m [P.Declaration]
 getAstDeclarationsAtSrcPos moduleName' (SourcePos line col) = do
   decls <-

@@ -136,6 +136,7 @@ lookupTypeInEnv (P.Qualified qb name) = do
               P.DctorName dctorName -> view _3 <$> Map.lookup (P.Qualified qb dctorName) dataConstructors
               P.TyClassName tyClassName ->
                 (view _1 <$> Map.lookup (P.Qualified qb $ P.coerceProperName tyClassName) types)
+                -- <|> (srcInstanceType )
               --  <|> (_ =<< Map.lookup (P.Qualified qb $ P.coerceProperName tyClassName) typeClasses)
               --  <|> (typeClassDictionaries)
               _ -> Nothing

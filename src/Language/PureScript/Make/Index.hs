@@ -96,8 +96,9 @@ indexAstModule conn (P.Module _ss _comments name decls _exports) = liftIO do
     let (ss, _) = P.declSourceAnn decl
     SQL.execute
       conn
-      (SQL.Query "INSERT INTO ast_declarations (module_name, value, shown, start_line, end_line, start_col, end_col) VALUES (?, ?, ?, ?, ?, ?, ?)")
+      (SQL.Query "INSERT INTO ast_declarations (module_name, name, value, shown, start_line, end_line, start_col, end_col) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
       ( P.runModuleName name,
+        printName <$> P.declName decl,
         serialise decl,
         show decl :: Text,
         P.sourcePosLine $ P.spanStart ss,
@@ -299,7 +300,7 @@ initDb conn = do
   dropTables conn
   SQL.execute_ conn "pragma journal_mode=wal;"
   SQL.execute_ conn "pragma foreign_keys = ON;"
-  SQL.execute_ conn "CREATE TABLE IF NOT EXISTS ast_declarations (module_name TEXT, value TEXT, shown TEXT, start_line INTEGER, end_line INTEGER, start_col INTEGER, end_col INTEGER)"
+  SQL.execute_ conn "CREATE TABLE IF NOT EXISTS ast_declarations (module_name TEXT, name TEXT, value TEXT, shown TEXT, start_line INTEGER, end_line INTEGER, start_col INTEGER, end_col INTEGER)"
   SQL.execute_ conn "CREATE TABLE IF NOT EXISTS ast_expressions (module_name TEXT, value TEXT, shown TEXT, start_line INTEGER, end_line INTEGER, start_col INTEGER, end_col INTEGER, length INTEGER)"
   SQL.execute_ conn "CREATE TABLE IF NOT EXISTS envs (module_name TEXT PRIMARY KEY, value TEXT)"
   SQL.execute_ conn "CREATE TABLE IF NOT EXISTS corefn_modules (name TEXT PRIMARY KEY, path TEXT, value TEXT, UNIQUE(name) on conflict replace, UNIQUE(path) on conflict replace)"
@@ -315,6 +316,12 @@ initDb conn = do
 
 addDbIndexes :: Connection -> IO ()
 addDbIndexes conn = do
+  SQL.execute_ conn "CREATE INDEX IF NOT EXISTS ast_declarations_module_name ON ast_declarations (module_name)"
+  SQL.execute_ conn "CREATE INDEX IF NOT EXISTS ast_declarations_name ON ast_declarations (name)"
+  SQL.execute_ conn "CREATE INDEX IF NOT EXISTS ast_declarations_start_line ON ast_declarations (start_line)"
+  SQL.execute_ conn "CREATE INDEX IF NOT EXISTS ast_declarations_end_line ON ast_declarations (end_line)"
+  SQL.execute_ conn "CREATE INDEX IF NOT EXISTS ast_expressions_start_line ON ast_expressions (start_line)"
+  SQL.execute_ conn "CREATE INDEX IF NOT EXISTS ast_expressions_end_line ON ast_expressions (end_line)"
   SQL.execute_ conn "CREATE INDEX IF NOT EXISTS corefn_modules_name ON corefn_modules (name)"
   SQL.execute_ conn "CREATE INDEX IF NOT EXISTS corefn_modules_path ON corefn_modules (path)"
   SQL.execute_ conn "CREATE INDEX IF NOT EXISTS corefn_imports_module ON corefn_imports (module_name)"

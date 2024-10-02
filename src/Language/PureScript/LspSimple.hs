@@ -11,10 +11,11 @@
 {-# OPTIONS_GHC -Wno-unused-local-binds #-}
 {-# OPTIONS_GHC -Wno-unused-matches #-}
 {-# OPTIONS_GHC -Wno-unused-top-binds #-}
+{-# OPTIONS_GHC -Wno-overlapping-patterns #-}
 
 module Language.PureScript.LspSimple (main) where
 
-import Control.Lens ((^.))
+import Control.Lens (Field1 (_1), view, (^.))
 import Control.Lens.Getter (to)
 import Control.Monad.IO.Unlift
 import Control.Monad.Reader (mapReaderT)
@@ -35,8 +36,10 @@ import Language.LSP.Server (getConfig)
 import Language.LSP.Server qualified as Server
 import Language.LSP.VFS qualified as VFS
 import Language.PureScript qualified as P
-import Language.PureScript.AST.SourcePos (SourcePos (sourcePosColumn))
+import Language.PureScript.AST.SourcePos (SourcePos (sourcePosColumn), nullSourceSpan)
+import Language.PureScript.AST.SourcePos qualified as P
 import Language.PureScript.Constants.TH (ty)
+import Language.PureScript.CoreFn.Expr (extractAnn)
 import Language.PureScript.CoreFn.Expr qualified as CF
 import Language.PureScript.Docs.Convert.Single (convertComments)
 import Language.PureScript.Errors (ErrorMessage (ErrorMessage), MultipleErrors (runMultipleErrors), errorCode, errorDocUri, errorSpan, noColorPPEOptions, prettyPrintSingleError)
@@ -47,8 +50,8 @@ import Language.PureScript.Ide.Error (IdeError (GeneralError, RebuildError), pre
 import Language.PureScript.Ide.Logging (runErrLogger)
 import Language.PureScript.Ide.Types (Completion (Completion, complDocumentation, complExpandedType, complType), IdeLogLevel (LogAll))
 import Language.PureScript.Lsp.Cache (selectExternModuleNameFromFilePath, selectExternPathFromModuleName)
-import Language.PureScript.Lsp.Cache.Query (getCoreFnExprAt, getEfDeclarationInModule, getEfDeclarationsAtSrcPos)
-import Language.PureScript.Lsp.Docs (readDeclarationDocsAsMarkdown, readQualifiedNameDocsAsMarkdown)
+import Language.PureScript.Lsp.Cache.Query (getCoreFnExprAt, getEfDeclarationInModule, getEfDeclarationsAtSrcPos, getAstDeclarationInModule)
+import Language.PureScript.Lsp.Docs (readDeclarationDocsAsMarkdown, readQualifiedNameDocsAsMarkdown, readQualifiedNameDocsSourceSpan)
 import Language.PureScript.Lsp.Print (printDeclarationType, printName)
 import Language.PureScript.Lsp.Rebuild (rebuildFile)
 import Language.PureScript.Lsp.State (initFinished, waitForInit)
@@ -60,6 +63,7 @@ import Protolude hiding (to)
 import System.Directory (createDirectoryIfMissing)
 import Text.PrettyPrint.Boxes (render)
 import "monad-logger" Control.Monad.Logger (LoggingT, logDebug, logDebugN, logErrorN, logWarnN, mapLoggingT)
+import Control.Monad.Cont (MonadTrans(lift))
 
 type HandlerM config = Server.LspT config (ReaderT LspEnvironment (LoggingT IO))
 
@@ -213,14 +217,11 @@ handlers diagErrs =
 
         forLsp filePathMb \filePath -> do
           corefnExprMb <- liftLsp $ getCoreFnExprAt filePath pos
-          liftLsp $ logDebugN $ "Corefn expr: " <> show corefnExprMb
           case corefnExprMb of
             Just (CF.Literal _ _) -> nullRes
             Just (CF.Constructor (ss, comments, meta) tName cMame _) -> do
               docsMb <- liftLsp do
-                logDebugN $ "Span name: " <> show (P.spanName ss)
                 mNameMb <- selectExternModuleNameFromFilePath (P.spanName ss)
-                logDebugN $ "Module name: " <> show mNameMb
                 maybe (pure Nothing) (flip readDeclarationDocsAsMarkdown (P.runProperName tName)) mNameMb
               case docsMb of
                 Nothing -> markdownTypeRes (P.runProperName cMame) (Just $ P.runProperName tName) comments
@@ -239,17 +240,14 @@ handlers diagErrs =
             _ -> do
               vfMb <- Server.getVirtualFile docUri
               forLsp vfMb \vf -> do
-                let word = getWordAt (VFS._file_text vf) pos
                 mNameMb <- liftLsp $ selectExternModuleNameFromFilePath filePath
                 forLsp mNameMb \mName -> do
                   names <- liftLsp $ getNamesAtPosition pos mName (VFS._file_text vf)
-                  liftLsp $ logDebugN $ "Names at position: " <> show (Set.toList names)
                   forLsp (head names) \name -> do
                     docsMb <- liftLsp $ readQualifiedNameDocsAsMarkdown name
                     case docsMb of
                       Nothing -> do
                         typeMb <- liftLsp $ lookupTypeInEnv name
-                        liftLsp $ logDebugN $ "Type in env: " <> show typeMb
                         forLsp typeMb \t -> do
                           markdownTypeRes (printName $ disqualify name) (Just $ prettyPrintTypeSingleLine t) []
                       Just docs -> markdownRes docs,
@@ -274,8 +272,9 @@ handlers diagErrs =
 
         forLsp filePathMb \filePath -> do
           corefnExprMb <- liftLsp $ getCoreFnExprAt filePath pos
-          forLsp corefnExprMb \case
-            CF.Var (_ss, _comments, _meta) (P.Qualified qb ident) -> do
+          case corefnExprMb of
+            Just (CF.Var (ss, _comments, _meta) (P.Qualified qb ident)) -> do
+              liftLsp $ logDebugN $ "Found Corefn Var source span: " <> show ss
               let name = P.runIdent ident
               case qb of
                 P.ByModuleName mName -> do
@@ -287,66 +286,36 @@ handlers diagErrs =
                       locationRes modFp (spanToRange sourceSpan)
                 P.BySourcePos srcPos ->
                   locationRes filePath (Types.Range (sourcePosToPosition srcPos) (sourcePosToPosition srcPos))
-            _ -> nullRes
+            _ -> do
+              vfMb <- Server.getVirtualFile uri
+              forLsp vfMb \vf -> do
+                mNameMb <- liftLsp $ selectExternModuleNameFromFilePath filePath
+                forLsp mNameMb \mName -> do
+                  names <- liftLsp $ getNamesAtPosition pos mName (VFS._file_text vf)
+                  forLsp (head names) \name -> do
+                    liftLsp $ logDebugN $ "Found name: " <> show name
+                    spanMb <- liftLsp $ readQualifiedNameDocsSourceSpan name
+                    liftLsp $ logDebugN $ "Found docs span: " <> show spanMb
+                    case spanMb of
+                      _ -> do
+                        case name of
+                          P.Qualified (P.BySourcePos pos') _ -> do
+                            liftLsp $ logDebugN $ "Found source pos: " <> show pos'
+                            locationRes filePath (Types.Range (sourcePosToPosition pos') (sourcePosToPosition pos'))
+                          P.Qualified (P.ByModuleName nameModule) ident -> do
+                            liftLsp $ logDebugN $ "Found module name: " <> show nameModule
+                            declMb <- liftLsp $ getAstDeclarationInModule nameModule (printName ident)
+                            liftLsp $ logDebugN $ "Found decl: " <> show declMb
+                            forLsp declMb \decl -> do
+                              modFpMb <- liftLsp $ selectExternPathFromModuleName nameModule
+                              forLsp modFpMb \modFp -> do
+                                liftLsp $ logDebugN $ "Found modFp: " <> show modFp
+                                let sourceSpan = P.declSourceSpan decl
+                                liftLsp $ logDebugN $ "Found decl sourceSpan: " <> show sourceSpan
+                                locationRes modFp (spanToRange sourceSpan)
+                      Just span ->
+                        locationRes (P.spanName span) (spanToRange span)
 
-            --   vfMb <- Server.getVirtualFile uri
-
-            --   for_ vfMb \vf -> do
-            --     let word = getWordAt (VFS._file_text vf) pos
-            --     cache <- liftLsp cachedRebuild
-            --     let moduleName' = case cache of
-            --           Right (Just (mName, _)) -> Just mName
-            --           _ -> Nothing
-
-            --     imports <-
-            --       filePathMb
-            --         & maybe (pure Nothing) (fmap hush . liftLsp . parseImportsFromFile)
-
-            --     let filters :: [Filter]
-            --         filters =
-            --           imports
-            --             & maybe [] (pure . (moduleFilter . insertCurrentModule . Set.fromList . fmap getInputModName) . snd)
-
-            --         getInputModName (n, _, _) = n
-
-            --         insertCurrentModule :: Set P.ModuleName -> Set P.ModuleName
-            --         insertCurrentModule mods = maybe mods (flip Set.insert mods) moduleName'
-
-            --     completions :: Either IdeError [Completion] <- liftLsp $ getExactCompletionsWithPrim word filters moduleName'
-
-            --     sendInfoMsg $ "Completions: " <> show completions
-            --     let withLocation =
-            --           fold completions
-            --             & mapMaybe
-            --               ( \c -> case complLocation c of
-            --                   Just loc -> Just (c, loc)
-            --                   Nothing -> Nothing
-            --               )
-            --             & head
-
-            --     paths <- liftLsp $ Map.map snd . fsModules <$> getFileState
-
-            --     case withLocation of
-            --       Just (completion, location) -> do
-            --         let fpMb =
-            --               Map.lookup (P.ModuleName . complModule $ completion) (either mempty identity paths)
-
-            --         case fpMb of
-            --           Nothing -> do
-            --             sendInfoMsg "No file path for module"
-            --             nullRes
-            --           Just fp ->
-            --             res $
-            --               Right $
-            --                 Types.InL $
-            --                   Types.Definition $
-            --                     Types.InL $
-            --                       Types.Location
-            --                         (Types.filePathToUri fp)
-            --                         (spanToRange location)
-            --       _ -> do
-            --         sendInfoMsg "No location for completion"
-            --         nullRes
     ]
   where
     getFileDiagnotics :: (LSP.HasUri a2 Uri, LSP.HasTextDocument a1 a2, LSP.HasParams s a1) => s -> HandlerM config ([ErrorMessage], [Types.Diagnostic])
