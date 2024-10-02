@@ -11,6 +11,7 @@ import Language.PureScript.DB (mkConnection)
 import Language.PureScript.Externs qualified as P
 import Language.PureScript.Names qualified as P
 import Protolude
+import Language.PureScript.Environment qualified as P
 
 data LspEnvironment = LspEnvironment
   { lspConfig :: LspConfig,
@@ -39,6 +40,7 @@ data LspState = LspState
 data CurrentFile = CurrentFile
   { currentModuleName :: P.ModuleName,
     currentModule :: P.Module,
-    currentExternsFile :: P.ExternsFile
+    currentExternsFile :: P.ExternsFile,
+    currentEnv :: P.Environment
   }
   deriving (Show)

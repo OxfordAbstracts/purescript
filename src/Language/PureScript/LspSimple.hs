@@ -36,6 +36,7 @@ import Language.LSP.Server qualified as Server
 import Language.LSP.VFS qualified as VFS
 import Language.PureScript qualified as P
 import Language.PureScript.AST.SourcePos (SourcePos (sourcePosColumn))
+import Language.PureScript.Constants.TH (ty)
 import Language.PureScript.CoreFn.Expr qualified as CF
 import Language.PureScript.Docs.Convert.Single (convertComments)
 import Language.PureScript.Errors (ErrorMessage (ErrorMessage), MultipleErrors (runMultipleErrors), errorCode, errorDocUri, errorSpan, noColorPPEOptions, prettyPrintSingleError)
@@ -48,12 +49,12 @@ import Language.PureScript.Ide.Types (Completion (Completion, complDocumentation
 import Language.PureScript.Lsp.Cache (selectExternModuleNameFromFilePath, selectExternPathFromModuleName)
 import Language.PureScript.Lsp.Cache.Query (getCoreFnExprAt, getEfDeclarationInModule, getEfDeclarationsAtSrcPos)
 import Language.PureScript.Lsp.Docs (readDeclarationDocsAsMarkdown)
-import Language.PureScript.Lsp.Print (printDeclarationType)
+import Language.PureScript.Lsp.Print (printDeclarationType, printName)
 import Language.PureScript.Lsp.Rebuild (rebuildFile)
 import Language.PureScript.Lsp.State (initFinished, waitForInit)
 import Language.PureScript.Lsp.Types (LspEnvironment)
-import Language.PureScript.Lsp.Util (efDeclComments, efDeclSourceSpan, efDeclSourceType, getWordAt)
-import Language.PureScript.Names (runIdent)
+import Language.PureScript.Lsp.Util (efDeclComments, efDeclSourceSpan, efDeclSourceType, getNamesAtPosition, getWordAt, lookupTypeInEnv, sourcePosToPosition)
+import Language.PureScript.Names (disqualify, runIdent)
 import Language.PureScript.Names qualified as P
 import Protolude hiding (to)
 import System.Directory (createDirectoryIfMissing)
@@ -226,10 +227,24 @@ handlers diagErrs =
                     _ -> do
                       declMb <- liftLsp $ getEfDeclarationInModule mName (runIdent ident)
                       markdownTypeRes (P.runIdent ident) (prettyPrintTypeSingleLine . efDeclSourceType <$> declMb) comments
-
                 P.BySourcePos pos' ->
                   markdownTypeRes (P.runIdent ident) Nothing []
-            _ -> nullRes,
+            _ -> do
+              vfMb <- Server.getVirtualFile docUri
+              forLsp vfMb \vf -> do
+                let word = getWordAt (VFS._file_text vf) pos
+                mNameMb <- liftLsp $ selectExternModuleNameFromFilePath filePath
+                forLsp mNameMb \mName -> do
+                  names <- liftLsp $ getNamesAtPosition pos mName (VFS._file_text vf)
+                  liftLsp $ logDebugN $ "Names at position: " <> show (Set.toList names)
+                  forLsp (head names) \name -> do
+                    typeMb <- liftLsp $ lookupTypeInEnv name
+                    liftLsp $ logDebugN $ "Type in env: " <> show typeMb
+                    forLsp typeMb \t -> do
+                      markdownTypeRes (printName $ disqualify name) (Just $ prettyPrintTypeSingleLine t) [],
+      --   declMb <- liftLsp $ getEfDeclarationInModule mName name
+      --   markdownTypeRes name (prettyPrintTypeSingleLine . efDeclSourceType <$> declMb) []
+      -- -- pure (),
       Server.requestHandler Message.SMethod_TextDocumentDefinition $ \req res -> do
         sendInfoMsg "SMethod_TextDocumentDefinition"
         let Types.DefinitionParams docIdent pos _prog _prog' = req ^. LSP.params
@@ -391,9 +406,6 @@ spanToRange (Errors.SourceSpan _ start end) =
     (sourcePosToPosition start)
     (sourcePosToPosition end)
 
-sourcePosToPosition :: Errors.SourcePos -> Types.Position
-sourcePosToPosition (Errors.SourcePos line col) =
-  Types.Position (fromIntegral $ line - 1) (fromIntegral $ col - 1)
 
 sendError :: IdeError -> HandlerM config ()
 sendError err =
@@ -403,9 +415,6 @@ sendError err =
         "Something went wrong:\n" <> textError err
     )
 
--- rebuildFile :: FilePath -> LspM Success
--- rebuildFile file = do
---   rebuildFile file  mempty
 
 sendInfoMsg :: (Server.MonadLsp config f) => Text -> f ()
 sendInfoMsg msg = Server.sendNotification Message.SMethod_WindowShowMessage (Types.ShowMessageParams Types.MessageType_Info msg)

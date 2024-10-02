@@ -2,7 +2,7 @@ module Language.PureScript.Make
   (
   -- * Make API
   rebuildModule
-  , rebuildModuleAndGetArtifacts
+  , rebuildModuleAndGetEnv
   , rebuildModule'
   , make
   , inferForeignModules
@@ -24,7 +24,6 @@ import Control.Monad.Trans.Control (MonadBaseControl(..))
 import Control.Monad.Trans.State (runStateT)
 import Control.Monad.Writer.Class (MonadWriter(..), censor)
 import Control.Monad.Writer.Strict (runWriterT)
-import Language.PureScript.CoreFn.Module qualified as CoreFn
 import Data.Function (on)
 import Data.Foldable (fold, for_)
 import Data.List (foldl', sortOn)
@@ -38,7 +37,6 @@ import Language.PureScript.AST (ErrorMessageHint(..), Module(..), SourceSpan(..)
 import Language.PureScript.Crash (internalError)
 import Language.PureScript.CST qualified as CST
 import Language.PureScript.Docs.Convert qualified as Docs
-import Language.PureScript.Docs.Types qualified as Docs
 import Language.PureScript.Environment (initEnvironment)
 import Language.PureScript.Errors (MultipleErrors, SimpleErrorMessage(..), addHint, defaultPPEOptions, errorMessage', errorMessage'', prettyPrintMultipleErrors)
 import Language.PureScript.Externs (ExternsFile, applyExternsFileToEnvironment, moduleToExternsFile)
@@ -56,8 +54,8 @@ import Language.PureScript.Make.Monad as Monad
 import Language.PureScript.CoreFn qualified as CF
 import System.Directory (doesFileExist)
 import System.FilePath (replaceExtension)
-import Language.PureScript.CoreFn.Ann (Ann)
 import Control.Lens (Field1(_1), view)
+import Language.PureScript.Environment qualified as P
 
 -- | Rebuild a single module.
 --
@@ -73,16 +71,16 @@ rebuildModule actions externs m = do
   env <- fmap fst . runWriterT $ foldM externsEnv primEnv externs
   rebuildModule' actions env externs m
 
-rebuildModuleAndGetArtifacts
+rebuildModuleAndGetEnv
   :: forall m
    . (MonadError MultipleErrors m, MonadWriter MultipleErrors m)
   => MakeActions m
   -> [ExternsFile]
   -> Module
-  -> m (ExternsFile, CoreFn.Module Ann, Docs.Module)
-rebuildModuleAndGetArtifacts actions externs m = do
+  -> m (ExternsFile, P.Environment)
+rebuildModuleAndGetEnv actions externs m = do
   env <- fmap fst . runWriterT $ foldM externsEnv primEnv externs
-  rebuildModuleAndGetArtifacts' actions env externs m
+  rebuildModuleAndGetEnv' actions env externs m
 
 rebuildModule'
   :: forall m
@@ -92,15 +90,15 @@ rebuildModule'
   -> [ExternsFile]
   -> Module
   -> m ExternsFile
-rebuildModule' act env ext mdl = view _1 <$> rebuildModuleAndGetArtifacts' act env ext mdl 
+rebuildModule' act env ext mdl = view _1 <$> rebuildModuleAndGetEnv' act env ext mdl 
 
-rebuildModuleAndGetArtifacts' :: forall m. (MonadError MultipleErrors m, MonadWriter MultipleErrors m)
+rebuildModuleAndGetEnv' :: forall m. (MonadError MultipleErrors m, MonadWriter MultipleErrors m)
   => MakeActions m
   -> Env
   -> [ExternsFile]
   -> Module
-  -> m (ExternsFile, CoreFn.Module Ann, Docs.Module)
-rebuildModuleAndGetArtifacts' act env ext mdl = rebuildModuleWithIndex act env ext mdl Nothing
+  -> m (ExternsFile, P.Environment)
+rebuildModuleAndGetEnv' act env ext mdl = rebuildModuleWithIndex act env ext mdl Nothing
 
 rebuildModuleWithIndex
   :: forall m
@@ -110,7 +108,7 @@ rebuildModuleWithIndex
   -> [ExternsFile]
   -> Module
   -> Maybe (Int, Int)
-  -> m (ExternsFile,  CoreFn.Module Ann, Docs.Module)
+  -> m (ExternsFile, P.Environment)
 rebuildModuleWithIndex MakeActions{..} exEnv externs m@(Module _ _ moduleName _ _) moduleIndex = do
   progress $ CompilingModule moduleName moduleIndex
   let env = foldl' (flip applyExternsFileToEnvironment) initEnvironment externs
@@ -157,7 +155,7 @@ rebuildModuleWithIndex MakeActions{..} exEnv externs m@(Module _ _ moduleName _ 
                Right d -> d
 
   evalSupplyT nextVar'' $ codegen env' mod' renamed docs exts
-  return (exts, optimized, docs)
+  return (exts, env')
 
 -- | Compiles in "make" mode, compiling each module separately to a @.js@ file and an @externs.cbor@ file.
 --

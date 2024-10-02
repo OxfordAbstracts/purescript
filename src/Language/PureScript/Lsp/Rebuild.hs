@@ -31,16 +31,6 @@ import Language.PureScript.Options qualified as P
 import Protolude hiding (moduleName)
 import "monad-logger" Control.Monad.Logger (MonadLogger, logDebugN)
 
-rebuildFileAndDeps ::
-  ( MonadIO m,
-    MonadError IdeError m,
-    MonadReader LspEnvironment m,
-    MonadLogger m
-  ) =>
-  FilePath ->
-  m (FilePath, P.MultipleErrors)
-rebuildFileAndDeps = rebuildFile' True
-
 rebuildFile ::
   ( MonadIO m,
     MonadError IdeError m,
@@ -120,11 +110,11 @@ rebuildModuleOpen makeEnv externs m = void $ runExceptT do
   (openResult, _) <-
     liftIO $
       P.runMake P.defaultOptions $
-        P.rebuildModule (shushProgress (shushCodegen makeEnv)) externs (openModuleExports m)
+        P.rebuildModuleAndGetEnv (shushProgress (shushCodegen makeEnv)) externs (openModuleExports m)
   case openResult of
     Left _ ->
       throwError (GeneralError "Failed when rebuilding with open exports")
-    Right result -> cacheRebuild result m
+    Right (result, env) -> cacheRebuild result m env
 
 -- | Shuts the compiler up about progress messages
 shushProgress :: (Monad m) => P.MakeActions m -> P.MakeActions m
