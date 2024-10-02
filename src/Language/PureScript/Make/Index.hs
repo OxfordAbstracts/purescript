@@ -54,7 +54,7 @@ import "monad-logger" Control.Monad.Logger (MonadLogger, logDebugN)
 addAllIndexing :: (MonadIO m) => Connection -> P.MakeActions m -> P.MakeActions m
 addAllIndexing conn ma =
   addAstModuleIndexing conn $
-    addEnvIndexing conn $
+    -- addEnvIndexing conn $
       addCoreFnIndexing conn $
         addExternIndexing conn ma
 
@@ -65,11 +65,43 @@ addAstModuleIndexing conn ma =
     }
 
 indexAstModule :: (MonadIO m) => Connection -> P.Module -> m ()
-indexAstModule conn (P.Module _ss _comments name decls _exports) = liftIO do
+indexAstModule conn m@(P.Module _ss _comments name decls exportRefs) = liftIO do
   SQL.execute conn "DELETE FROM ast_declarations WHERE module_name = ?" (SQL.Only $ P.runModuleName name)
   SQL.execute conn "DELETE FROM ast_expressions WHERE module_name = ?" (SQL.Only $ P.runModuleName name)
+  
+  let exports = Set.fromList $ P.exportedDeclarations m
 
-  let insertAstExpr :: P.Expr -> IO ()
+  forM_ decls \decl -> do
+    let (ss, _) = P.declSourceAnn decl
+    let start = P.spanStart ss
+        end = P.spanEnd ss
+    SQL.executeNamed 
+      conn 
+      (SQL.Query "INSERT INTO ast_declarations (module_name, name, value, shown, start_line, end_line, start_col, end_col, lines, cols, exported) VALUES (:module_name, :name, :value, :shown, :start_line, :end_line, :start_col, :end_col, :lines, :cols, :exported)")
+      [ ":module_name" := P.runModuleName name,
+        ":name" := printName <$> P.declName decl,
+        ":value" := serialise decl,
+        ":shown" :=( show decl :: Text),
+        ":start_line" := P.sourcePosLine start,
+        ":end_line" := P.sourcePosLine end,
+        ":start_col" := P.sourcePosColumn start,
+        ":end_col" := P.sourcePosColumn end,
+        ":lines" := P.sourcePosLine end - P.sourcePosLine start,
+        ":cols" := P.sourcePosColumn end - P.sourcePosColumn start,
+        ":exported" := Set.member decl exports
+      ]
+      
+
+insertDeclExprs :: (MonadIO m) => Connection -> P.ModuleName ->  P.Declaration -> m ()
+insertDeclExprs conn name decl = liftIO $ void $ handleDecl decl
+  where
+      (handleDecl, _, _) =
+        P.everywhereOnValuesM
+          pure
+          (\e -> e <$ insertAstExpr e)
+          pure
+
+      insertAstExpr :: P.Expr -> IO ()
       insertAstExpr expr =
         SQL.execute
           conn
@@ -85,33 +117,6 @@ indexAstModule conn (P.Module _ss _comments name decls _exports) = liftIO do
           )
         where
           ss = exprSourceSpan expr
-
-      (handleDecl, _, _) =
-        P.everywhereOnValuesM
-          pure
-          (\e -> e <$ insertAstExpr e)
-          pure
-
-  forM_ decls \decl -> do
-    let (ss, _) = P.declSourceAnn decl
-    let start = P.spanStart ss
-        end = P.spanEnd ss
-    SQL.execute
-      conn
-      (SQL.Query "INSERT INTO ast_declarations (module_name, name, value, shown, start_line, end_line, start_col, end_col, lines, cols) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-      ( P.runModuleName name,
-        printName <$> P.declName decl,
-        serialise decl,
-        show decl :: Text,
-        P.sourcePosLine start,
-        P.sourcePosLine end,
-        P.sourcePosColumn start,
-        P.sourcePosColumn end,
-        P.sourcePosLine end - P.sourcePosLine start,
-        P.sourcePosColumn end - P.sourcePosColumn start
-        
-      )
-    handleDecl decl
 
 addEnvIndexing :: (MonadIO m) => Connection -> P.MakeActions m -> P.MakeActions m
 addEnvIndexing conn ma =
@@ -302,10 +307,10 @@ insertEfExport conn moduleName' dr = do
 
 initDb :: Connection -> IO ()
 initDb conn = do
-  dropTables conn
+  -- dropTables conn
   SQL.execute_ conn "pragma journal_mode=wal;"
   SQL.execute_ conn "pragma foreign_keys = ON;"
-  SQL.execute_ conn "CREATE TABLE IF NOT EXISTS ast_declarations (module_name TEXT, name TEXT, value TEXT, shown TEXT, start_line INTEGER, end_line INTEGER, start_col INTEGER, end_col INTEGER, lines INTEGER, cols INTEGER)"
+  SQL.execute_ conn "CREATE TABLE IF NOT EXISTS ast_declarations (module_name TEXT, name TEXT, value TEXT, shown TEXT, start_line INTEGER, end_line INTEGER, start_col INTEGER, end_col INTEGER, lines INTEGER, cols INTEGER, exported BOOLEAN)"
   SQL.execute_ conn "CREATE TABLE IF NOT EXISTS ast_expressions (module_name TEXT, value TEXT, shown TEXT, start_line INTEGER, end_line INTEGER, start_col INTEGER, end_col INTEGER, length INTEGER)"
   SQL.execute_ conn "CREATE TABLE IF NOT EXISTS envs (module_name TEXT PRIMARY KEY, value TEXT)"
   SQL.execute_ conn "CREATE TABLE IF NOT EXISTS corefn_modules (name TEXT PRIMARY KEY, path TEXT, value TEXT, UNIQUE(name) on conflict replace, UNIQUE(path) on conflict replace)"

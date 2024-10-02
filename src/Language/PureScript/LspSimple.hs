@@ -20,6 +20,7 @@ import Control.Lens.Getter (to)
 import Control.Monad.Cont (MonadTrans (lift))
 import Control.Monad.IO.Unlift
 import Control.Monad.Reader (mapReaderT)
+import Data.Aeson qualified as A
 import Data.IORef (IORef, modifyIORef, newIORef, readIORef)
 import Data.List.NonEmpty qualified as NEL
 import Data.Map qualified as Map
@@ -49,15 +50,15 @@ import Language.PureScript.Errors.JSON (toSuggestion)
 import Language.PureScript.Errors.JSON qualified as JsonErrors
 import Language.PureScript.Ide.Error (IdeError (GeneralError, RebuildError), prettyPrintTypeSingleLine, textError)
 import Language.PureScript.Ide.Logging (runErrLogger)
-import Language.PureScript.Ide.Types (Completion (Completion, complDocumentation, complExpandedType, complType), IdeLogLevel (LogAll))
+import Language.PureScript.Ide.Types (Completion (Completion, complDocumentation, complExpandedType, complType), IdeLogLevel (LogAll), declarationType, _IdeDeclModule)
 import Language.PureScript.Lsp.Cache (selectExternModuleNameFromFilePath, selectExternPathFromModuleName)
-import Language.PureScript.Lsp.Cache.Query (getAstDeclarationInModule, getCoreFnExprAt, getEfDeclarationInModule, getEfDeclarationsAtSrcPos)
+import Language.PureScript.Lsp.Cache.Query (getAstDeclarationInModule, getAstDeclarationsStartingWith, getCoreFnExprAt, getEfDeclarationInModule, getEfDeclarationsAtSrcPos)
 import Language.PureScript.Lsp.Docs (readDeclarationDocsAsMarkdown, readQualifiedNameDocsAsMarkdown, readQualifiedNameDocsSourceSpan)
 import Language.PureScript.Lsp.Print (printDeclarationType, printName)
 import Language.PureScript.Lsp.Rebuild (rebuildFile)
 import Language.PureScript.Lsp.State (initFinished, waitForInit)
 import Language.PureScript.Lsp.Types (LspEnvironment)
-import Language.PureScript.Lsp.Util (efDeclComments, efDeclSourceSpan, efDeclSourceType, getNamesAtPosition, getWordAt, lookupTypeInEnv, sourcePosToPosition)
+import Language.PureScript.Lsp.Util (declToCompletionItemKind, efDeclComments, efDeclSourceSpan, efDeclSourceType, getNamesAtPosition, getWordAt, lookupTypeInEnv, sourcePosToPosition)
 import Language.PureScript.Names (disqualify, runIdent)
 import Language.PureScript.Names qualified as P
 import Protolude hiding (to)
@@ -277,7 +278,7 @@ handlers diagErrs =
             forLsp mNameMb \mName -> do
               names <- liftLsp $ getNamesAtPosition pos mName (VFS._file_text vf)
               liftLsp $ logDebugN $ "Found names: " <> show names
-              
+
               case head names of
                 Just name -> do
                   liftLsp $ logDebugN $ "Found name: " <> show name
@@ -318,7 +319,97 @@ handlers diagErrs =
                               locationRes modFp (spanToRange sourceSpan)
                         P.BySourcePos srcPos ->
                           locationRes filePath (Types.Range (sourcePosToPosition srcPos) (sourcePosToPosition srcPos))
-                    _ -> nullRes
+                    _ -> nullRes,
+      Server.requestHandler Message.SMethod_TextDocumentCompletion $ \req res -> do
+        liftLsp $ logDebugN "SMethod_TextDocumentCompletion"
+        let Types.CompletionParams docIdent pos _prog _prog' completionCtx = req ^. LSP.params
+            filePathMb = Types.uriToFilePath $ docIdent ^. LSP.uri
+            uri :: Types.NormalizedUri
+            uri =
+              req
+                ^. LSP.params
+                  . LSP.textDocument
+                  . LSP.uri
+                  . to Types.toNormalizedUri
+
+            nullRes = res $ Right $ Types.InR $ Types.InR Types.Null
+
+            forLsp :: Maybe a -> (a -> HandlerM () ()) -> HandlerM () ()
+            forLsp val f = maybe nullRes f val
+
+        liftLsp $ logDebugN $ "Completion params: " <> show completionCtx
+        liftLsp $ logDebugN $ "filePathMb: " <> show filePathMb
+        forLsp filePathMb \filePath -> do
+          vfMb <- Server.getVirtualFile uri
+          forLsp vfMb \vf -> do
+            let word = getWordAt (VFS._file_text vf) pos
+            liftLsp $ logDebugN $ "Word: " <> show word <> " len " <> show (T.length word)
+            if word == ""
+              then nullRes
+              else do
+                mNameMb <- liftLsp $ selectExternModuleNameFromFilePath filePath
+                liftLsp $ logDebugN $ "Module name: " <> show mNameMb
+                forLsp mNameMb \mName -> do
+                  decls <- liftLsp $ getAstDeclarationsStartingWith mName word
+                  liftLsp $ logDebugN $ "Found decls: " <> show decls
+                  declDocs <-
+                    Map.fromList . catMaybes <$> forM decls \(declModule, decl) -> do
+                      let name = printName <$> P.declName decl
+                      docsMb <- liftLsp $ maybe (pure Nothing) (readDeclarationDocsAsMarkdown declModule) name
+                      pure $ (decl,) <$> docsMb
+                  res $
+                    Right $
+                      Types.InL $
+                        decls <&> \(declModule, decl) ->
+                          Types.CompletionItem
+                            { _label = foldMap printName (P.declName decl),
+                              _labelDetails =
+                                Just $
+                                  Types.CompletionItemLabelDetails
+                                    (Just $ printDeclarationType decl)
+                                    (convertComments $ snd $ P.declSourceAnn decl),
+                              _kind = declToCompletionItemKind decl,
+                              _tags = Nothing, --  Maybe [Types.CompletionItemTag]
+                              _detail = Just $ printDeclarationType decl,
+                              _documentation =
+                                Types.InR . Types.MarkupContent Types.MarkupKind_Markdown
+                                  <$> Map.lookup decl declDocs, 
+                              _deprecated = Nothing, --  Maybe Bool
+                              _preselect = Nothing, --  Maybe Bool
+                              _sortText = Nothing, --  Maybe Text
+                              _filterText = Nothing, --  Maybe Text
+                              _insertText = Nothing, --  Maybe Text
+                              _insertTextFormat = Nothing, --  Maybe Types.InsertTextFormat
+                              _insertTextMode = Nothing, --  Maybe Types.InsertTextMode
+                              _textEdit = Nothing, --  Maybe
+                              --                (Types.TextEdit Types.|? Types.InsertReplaceEdit)
+                              _textEditText = Nothing, --  Maybe Text
+                              _additionalTextEdits = Nothing, --  Maybe [Types.TextEdit]
+                              _commitCharacters = Nothing, --  Maybe [Text]
+                              _command = Nothing, --  Maybe Types.Command
+                              _data_ = Nothing --  Maybe aeson-2.0.3.0:Data.Aeson.Types.Internal.Value
+                            }
+
+                            --                           _label :: Text
+                            -- _labelDetails :: Maybe Types.CompletionItemLabelDetails
+                            -- _kind :: Maybe Types.CompletionItemKind
+                            -- _tags :: Maybe [Types.CompletionItemTag]
+                            -- _detail :: Maybe Text
+                            -- _documentation :: Maybe (Text Types.|? Types.MarkupContent)
+                            -- _deprecated :: Maybe Bool
+                            -- _preselect :: Maybe Bool
+                            -- _sortText :: Maybe Text
+                            -- _filterText :: Maybe Text
+                            -- _insertText :: Maybe Text
+                            -- _insertTextFormat :: Maybe Types.InsertTextFormat
+                            -- _insertTextMode :: Maybe Types.InsertTextMode
+                            -- _textEdit :: Maybe
+                            --                (Types.TextEdit Types.|? Types.InsertReplaceEdit)
+                            -- _textEditText :: Maybe Text
+                            -- _additionalTextEdits :: Maybe [Types.TextEdit]
+                            -- _commitCharacters :: Maybe [Text]
+                            -- _command :: Maybe Types.Command
+                            -- _data_ :: Maybe aeson-2.0.3.0:Data.Aeson.Types.Internal.Value
     ]
   where
     getFileDiagnotics :: (LSP.HasUri a2 Uri, LSP.HasTextDocument a1 a2, LSP.HasParams s a1) => s -> HandlerM config ([ErrorMessage], [Types.Diagnostic])
@@ -483,16 +574,3 @@ logToFile txt =
 --   let insertPrim = Map.union idePrimDeclarations
 --   pure (getExactCompletions search filters (insertPrim modules))
 -- z = getAllModules
-
-completionToHoverInfo :: Text -> Completion -> Text
-completionToHoverInfo word Completion {..} =
-  typeStr <> "\n" <> fromMaybe "" complDocumentation
-  where
-    typeStr =
-      "```purescript\n"
-        <> compactTypeStr
-        <> (if showExpanded then "\n" <> expandedTypeStr else "")
-        <> "\n```"
-    showExpanded = complExpandedType /= "" && (complExpandedType /= complType)
-    compactTypeStr = word <> " :: " <> complType
-    expandedTypeStr = word <> " :: " <> complExpandedType

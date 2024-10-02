@@ -181,3 +181,18 @@ getAstDeclarationsAtSrcPos moduleName' (SourcePos line col) = do
         ":module_name" := P.runModuleName moduleName'
       ]
   pure $ deserialise . fromOnly <$> decls
+
+
+getAstDeclarationsStartingWith :: (MonadIO m, MonadReader LspEnvironment m) => P.ModuleName -> Text -> m [(P.ModuleName, P.Declaration)]
+getAstDeclarationsStartingWith moduleName' prefix = do
+  decls :: [(Text, Lazy.ByteString )] <-
+    DB.queryNamed
+      "SELECT value, module_name FROM ast_declarations \
+      \WHERE (module_name = :module_name OR exported) \
+      \AND name LIKE :prefix \
+      \ORDER BY name ASC \
+      \LIMIT 100"
+      [ ":module_name" := P.runModuleName moduleName',
+        ":prefix" := prefix <> "%"
+      ]
+  pure $ bimap P.ModuleName deserialise <$> decls

@@ -46,7 +46,7 @@ getWordAt file Types.Position {..} =
 
 getWordOnLine :: Text -> UInt -> Text
 getWordOnLine line' col =
-  let start = getPrevWs (fromIntegral col) line'
+  let start = getPrevWs (fromIntegral col - 1) line'
       end = getNextWs (fromIntegral col) line'
    in T.strip $ T.take (end - start) $ T.drop start line'
   where
@@ -63,7 +63,7 @@ getWordOnLine line' col =
       _ -> getPrevWs (idx - 1) txt
 
     isWordBreak :: Char -> Bool
-    isWordBreak = not . (isAlphaNum ||^ (== '_'))
+    isWordBreak = not . (isAlphaNum ||^ (== '_') ||^ (== '.'))
 
 getNamesAtPosition :: (MonadIO m, MonadLogger m, MonadReader LspEnvironment m) => Types.Position -> P.ModuleName -> Rope -> m (Set (P.Qualified P.Name))
 getNamesAtPosition pos moduleName' src = do
@@ -200,3 +200,21 @@ sourcePosToPosition (Errors.SourcePos line col) =
 positionToSourcePos :: Types.Position -> Errors.SourcePos
 positionToSourcePos (Types.Position line col) =
   Errors.SourcePos (fromIntegral $ line + 1) (fromIntegral $ col + 1)
+
+declToCompletionItemKind :: P.Declaration -> Maybe Types.CompletionItemKind
+declToCompletionItemKind = \case 
+  P.DataDeclaration {} -> Just Types.CompletionItemKind_EnumMember
+  P.TypeSynonymDeclaration {} -> Just Types.CompletionItemKind_Struct
+  P.DataBindingGroupDeclaration {} -> Nothing 
+  P.TypeClassDeclaration {} -> Just Types.CompletionItemKind_Interface
+  P.TypeDeclaration {} -> Just Types.CompletionItemKind_Class
+  P.ValueDeclaration {} -> Just Types.CompletionItemKind_Value
+  P.KindDeclaration {} -> Just Types.CompletionItemKind_Class
+  P.RoleDeclaration {} -> Nothing
+  P.ExternDeclaration {} -> Just Types.CompletionItemKind_Value
+  _ -> Nothing
+
+  
+
+  
+  

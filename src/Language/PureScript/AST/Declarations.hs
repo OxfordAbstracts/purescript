@@ -508,13 +508,6 @@ declSourceAnn (ImportDeclaration sa _ _ _) = sa
 declSourceAnn (TypeClassDeclaration sa _ _ _ _ _) = sa
 declSourceAnn (TypeInstanceDeclaration sa _ _ _ _ _ _ _ _) = sa
 
--- declSourceType :: Declaration -> SourceType
--- declSourceType (DataDeclaration td _ _ _) = tydeclType td
--- declSourceType (TypeDeclaration td) = tydeclType td
--- declSourceType (KindDeclaration _ _ _ ty) = ty
--- declSourceType (RoleDeclaration RoleDeclarationData{..}) = foldr (\_ ty -> SourceTypeApp ty C.TyType) C.TyType rdeclRoles
-
-
 declSourceSpan :: Declaration -> SourceSpan
 declSourceSpan = fst . declSourceAnn
 
