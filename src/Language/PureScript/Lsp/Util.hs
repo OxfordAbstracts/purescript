@@ -70,11 +70,7 @@ getNamesAtPosition pos modName src = do
   let search = getWordAt src pos
   logDebugN $ "Looking up " <> search <> " in module " <> P.runModuleName modName
   decls <- getAstDeclarationsAtSrcPos modName (positionToSourcePos pos)
-  case head decls of
-    Nothing -> do
-      logDebugN "No declaration found at position"
-      pure mempty
-    Just decl -> do
+  pure $ mconcat $  decls <&> \decl -> do
       let goDef _ = mempty
           getDeclName :: P.Declaration -> Set (P.Qualified P.Name)
           getDeclName decl' = case decl' of
@@ -115,8 +111,8 @@ getNamesAtPosition pos modName src = do
 
           exprNames = P.everythingOnValues (<>) getDeclName getExprName goBinder goDef goDef ^. _1 $ decl
           typeNames = Set.fromList $ usedTypeNames modName decl
-      pure $
-        Set.filter ((==) search . printName . P.disqualify) $
+      
+      Set.filter ((==) search . printName . P.disqualify) $
           exprNames <> Set.map (flip P.mkQualified modName . P.TyName) typeNames
 
 lookupTypeInEnv :: (MonadReader LspEnvironment m, MonadLogger m, MonadIO m) => P.Qualified P.Name -> m (Maybe P.SourceType)
@@ -135,10 +131,7 @@ lookupTypeInEnv (P.Qualified qb name) = do
               P.TyOpName _opName -> Nothing
               P.DctorName dctorName -> view _3 <$> Map.lookup (P.Qualified qb dctorName) dataConstructors
               P.TyClassName tyClassName ->
-                (view _1 <$> Map.lookup (P.Qualified qb $ P.coerceProperName tyClassName) types)
-                -- <|> (srcInstanceType )
-              --  <|> (_ =<< Map.lookup (P.Qualified qb $ P.coerceProperName tyClassName) typeClasses)
-              --  <|> (typeClassDictionaries)
+                view _1 <$> Map.lookup (P.Qualified qb $ P.coerceProperName tyClassName) types
               _ -> Nothing
               -- P.Qualified (P.ByModuleName mn) n -> P.lookupType n mn env
               -- P.Qualified (P.BySourcePos _) n -> P.lookupType n (P.moduleName env) env

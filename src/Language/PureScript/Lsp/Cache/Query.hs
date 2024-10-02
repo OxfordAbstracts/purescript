@@ -174,7 +174,8 @@ getAstDeclarationsAtSrcPos moduleName' (SourcePos line col) = do
       "SELECT value FROM ast_declarations \
       \WHERE start_line <= :line AND end_line >= :line \
       \AND start_col <= :column AND end_col >= :column \
-      \AND module_name = :module_name"
+      \AND module_name = :module_name \
+      \ORDER BY lines ASC, cols ASC"
       [ ":line" := line,
         ":column" := col,
         ":module_name" := P.runModuleName moduleName'

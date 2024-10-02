@@ -6,17 +6,18 @@
 {-# LANGUAGE PackageImports #-}
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE UndecidableInstances #-}
+{-# OPTIONS_GHC -Wno-overlapping-patterns #-}
 {-# OPTIONS_GHC -Wno-unused-imports #-}
 -- {-# OPTIONS_GHC -Wno-unused-imports #-}
 {-# OPTIONS_GHC -Wno-unused-local-binds #-}
 {-# OPTIONS_GHC -Wno-unused-matches #-}
 {-# OPTIONS_GHC -Wno-unused-top-binds #-}
-{-# OPTIONS_GHC -Wno-overlapping-patterns #-}
 
 module Language.PureScript.LspSimple (main) where
 
 import Control.Lens (Field1 (_1), view, (^.))
 import Control.Lens.Getter (to)
+import Control.Monad.Cont (MonadTrans (lift))
 import Control.Monad.IO.Unlift
 import Control.Monad.Reader (mapReaderT)
 import Data.IORef (IORef, modifyIORef, newIORef, readIORef)
@@ -50,7 +51,7 @@ import Language.PureScript.Ide.Error (IdeError (GeneralError, RebuildError), pre
 import Language.PureScript.Ide.Logging (runErrLogger)
 import Language.PureScript.Ide.Types (Completion (Completion, complDocumentation, complExpandedType, complType), IdeLogLevel (LogAll))
 import Language.PureScript.Lsp.Cache (selectExternModuleNameFromFilePath, selectExternPathFromModuleName)
-import Language.PureScript.Lsp.Cache.Query (getCoreFnExprAt, getEfDeclarationInModule, getEfDeclarationsAtSrcPos, getAstDeclarationInModule)
+import Language.PureScript.Lsp.Cache.Query (getAstDeclarationInModule, getCoreFnExprAt, getEfDeclarationInModule, getEfDeclarationsAtSrcPos)
 import Language.PureScript.Lsp.Docs (readDeclarationDocsAsMarkdown, readQualifiedNameDocsAsMarkdown, readQualifiedNameDocsSourceSpan)
 import Language.PureScript.Lsp.Print (printDeclarationType, printName)
 import Language.PureScript.Lsp.Rebuild (rebuildFile)
@@ -63,7 +64,6 @@ import Protolude hiding (to)
 import System.Directory (createDirectoryIfMissing)
 import Text.PrettyPrint.Boxes (render)
 import "monad-logger" Control.Monad.Logger (LoggingT, logDebug, logDebugN, logErrorN, logWarnN, mapLoggingT)
-import Control.Monad.Cont (MonadTrans(lift))
 
 type HandlerM config = Server.LspT config (ReaderT LspEnvironment (LoggingT IO))
 
@@ -269,54 +269,55 @@ handlers diagErrs =
             forLsp val f = maybe nullRes f val
 
         forLsp filePathMb \filePath -> do
-          -- corefnExprMb <- liftLsp $ getCoreFnExprAt filePath pos
-          -- case corefnExprMb of
-          --   Just (CF.Var (ss, _comments, _meta) (P.Qualified qb ident)) -> do
-          --     liftLsp $ logDebugN $ "Found Corefn Var source span: " <> show ss
-          --     let name = P.runIdent ident
-          --     case qb of
-          --       P.ByModuleName mName -> do
-          --         declMb <- liftLsp $ getEfDeclarationInModule mName name
-          --         forLsp declMb \decl -> do
-          --           modFpMb <- liftLsp $ selectExternPathFromModuleName mName
-          --           forLsp modFpMb \modFp -> do
-          --             let sourceSpan = efDeclSourceSpan decl
-          --             locationRes modFp (spanToRange sourceSpan)
-          --       P.BySourcePos srcPos ->
-          --         locationRes filePath (Types.Range (sourcePosToPosition srcPos) (sourcePosToPosition srcPos))
-            -- _ -> do
-              vfMb <- Server.getVirtualFile uri
-              forLsp vfMb \vf -> do
-                mNameMb <- liftLsp $ selectExternModuleNameFromFilePath filePath
-                liftLsp $ logDebugN $ "Module name: " <> show mNameMb
-                liftLsp $ logDebugN $ "Pos: " <> show pos
-                forLsp mNameMb \mName -> do
-                  names <- liftLsp $ getNamesAtPosition pos mName (VFS._file_text vf)
-                  liftLsp $ logDebugN $ "Found names: " <> show names
-                  forLsp (head names) \name -> do
-                    liftLsp $ logDebugN $ "Found name: " <> show name
-                    spanMb <- liftLsp $ readQualifiedNameDocsSourceSpan name
-                    liftLsp $ logDebugN $ "Found docs span: " <> show spanMb
-                    case spanMb of
-                      _ -> do
-                        case name of
-                          P.Qualified (P.BySourcePos pos') _ -> do
-                            liftLsp $ logDebugN $ "Found source pos: " <> show pos'
-                            locationRes filePath (Types.Range (sourcePosToPosition pos') (sourcePosToPosition pos'))
-                          P.Qualified (P.ByModuleName nameModule) ident -> do
-                            liftLsp $ logDebugN $ "Found module name: " <> show nameModule
-                            declMb <- liftLsp $ getAstDeclarationInModule nameModule (printName ident)
-                            liftLsp $ logDebugN $ "Found decl: " <> show declMb
-                            forLsp declMb \decl -> do
-                              modFpMb <- liftLsp $ selectExternPathFromModuleName nameModule
-                              forLsp modFpMb \modFp -> do
-                                liftLsp $ logDebugN $ "Found modFp: " <> show modFp
-                                let sourceSpan = P.declSourceSpan decl
-                                liftLsp $ logDebugN $ "Found decl sourceSpan: " <> show sourceSpan
-                                locationRes modFp (spanToRange sourceSpan)
-                      Just span ->
-                        locationRes (P.spanName span) (spanToRange span)
-
+          vfMb <- Server.getVirtualFile uri
+          forLsp vfMb \vf -> do
+            mNameMb <- liftLsp $ selectExternModuleNameFromFilePath filePath
+            liftLsp $ logDebugN $ "Module name: " <> show mNameMb
+            liftLsp $ logDebugN $ "Pos: " <> show pos
+            forLsp mNameMb \mName -> do
+              names <- liftLsp $ getNamesAtPosition pos mName (VFS._file_text vf)
+              liftLsp $ logDebugN $ "Found names: " <> show names
+              case head names of
+                Just name -> do
+                  liftLsp $ logDebugN $ "Found name: " <> show name
+                  spanMb <- liftLsp $ readQualifiedNameDocsSourceSpan name
+                  liftLsp $ logDebugN $ "Found docs span: " <> show spanMb
+                  case spanMb of
+                    _ -> do
+                      case name of
+                        P.Qualified (P.BySourcePos pos') _ -> do
+                          liftLsp $ logDebugN $ "Found source pos: " <> show pos'
+                          locationRes filePath (Types.Range (sourcePosToPosition pos') (sourcePosToPosition pos'))
+                        P.Qualified (P.ByModuleName nameModule) ident -> do
+                          liftLsp $ logDebugN $ "Found module name: " <> show nameModule
+                          declMb <- liftLsp $ getAstDeclarationInModule nameModule (printName ident)
+                          liftLsp $ logDebugN $ "Found decl: " <> show declMb
+                          forLsp declMb \decl -> do
+                            modFpMb <- liftLsp $ selectExternPathFromModuleName nameModule
+                            forLsp modFpMb \modFp -> do
+                              liftLsp $ logDebugN $ "Found modFp: " <> show modFp
+                              let sourceSpan = P.declSourceSpan decl
+                              liftLsp $ logDebugN $ "Found decl sourceSpan: " <> show sourceSpan
+                              locationRes modFp (spanToRange sourceSpan)
+                    Just span ->
+                      locationRes (P.spanName span) (spanToRange span)
+                _ -> do
+                  corefnExprMb <- liftLsp $ getCoreFnExprAt filePath pos
+                  case corefnExprMb of
+                    Just (CF.Var (ss, _comments, _meta) (P.Qualified qb ident)) -> do
+                      liftLsp $ logDebugN $ "Found Corefn Var source span: " <> show ss
+                      let name = P.runIdent ident
+                      case qb of
+                        P.ByModuleName coreMName -> do
+                          declMb <- liftLsp $ getEfDeclarationInModule coreMName name
+                          forLsp declMb \decl -> do
+                            modFpMb <- liftLsp $ selectExternPathFromModuleName coreMName
+                            forLsp modFpMb \modFp -> do
+                              let sourceSpan = efDeclSourceSpan decl
+                              locationRes modFp (spanToRange sourceSpan)
+                        P.BySourcePos srcPos ->
+                          locationRes filePath (Types.Range (sourcePosToPosition srcPos) (sourcePosToPosition srcPos))
+                    _ -> nullRes
     ]
   where
     getFileDiagnotics :: (LSP.HasUri a2 Uri, LSP.HasTextDocument a1 a2, LSP.HasParams s a1) => s -> HandlerM config ([ErrorMessage], [Types.Diagnostic])
