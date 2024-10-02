@@ -48,7 +48,7 @@ import Language.PureScript.Ide.Logging (runErrLogger)
 import Language.PureScript.Ide.Types (Completion (Completion, complDocumentation, complExpandedType, complType), IdeLogLevel (LogAll))
 import Language.PureScript.Lsp.Cache (selectExternModuleNameFromFilePath, selectExternPathFromModuleName)
 import Language.PureScript.Lsp.Cache.Query (getCoreFnExprAt, getEfDeclarationInModule, getEfDeclarationsAtSrcPos)
-import Language.PureScript.Lsp.Docs (readDeclarationDocsAsMarkdown)
+import Language.PureScript.Lsp.Docs (readDeclarationDocsAsMarkdown, readQualifiedNameDocsAsMarkdown)
 import Language.PureScript.Lsp.Print (printDeclarationType, printName)
 import Language.PureScript.Lsp.Rebuild (rebuildFile)
 import Language.PureScript.Lsp.State (initFinished, waitForInit)
@@ -214,11 +214,18 @@ handlers diagErrs =
         forLsp filePathMb \filePath -> do
           corefnExprMb <- liftLsp $ getCoreFnExprAt filePath pos
           liftLsp $ logDebugN $ "Corefn expr: " <> show corefnExprMb
-          forLsp corefnExprMb \case
-            CF.Literal _ _ -> nullRes
-            CF.Constructor (_ss, comments, meta) tName cMame _ -> do
-              markdownTypeRes (P.runProperName cMame) (Just $ P.runProperName tName) comments
-            CF.Var (_ss, comments, meta) (P.Qualified qb ident) -> do
+          case corefnExprMb of
+            Just (CF.Literal _ _) -> nullRes
+            Just (CF.Constructor (ss, comments, meta) tName cMame _) -> do
+              docsMb <- liftLsp do
+                logDebugN $ "Span name: " <> show (P.spanName ss)
+                mNameMb <- selectExternModuleNameFromFilePath (P.spanName ss)
+                logDebugN $ "Module name: " <> show mNameMb
+                maybe (pure Nothing) (flip readDeclarationDocsAsMarkdown (P.runProperName tName)) mNameMb
+              case docsMb of
+                Nothing -> markdownTypeRes (P.runProperName cMame) (Just $ P.runProperName tName) comments
+                Just docs -> markdownRes docs
+            Just (CF.Var (_ss, comments, meta) (P.Qualified qb ident)) -> do
               case qb of
                 P.ByModuleName mName -> do
                   docsMb <- liftLsp $ readDeclarationDocsAsMarkdown mName (P.runIdent ident)
@@ -238,13 +245,14 @@ handlers diagErrs =
                   names <- liftLsp $ getNamesAtPosition pos mName (VFS._file_text vf)
                   liftLsp $ logDebugN $ "Names at position: " <> show (Set.toList names)
                   forLsp (head names) \name -> do
-                    typeMb <- liftLsp $ lookupTypeInEnv name
-                    liftLsp $ logDebugN $ "Type in env: " <> show typeMb
-                    forLsp typeMb \t -> do
-                      markdownTypeRes (printName $ disqualify name) (Just $ prettyPrintTypeSingleLine t) [],
-      --   declMb <- liftLsp $ getEfDeclarationInModule mName name
-      --   markdownTypeRes name (prettyPrintTypeSingleLine . efDeclSourceType <$> declMb) []
-      -- -- pure (),
+                    docsMb <- liftLsp $ readQualifiedNameDocsAsMarkdown name
+                    case docsMb of
+                      Nothing -> do
+                        typeMb <- liftLsp $ lookupTypeInEnv name
+                        liftLsp $ logDebugN $ "Type in env: " <> show typeMb
+                        forLsp typeMb \t -> do
+                          markdownTypeRes (printName $ disqualify name) (Just $ prettyPrintTypeSingleLine t) []
+                      Just docs -> markdownRes docs,
       Server.requestHandler Message.SMethod_TextDocumentDefinition $ \req res -> do
         sendInfoMsg "SMethod_TextDocumentDefinition"
         let Types.DefinitionParams docIdent pos _prog _prog' = req ^. LSP.params
@@ -406,7 +414,6 @@ spanToRange (Errors.SourceSpan _ start end) =
     (sourcePosToPosition start)
     (sourcePosToPosition end)
 
-
 sendError :: IdeError -> HandlerM config ()
 sendError err =
   Server.sendNotification
@@ -414,7 +421,6 @@ sendError err =
     ( Types.ShowMessageParams Types.MessageType_Error $
         "Something went wrong:\n" <> textError err
     )
-
 
 sendInfoMsg :: (Server.MonadLsp config f) => Text -> f ()
 sendInfoMsg msg = Server.sendNotification Message.SMethod_WindowShowMessage (Types.ShowMessageParams Types.MessageType_Info msg)
