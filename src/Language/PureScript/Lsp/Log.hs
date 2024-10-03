@@ -1,9 +1,7 @@
 module Language.PureScript.Lsp.Log where
 
+import Language.PureScript.Lsp.Types (LspConfig (confLogLevel), LspEnvironment (lspConfig), LspLogLevel (..))
 import Protolude
-import Language.PureScript.Lsp.Types (LspEnvironment (lspConfig), LspLogLevel (..), LspConfig (confLogLevel))
-
-
 
 infoLsp :: (MonadIO m, MonadReader LspEnvironment m) => Text -> m ()
 infoLsp = logLsp LogMsgInfo
@@ -11,7 +9,7 @@ infoLsp = logLsp LogMsgInfo
 warnLsp :: (MonadIO m, MonadReader LspEnvironment m) => Text -> m ()
 warnLsp = logLsp LogMsgWarning
 
-errorLsp  :: (MonadIO m, MonadReader LspEnvironment m) => Text -> m ()
+errorLsp :: (MonadIO m, MonadReader LspEnvironment m) => Text -> m ()
 errorLsp = logLsp LogMsgError
 
 debugLsp :: (MonadIO m, MonadReader LspEnvironment m) => Text -> m ()
@@ -20,14 +18,12 @@ debugLsp = logLsp LogMsgDebug
 perfLsp :: (MonadIO m, MonadReader LspEnvironment m) => Text -> m ()
 perfLsp = logLsp LogMsgPerf
 
-
 logLsp :: (MonadIO m, MonadReader LspEnvironment m) => LogMsgSeverity -> Text -> m ()
 logLsp msgLogLevel msg = do
   logLevel <- confLogLevel . lspConfig <$> ask
   when (shouldLog msgLogLevel logLevel) $ do
     -- Use stderr for logging as LSP messages should be on stdout
-    liftIO $ putErrLn (show msgLogLevel <> ": " <> show msg :: Text)
-
+    liftIO $ putErrLn (printLogMsgSeverity msgLogLevel <> ": " <> show msg)
 
 data LogMsgSeverity
   = LogMsgInfo
@@ -36,6 +32,13 @@ data LogMsgSeverity
   | LogMsgDebug
   | LogMsgPerf
   deriving (Show, Eq)
+
+printLogMsgSeverity :: LogMsgSeverity -> Text
+printLogMsgSeverity LogMsgInfo = "INFO"
+printLogMsgSeverity LogMsgWarning = "WARNING"
+printLogMsgSeverity LogMsgError = "ERROR"
+printLogMsgSeverity LogMsgDebug = "DEBUG"
+printLogMsgSeverity LogMsgPerf = "PERF"
 
 shouldLog :: LogMsgSeverity -> LspLogLevel -> Bool
 shouldLog msgLogLevel logLevel = case msgLogLevel of
