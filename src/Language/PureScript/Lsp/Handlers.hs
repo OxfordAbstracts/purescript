@@ -5,20 +5,15 @@
 
 module Language.PureScript.Lsp.Handlers where
 
-
 import Control.Lens ((^.))
 import Control.Lens.Getter (to)
 import Control.Lens.Setter (set)
-import Control.Monad.IO.Unlift
 import Data.Aeson qualified as A
-import Data.IORef (IORef, modifyIORef, readIORef)
-import Data.List.NonEmpty qualified as NEL
 import Data.Map qualified as Map
-import Data.Set qualified as Set
 import Data.Text qualified as T
 import Language.LSP.Protocol.Lens qualified as LSP
 import Language.LSP.Protocol.Message qualified as Message
-import Language.LSP.Protocol.Types (Diagnostic, Uri)
+import Language.LSP.Protocol.Types (Uri)
 import Language.LSP.Protocol.Types qualified as LSP
 import Language.LSP.Protocol.Types qualified as Types
 import Language.LSP.Server (getConfig)
@@ -27,13 +22,11 @@ import Language.LSP.VFS qualified as VFS
 import Language.PureScript qualified as P
 import Language.PureScript.CoreFn.Expr qualified as CF
 import Language.PureScript.Docs.Convert.Single (convertComments)
-import Language.PureScript.Errors (ErrorMessage (ErrorMessage), MultipleErrors (runMultipleErrors), errorCode, errorDocUri, errorSpan, noColorPPEOptions, prettyPrintSingleError)
 import Language.PureScript.Errors qualified as Errors
-import Language.PureScript.Errors.JSON (toSuggestion)
-import Language.PureScript.Errors.JSON qualified as JsonErrors
 import Language.PureScript.Ide.Error (prettyPrintTypeSingleLine)
 import Language.PureScript.Lsp.Cache (selectExternModuleNameFromFilePath, selectExternPathFromModuleName)
 import Language.PureScript.Lsp.Cache.Query (getAstDeclarationInModule, getAstDeclarationsStartingWith, getCoreFnExprAt, getEfDeclarationInModule)
+import Language.PureScript.Lsp.Diagnostics (getFileDiagnotics, getMsgUri)
 import Language.PureScript.Lsp.Docs (readDeclarationDocsAsMarkdown, readQualifiedNameDocsAsMarkdown, readQualifiedNameDocsSourceSpan)
 import Language.PureScript.Lsp.Log (debugLsp)
 import Language.PureScript.Lsp.Print (printDeclarationType, printName)
@@ -42,20 +35,11 @@ import Language.PureScript.Lsp.Types (CompleteItemData (CompleteItemData), LspEn
 import Language.PureScript.Lsp.Util (declToCompletionItemKind, efDeclSourceSpan, efDeclSourceType, getNamesAtPosition, getWordAt, lookupTypeInEnv, sourcePosToPosition)
 import Language.PureScript.Names (disqualify, runIdent)
 import Protolude hiding (to)
-import Text.PrettyPrint.Boxes (render)
 
 type HandlerM config = ReaderT LspEnvironment (Server.LspT config IO)
 
-type DiagnosticErrors = IORef (Map Diagnostic ErrorMessage)
-
-insertDiagnosticErrors :: (MonadIO m, Ord k) => IORef (Map k a) -> [a] -> [k] -> m ()
-insertDiagnosticErrors diagErrs errs diags = liftIO $ modifyIORef diagErrs (Map.union $ Map.fromList $ zip diags errs)
-
-getDiagnosticErrors :: (MonadIO m, Ord k) => IORef (Map k a) -> [k] -> m (Map k a)
-getDiagnosticErrors diagErrs diags = liftIO $ flip Map.restrictKeys (Set.fromList diags) <$> readIORef diagErrs
-
-handlers :: DiagnosticErrors -> Server.Handlers (HandlerM ())
-handlers diagErrs =
+handlers :: Server.Handlers (HandlerM ())
+handlers =
   mconcat
     [ Server.notificationHandler Message.SMethod_Initialized $ \_not -> sendInfoMsg "Lsp initialized",
       Server.notificationHandler Message.SMethod_TextDocumentDidOpen $ \msg -> do
@@ -78,8 +62,7 @@ handlers diagErrs =
       Server.notificationHandler Message.SMethod_SetTrace $ \_msg -> debugLsp "SMethod_SetTrace",
       Server.requestHandler Message.SMethod_TextDocumentDiagnostic $ \req res -> do
         debugLsp "SMethod_TextDocumentDiagnostic"
-        (errs, diagnostics) <- getFileDiagnotics req
-        insertDiagnosticErrors diagErrs errs diagnostics
+        (_errs, diagnostics) <- getFileDiagnotics req
         res $
           Right $
             Types.DocumentDiagnosticReport $
@@ -90,23 +73,13 @@ handlers diagErrs =
             diags = params ^. LSP.context . LSP.diagnostics
             uri = getMsgUri req
 
-        errs <- Map.toList <$> getDiagnosticErrors diagErrs diags
         res $
           Right $
             Types.InL $
-              errs & fmap \(_diag, err) ->
-                let textEdits :: [Types.TextEdit]
-                    textEdits =
-                      toSuggestion err
-                        & maybeToList
-                          >>= suggestionToEdit
-
-                    suggestionToEdit :: JsonErrors.ErrorSuggestion -> [Types.TextEdit]
-                    suggestionToEdit (JsonErrors.ErrorSuggestion replacement (Just JsonErrors.ErrorPosition {..})) =
-                      let start = Types.Position (fromIntegral $ startLine - 1) (fromIntegral $ startColumn - 1)
-                          end = Types.Position (fromIntegral $ endLine - 1) (fromIntegral $ endColumn - 1)
-                       in pure $ Types.TextEdit (Types.Range start end) replacement
-                    suggestionToEdit _ = []
+              diags <&> \diag ->
+                let textEdits = case A.fromJSON <$> diag ^. LSP.data_ of
+                      Just (A.Success tes) -> tes
+                      _ -> []
                  in Types.InR $
                       Types.CodeAction
                         "Apply suggestion"
@@ -347,60 +320,6 @@ handlers diagErrs =
                   & addImport
           _ -> res $ Right completionItem
     ]
-  where
-    getFileDiagnotics :: (LSP.HasUri a2 Uri, LSP.HasTextDocument a1 a2, LSP.HasParams s a1) => s -> HandlerM config ([ErrorMessage], [Types.Diagnostic])
-    getFileDiagnotics msg = do
-      let uri :: Uri
-          uri = getMsgUri msg
-          fileName = Types.uriToFilePath uri
-      case fileName of
-        Just file -> do
-          res <- rebuildFile file
-          getResultDiagnostics res
-        Nothing -> do
-          sendInfoMsg $ "No file path for uri: " <> show uri
-          pure ([], [])
-
-    getMsgUri :: (LSP.HasParams s a1, LSP.HasTextDocument a1 a2, LSP.HasUri a2 a3) => s -> a3
-    getMsgUri msg = msg ^. LSP.params . LSP.textDocument . LSP.uri
-
-    getResultDiagnostics :: Either ([(FilePath, Text)], P.MultipleErrors) (FilePath, P.MultipleErrors) -> HandlerM config ([ErrorMessage], [Types.Diagnostic])
-    getResultDiagnostics res = case res of
-      Left (_, errs) -> do
-        let errors = runMultipleErrors errs
-            diags = errorMessageDiagnostic Types.DiagnosticSeverity_Error <$> errors
-        pure (errors, diags)
-      Right (_, errs) | Errors.nonEmpty errs -> do
-        let errors = runMultipleErrors errs
-            diags = errorMessageDiagnostic Types.DiagnosticSeverity_Warning <$> errors
-        pure (errors, diags)
-      _ -> pure ([], [])
-      where
-        errorMessageDiagnostic :: Types.DiagnosticSeverity -> ErrorMessage -> Types.Diagnostic
-        errorMessageDiagnostic severity msg@((ErrorMessage _hints _)) =
-          Types.Diagnostic
-            (Types.Range start end)
-            (Just severity)
-            (Just $ Types.InR $ errorCode msg)
-            (Just $ Types.CodeDescription $ Types.Uri $ errorDocUri msg)
-            (T.pack <$> spanName)
-            (T.pack $ render $ prettyPrintSingleError noColorPPEOptions msg)
-            Nothing
-            Nothing
-            Nothing
-          where
-            notFound = Types.Position 0 0
-            (spanName, start, end) = getPositions $ errorSpan msg
-
-            getPositions = fromMaybe (Nothing, notFound, notFound) . getPositionsMb
-
-            getPositionsMb = fmap $ \spans ->
-              let (Errors.SourceSpan name (Errors.SourcePos startLine startCol) (Errors.SourcePos endLine endCol)) =
-                    NEL.head spans
-               in ( Just name,
-                    Types.Position (fromIntegral $ startLine - 1) (fromIntegral $ startCol - 1),
-                    Types.Position (fromIntegral $ endLine - 1) (fromIntegral $ endCol - 1)
-                  )
 
 spanToRange :: Errors.SourceSpan -> Types.Range
 spanToRange (Errors.SourceSpan _ start end) =

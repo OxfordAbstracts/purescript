@@ -213,8 +213,6 @@ common defaults
     witherable >=0.4.2 && <0.5,
     lsp >=2.2.0 && <3.0,
     lsp-types >=2.2.0 && <3.0,
-    co-log-core >= 0.3.2.0 && < 0.4,
-    prettyprinter >= 1.7.0 && < 2.0,
     unliftio-core >= 0.2.0.0 && < 0.3,
     text-rope >= 0.2 && < 1.0
 
@@ -348,6 +346,7 @@ library
     Language.PureScript.Lsp.Cache
     Language.PureScript.Lsp.Cache.IO
     Language.PureScript.Lsp.Cache.Query
+    Language.PureScript.Lsp.Diagnostics
     Language.PureScript.Lsp.Handlers
     Language.PureScript.Lsp.Log
     Language.PureScript.Lsp.Prim
@@ -357,7 +356,6 @@ library
     Language.PureScript.Lsp.State
     Language.PureScript.Lsp.Types
     Language.PureScript.Lsp.Util
-    Language.PureScript.LspSimple
     Language.PureScript.Make
     Language.PureScript.Make.Actions
     Language.PureScript.Make.BuildPlan

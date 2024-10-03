@@ -1,7 +1,7 @@
 module Command.Lsp (command) where
 
 import Language.PureScript.Lsp.Types (LspConfig (..), mkEnv, LspLogLevel(..))
-import Language.PureScript.LspSimple as Lsp
+import Language.PureScript.Lsp as Lsp
 import Options.Applicative qualified as Opts
 import Protolude
 import SharedCLI qualified
