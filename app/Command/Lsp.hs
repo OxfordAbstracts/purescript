@@ -1,7 +1,6 @@
 module Command.Lsp (command) where
 
-import Language.PureScript.Ide.Types (IdeLogLevel (..))
-import Language.PureScript.Lsp.Types (LspConfig (..), mkEnv)
+import Language.PureScript.Lsp.Types (LspConfig (..), mkEnv, LspLogLevel(..))
 import Language.PureScript.LspSimple as Lsp
 import Options.Applicative qualified as Opts
 import Protolude
@@ -14,7 +13,7 @@ data ServerOptions = ServerOptions
     _serverGlobsFromFile :: Maybe FilePath,
     _serverGlobsExcluded :: [FilePath],
     _serverOutputPath :: FilePath,
-    _serverLoglevel :: IdeLogLevel
+    _serverLoglevel :: LspLogLevel
   }
   deriving (Show)
 
@@ -41,8 +40,8 @@ command = Opts.helper <*> subcommands
       let conf =
             LspConfig
               { confOutputPath = outputPath,
-                confGlobs = globs
-                -- confLogLevel = logLevel
+                confGlobs = globs,
+                confLogLevel = logLevel
               }
       env <- mkEnv conf
       startServer env
@@ -63,13 +62,13 @@ command = Opts.helper <*> subcommands
                   )
             )
 
-    parseLogLevel :: Text -> IdeLogLevel
+    parseLogLevel :: Text -> LspLogLevel
     parseLogLevel s = case s of
       "debug" -> LogDebug
       "perf" -> LogPerf
       "all" -> LogAll
       "none" -> LogNone
-      _ -> LogDefault
+      _ -> LogWarning
 
     startServer env = do
       code <- Lsp.main env

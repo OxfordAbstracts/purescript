@@ -176,6 +176,7 @@ common defaults
     edit-distance >=0.2.2.1 && <0.3,
     file-embed >=0.0.15.0 && <0.1,
     filepath >=1.4.2.2 && <1.5,
+    exceptions >=0.10.4  && <0.11,
     Glob >=0.10.2 && <0.11,
     haskeline >=0.8.2 && <0.9,
     language-javascript ==0.7.0.0,
@@ -343,11 +344,14 @@ library
     Language.PureScript.Lsp
     Language.PureScript.Lsp.DB
     Language.PureScript.Lsp.Docs
+    Language.PureScript.Lsp.Imports
     Language.PureScript.Lsp.Cache
     Language.PureScript.Lsp.Cache.IO
     Language.PureScript.Lsp.Cache.Query
+    Language.PureScript.Lsp.Log
     Language.PureScript.Lsp.Prim
     Language.PureScript.Lsp.Print
+    Language.PureScript.Lsp.ReadFile
     Language.PureScript.Lsp.Rebuild
     Language.PureScript.Lsp.State
     Language.PureScript.Lsp.Types

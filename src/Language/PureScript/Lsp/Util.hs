@@ -25,7 +25,7 @@ import Language.PureScript.Lsp.State (cachedRebuild)
 import Language.PureScript.Lsp.Types (CurrentFile (currentEnv), LspEnvironment)
 -- import Language.PureScript.Sugar.BindingGroups (usedTypeNames)
 import Protolude hiding (to)
-import "monad-logger" Control.Monad.Logger (MonadLogger, logDebugN)
+import Language.PureScript.Lsp.Log (debugLsp)
 
 posInSpan :: Types.Position -> Errors.SourceSpan -> Bool
 posInSpan (Types.Position line col) (Errors.SourceSpan _ (Errors.SourcePos startLine startCol) (Errors.SourcePos endLine endCol)) =
@@ -65,12 +65,12 @@ getWordOnLine line' col =
     isWordBreak :: Char -> Bool
     isWordBreak = not . (isAlphaNum ||^ (== '_') ||^ (== '.'))
 
-getNamesAtPosition :: (MonadIO m, MonadLogger m, MonadReader LspEnvironment m) => Types.Position -> P.ModuleName -> Rope -> m (Set (P.Qualified P.Name))
+getNamesAtPosition :: (MonadIO m, MonadReader LspEnvironment m) => Types.Position -> P.ModuleName -> Rope -> m (Set (P.Qualified P.Name))
 getNamesAtPosition pos moduleName' src = do
   let search = getWordAt src pos
-  logDebugN $ "Looking up " <> search <> " in module " <> P.runModuleName moduleName'
+  debugLsp $ "Looking up " <> search <> " in module " <> P.runModuleName moduleName'
   decls <- getAstDeclarationsAtSrcPos moduleName' (positionToSourcePos pos)
-  logDebugN $ "Found declarations: " <> T.pack (show $ length decls) <> show (fmap (T.take 400 . show) decls)
+  debugLsp $ "Found declarations: " <> T.pack (show $ length decls) <> show (fmap (T.take 400 . show) decls)
   pure $
     mconcat $
       decls <&> \decl -> do
@@ -123,16 +123,15 @@ getNamesAtPosition pos moduleName' src = do
             exprNames = P.everythingWithContextOnValues moduleName' Set.empty (<>) getDeclName getExprName goBinder goDef goDef ^. _1 $ decl
         -- typeNames = Set.fromList $ usedTypeNames moduleName' decl
 
-        Set.filter ((==) search . printName . P.disqualify) $
-          exprNames
+        Set.filter ((==) search . printName . P.disqualify) exprNames
 
 -- <> Set.map (flip P.mkQualified moduleName' . P.TyName) typeNames
 
-lookupTypeInEnv :: (MonadReader LspEnvironment m, MonadLogger m, MonadIO m) => P.Qualified P.Name -> m (Maybe P.SourceType)
+lookupTypeInEnv :: (MonadReader LspEnvironment m, MonadIO m) => P.Qualified P.Name -> m (Maybe P.SourceType)
 lookupTypeInEnv (P.Qualified qb name) = do
   envMb :: Maybe P.Environment <- fmap currentEnv <$> cachedRebuild
-  logDebugN $ "Looking up " <> show name <> " in environment"
-  -- logDebugN $ "Environment: " <> show envMb
+  debugLsp $ "Looking up " <> show name <> " in environment"
+  -- debugLsp $ "Environment: " <> show envMb
   pure $
     envMb
       >>= ( \(P.Environment {..}) -> case name of

@@ -1,20 +1,20 @@
-{-# LANGUAGE PackageImports #-}
 {-# LANGUAGE DeriveAnyClass #-}
+{-# LANGUAGE PackageImports #-}
 
 module Language.PureScript.Lsp.Types where
 
 import Control.Concurrent.STM (TVar, newTVarIO)
-import Database.SQLite.Simple (Connection)
-import Language.PureScript.AST.Declarations qualified as P
 -- import Language.PureScript.Ide.Types (IdeLogLevel)
 
+import Data.Aeson (FromJSON, ToJSON)
+import Data.Aeson qualified as A
+import Database.SQLite.Simple (Connection)
+import Language.PureScript.AST.Declarations qualified as P
 import Language.PureScript.DB (mkConnection)
 import Language.PureScript.Environment qualified as P
 import Language.PureScript.Externs qualified as P
 import Language.PureScript.Names qualified as P
 import Protolude
-import Data.Aeson (ToJSON, FromJSON)
-import Data.Aeson qualified as A
 
 data LspEnvironment = LspEnvironment
   { lspConfig :: LspConfig,
@@ -30,7 +30,8 @@ mkEnv conf = do
 
 data LspConfig = LspConfig
   { confOutputPath :: FilePath,
-    confGlobs :: [FilePath]
+    confGlobs :: [FilePath],
+    confLogLevel :: LspLogLevel
   }
   deriving (Show)
 
@@ -56,6 +57,16 @@ data CompleteItemData = CompleteItemData
   }
   deriving (Show, Eq, Generic, ToJSON, FromJSON)
 
+data LspLogLevel
+  = LogAll
+  | LogDebug
+  | LogPerf
+  | LogInfo
+  | LogWarning
+  | LogError
+  | LogNone
+  deriving (Show, Eq, Ord, Generic, ToJSON, FromJSON)
+
 decodeCompleteItemData :: Maybe A.Value -> A.Result (Maybe CompleteItemData)
-decodeCompleteItemData Nothing = pure Nothing 
+decodeCompleteItemData Nothing = pure Nothing
 decodeCompleteItemData (Just v) = A.fromJSON v

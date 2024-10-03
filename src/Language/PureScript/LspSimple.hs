@@ -1,35 +1,22 @@
 {-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE DuplicateRecordFields #-}
-{-# LANGUAGE InstanceSigs #-}
-{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PackageImports #-}
-{-# LANGUAGE TypeOperators #-}
-{-# LANGUAGE UndecidableInstances #-}
 {-# OPTIONS_GHC -Wno-overlapping-patterns #-}
-{-# OPTIONS_GHC -Wno-unused-imports #-}
--- {-# OPTIONS_GHC -Wno-unused-imports #-}
-{-# OPTIONS_GHC -Wno-unused-local-binds #-}
-{-# OPTIONS_GHC -Wno-unused-matches #-}
 {-# OPTIONS_GHC -Wno-unused-top-binds #-}
 
 module Language.PureScript.LspSimple (main) where
 
-import Control.Lens (Field1 (_1), view, (^.))
+import Control.Lens ((^.))
 import Control.Lens.Getter (to)
 import Control.Lens.Setter (set)
-import Control.Monad.Cont (MonadTrans (lift))
 import Control.Monad.IO.Unlift
-import Control.Monad.Reader (mapReaderT)
 import Data.Aeson qualified as A
 import Data.IORef (IORef, modifyIORef, newIORef, readIORef)
 import Data.List.NonEmpty qualified as NEL
 import Data.Map qualified as Map
 import Data.Set qualified as Set
 import Data.Text qualified as T
-import Data.Time (getCurrentTime)
-import GHC.IO (unsafePerformIO)
-import Language.Haskell.TH (listT)
 import Language.LSP.Protocol.Lens qualified as LSP
 import Language.LSP.Protocol.Message qualified as Message
 import Language.LSP.Protocol.Types (Diagnostic, Uri)
@@ -39,65 +26,31 @@ import Language.LSP.Server (getConfig)
 import Language.LSP.Server qualified as Server
 import Language.LSP.VFS qualified as VFS
 import Language.PureScript qualified as P
-import Language.PureScript.AST.SourcePos (SourcePos (sourcePosColumn), nullSourceSpan)
-import Language.PureScript.AST.SourcePos qualified as P
-import Language.PureScript.Constants.TH (ty)
-import Language.PureScript.CoreFn.Expr (extractAnn)
 import Language.PureScript.CoreFn.Expr qualified as CF
 import Language.PureScript.Docs.Convert.Single (convertComments)
 import Language.PureScript.Errors (ErrorMessage (ErrorMessage), MultipleErrors (runMultipleErrors), errorCode, errorDocUri, errorSpan, noColorPPEOptions, prettyPrintSingleError)
 import Language.PureScript.Errors qualified as Errors
 import Language.PureScript.Errors.JSON (toSuggestion)
 import Language.PureScript.Errors.JSON qualified as JsonErrors
-import Language.PureScript.Ide.Error (IdeError (GeneralError, RebuildError), prettyPrintTypeSingleLine, textError)
-import Language.PureScript.Ide.Logging (runErrLogger)
-import Language.PureScript.Ide.Types (Completion (Completion, complDocumentation, complExpandedType, complType), IdeLogLevel (LogAll), declarationType, _IdeDeclModule)
+import Language.PureScript.Ide.Error (prettyPrintTypeSingleLine)
 import Language.PureScript.Lsp.Cache (selectExternModuleNameFromFilePath, selectExternPathFromModuleName)
-import Language.PureScript.Lsp.Cache.Query (getAstDeclarationInModule, getAstDeclarationsStartingWith, getCoreFnExprAt, getEfDeclarationInModule, getEfDeclarationsAtSrcPos)
+import Language.PureScript.Lsp.Cache.Query (getAstDeclarationInModule, getAstDeclarationsStartingWith, getCoreFnExprAt, getEfDeclarationInModule)
 import Language.PureScript.Lsp.Docs (readDeclarationDocsAsMarkdown, readQualifiedNameDocsAsMarkdown, readQualifiedNameDocsSourceSpan)
-import Language.PureScript.Lsp.Print (printDeclarationType, printDeclarationTypeMb, printName)
+import Language.PureScript.Lsp.Log (debugLsp)
+import Language.PureScript.Lsp.Print (printDeclarationType, printName)
 import Language.PureScript.Lsp.Rebuild (rebuildFile)
-import Language.PureScript.Lsp.State (initFinished, waitForInit)
 import Language.PureScript.Lsp.Types (CompleteItemData (CompleteItemData), LspEnvironment, decodeCompleteItemData)
-import Language.PureScript.Lsp.Util (declToCompletionItemKind, efDeclComments, efDeclSourceSpan, efDeclSourceType, getNamesAtPosition, getWordAt, lookupTypeInEnv, sourcePosToPosition)
+import Language.PureScript.Lsp.Util (declToCompletionItemKind, efDeclSourceSpan, efDeclSourceType, getNamesAtPosition, getWordAt, lookupTypeInEnv, sourcePosToPosition)
 import Language.PureScript.Names (disqualify, runIdent)
-import Language.PureScript.Names qualified as P
 import Protolude hiding (to)
-import System.Directory (createDirectoryIfMissing)
 import Text.PrettyPrint.Boxes (render)
-import "monad-logger" Control.Monad.Logger (LoggingT, logDebug, logDebugN, logErrorN, logWarnN, mapLoggingT)
 
-type HandlerM config = Server.LspT config (ReaderT LspEnvironment (LoggingT IO))
-
-type LspM = ReaderT LspEnvironment (LoggingT (ExceptT IdeError IO))
-
-liftLsp :: LspM a -> HandlerM config a
-liftLsp = lift . mapReaderT (mapLoggingT (throwIdeError <=< runExceptT))
-  where
-    throwIdeError = \case
-      Left err -> liftIO $ throwIO err
-      Right a -> pure a
-
-liftLspWithErr :: LspM a -> HandlerM config (Either IdeError a)
-liftLspWithErr = lift . flip catchError errorHandler . mapReaderT (mapLoggingT runExceptT)
-  where
-    errorHandler ::
-      IOException ->
-      ReaderT LspEnvironment (LoggingT IO) (Either IdeError a)
-    errorHandler err = do
-      logErrorN $ T.pack (show err)
-      pure $ Left $ GeneralError $ show err
+type HandlerM config = ReaderT LspEnvironment ((Server.LspT config IO))
 
 type DiagnosticErrors = IORef (Map Diagnostic ErrorMessage)
 
-insertDiagnosticError :: (MonadIO m, Ord k) => IORef (Map k a) -> a -> k -> m ()
-insertDiagnosticError diagErrs err diag = liftIO $ modifyIORef diagErrs (Map.insert diag err)
-
 insertDiagnosticErrors :: (MonadIO m, Ord k) => IORef (Map k a) -> [a] -> [k] -> m ()
 insertDiagnosticErrors diagErrs errs diags = liftIO $ modifyIORef diagErrs (Map.union $ Map.fromList $ zip diags errs)
-
-getDiagnosticError :: (MonadIO m, Ord k) => IORef (Map k a) -> k -> m (Maybe a)
-getDiagnosticError diagErrs diags = liftIO $ Map.lookup diags <$> readIORef diagErrs
 
 getDiagnosticErrors :: (MonadIO m, Ord k) => IORef (Map k a) -> [k] -> m (Map k a)
 getDiagnosticErrors diagErrs diags = liftIO $ flip Map.restrictKeys (Set.fromList diags) <$> readIORef diagErrs
@@ -105,40 +58,27 @@ getDiagnosticErrors diagErrs diags = liftIO $ flip Map.restrictKeys (Set.fromLis
 handlers :: DiagnosticErrors -> Server.Handlers (HandlerM ())
 handlers diagErrs =
   mconcat
-    [ Server.notificationHandler Message.SMethod_Initialized $ \_not -> do
-        res <- liftLspWithErr do
-          initFinished
-          logDebugN "Init finished"
-        case res of
-          Left err -> do
-            liftLsp $ logErrorN $ "Initalise error: " <> show err
-            sendInfoMsg "Failed to initialise lsp server"
-          Right _ -> sendInfoMsg "OA purs lsp server initialized",
+    [ Server.notificationHandler Message.SMethod_Initialized $ \_not -> sendInfoMsg "Failed to initialise lsp server",
       Server.notificationHandler Message.SMethod_TextDocumentDidOpen $ \msg -> do
-        liftLsp $ logDebugN "TextDocumentDidOpen"
+        debugLsp "TextDocumentDidOpen"
         let uri :: Uri
             uri = getMsgUri msg
             fileName = Types.uriToFilePath uri
-        void $ liftLspWithErr do
-          waitForInit
-          traverse rebuildFile fileName,
-      Server.notificationHandler Message.SMethod_TextDocumentDidChange $ \msg -> do
-        liftLsp $ logDebugN "TextDocumentDidChange",
+
+        traverse_ rebuildFile fileName,
+      Server.notificationHandler Message.SMethod_TextDocumentDidChange $ \_msg -> debugLsp "TextDocumentDidChange",
       Server.notificationHandler Message.SMethod_TextDocumentDidSave $ \msg -> do
-        liftLsp $ logDebugN "SMethod_TextDocumentDidSave"
+        debugLsp "SMethod_TextDocumentDidSave"
         let uri :: Uri
             uri = getMsgUri msg
             fileName = Types.uriToFilePath uri
-        void $ liftLspWithErr do
-          waitForInit
-          traverse rebuildFile fileName,
-      Server.notificationHandler Message.SMethod_WorkspaceDidChangeConfiguration $ \msg -> do
+        traverse_ rebuildFile fileName,
+      Server.notificationHandler Message.SMethod_WorkspaceDidChangeConfiguration $ \_msg -> do
         cfg <- getConfig
-        liftLsp $ logDebugN $ "Config changed: " <> show cfg,
-      Server.notificationHandler Message.SMethod_SetTrace $ \msg -> do
-        liftLsp $ logDebugN "SMethod_SetTrace",
+        debugLsp $ "Config changed: " <> show cfg,
+      Server.notificationHandler Message.SMethod_SetTrace $ \_msg -> debugLsp "SMethod_SetTrace",
       Server.requestHandler Message.SMethod_TextDocumentDiagnostic $ \req res -> do
-        liftLsp $ logDebugN "SMethod_TextDocumentDiagnostic"
+        debugLsp "SMethod_TextDocumentDiagnostic"
         (errs, diagnostics) <- getFileDiagnotics req
         insertDiagnosticErrors diagErrs errs diagnostics
         res $
@@ -155,7 +95,7 @@ handlers diagErrs =
         res $
           Right $
             Types.InL $
-              errs & fmap \(diag, err) ->
+              errs & fmap \(_diag, err) ->
                 let textEdits :: [Types.TextEdit]
                     textEdits =
                       toSuggestion err
@@ -163,7 +103,7 @@ handlers diagErrs =
                           >>= suggestionToEdit
 
                     suggestionToEdit :: JsonErrors.ErrorSuggestion -> [Types.TextEdit]
-                    suggestionToEdit (JsonErrors.ErrorSuggestion replacement (Just errorPos@JsonErrors.ErrorPosition {..})) =
+                    suggestionToEdit (JsonErrors.ErrorSuggestion replacement (Just JsonErrors.ErrorPosition {..})) =
                       let start = Types.Position (fromIntegral $ startLine - 1) (fromIntegral $ startColumn - 1)
                           end = Types.Position (fromIntegral $ endLine - 1) (fromIntegral $ endColumn - 1)
                        in pure $ Types.TextEdit (Types.Range start end) replacement
@@ -184,8 +124,8 @@ handlers diagErrs =
                         Nothing
                         Nothing,
       Server.requestHandler Message.SMethod_TextDocumentHover $ \req res -> do
-        liftLsp $ logDebugN "SMethod_TextDocumentHover"
-        let Types.HoverParams docIdent pos@(Types.Position line col) _workDone = req ^. LSP.params
+        debugLsp "SMethod_TextDocumentHover"
+        let Types.HoverParams docIdent pos _workDone = req ^. LSP.params
             filePathMb = Types.uriToFilePath $ docIdent ^. LSP.uri
             docUri =
               docIdent
@@ -216,40 +156,39 @@ handlers diagErrs =
             forLsp val f = maybe nullRes f val
 
         forLsp filePathMb \filePath -> do
-          corefnExprMb <- liftLsp $ getCoreFnExprAt filePath pos
+          corefnExprMb <- getCoreFnExprAt filePath pos
           case corefnExprMb of
             Just (CF.Literal _ _) -> nullRes
-            Just (CF.Constructor (ss, comments, meta) tName cMame _) -> do
-              docsMb <- liftLsp do
+            Just (CF.Constructor (ss, comments, _meta) tName cMame _) -> do
+              docsMb <- do
                 mNameMb <- selectExternModuleNameFromFilePath (P.spanName ss)
-                maybe (pure Nothing) (flip readDeclarationDocsAsMarkdown (P.runProperName tName)) mNameMb
+                maybe (pure Nothing) (`readDeclarationDocsAsMarkdown` (P.runProperName tName)) mNameMb
               case docsMb of
                 Nothing -> markdownTypeRes (P.runProperName cMame) (Just $ P.runProperName tName) comments
                 Just docs -> markdownRes docs
-            Just (CF.Var (_ss, comments, meta) (P.Qualified qb ident)) -> do
+            Just (CF.Var (_ss, comments, _meta) (P.Qualified qb ident)) -> do
               case qb of
                 P.ByModuleName mName -> do
-                  docsMb <- liftLsp $ readDeclarationDocsAsMarkdown mName (P.runIdent ident)
+                  docsMb <- readDeclarationDocsAsMarkdown mName (P.runIdent ident)
                   case docsMb of
                     Just docs -> markdownRes docs
                     _ -> do
-                      declMb <- liftLsp $ getEfDeclarationInModule mName (runIdent ident)
+                      declMb <- getEfDeclarationInModule mName (runIdent ident)
                       markdownTypeRes (P.runIdent ident) (prettyPrintTypeSingleLine . efDeclSourceType <$> declMb) comments
-                P.BySourcePos pos' ->
+                P.BySourcePos _pos' ->
                   markdownTypeRes (P.runIdent ident) Nothing []
             _ -> do
               vfMb <- Server.getVirtualFile docUri
               forLsp vfMb \vf -> do
-                mNameMb <- liftLsp $ selectExternModuleNameFromFilePath filePath
+                mNameMb <- selectExternModuleNameFromFilePath filePath
                 forLsp mNameMb \mName -> do
-                  names <- liftLsp $ getNamesAtPosition pos mName (VFS._file_text vf)
+                  names <- getNamesAtPosition pos mName (VFS._file_text vf)
                   forLsp (head names) \name -> do
-                    docsMb <- liftLsp $ readQualifiedNameDocsAsMarkdown name
+                    docsMb <- readQualifiedNameDocsAsMarkdown name
                     case docsMb of
                       Nothing -> do
-                        typeMb <- liftLsp $ lookupTypeInEnv name
-                        forLsp typeMb \t -> do
-                          markdownTypeRes (printName $ disqualify name) (Just $ prettyPrintTypeSingleLine t) []
+                        typeMb <- lookupTypeInEnv name
+                        forLsp typeMb \t -> markdownTypeRes (printName $ disqualify name) (Just $ prettyPrintTypeSingleLine t) []
                       Just docs -> markdownRes docs,
       Server.requestHandler Message.SMethod_TextDocumentDefinition $ \req res -> do
         sendInfoMsg "SMethod_TextDocumentDefinition"
@@ -273,48 +212,48 @@ handlers diagErrs =
         forLsp filePathMb \filePath -> do
           vfMb <- Server.getVirtualFile uri
           forLsp vfMb \vf -> do
-            mNameMb <- liftLsp $ selectExternModuleNameFromFilePath filePath
-            liftLsp $ logDebugN $ "Module name: " <> show mNameMb
-            liftLsp $ logDebugN $ "Pos: " <> show pos
+            mNameMb <- selectExternModuleNameFromFilePath filePath
+            debugLsp $ "Module name: " <> show mNameMb
+            debugLsp $ "Pos: " <> show pos
             forLsp mNameMb \mName -> do
-              names <- liftLsp $ getNamesAtPosition pos mName (VFS._file_text vf)
-              liftLsp $ logDebugN $ "Found names: " <> show names
+              names <- getNamesAtPosition pos mName (VFS._file_text vf)
+              debugLsp $ "Found names: " <> show names
 
               case head names of
                 Just name -> do
-                  liftLsp $ logDebugN $ "Found name: " <> show name
-                  spanMb <- liftLsp $ readQualifiedNameDocsSourceSpan name
-                  liftLsp $ logDebugN $ "Found docs span: " <> show spanMb
+                  debugLsp $ "Found name: " <> show name
+                  spanMb <- readQualifiedNameDocsSourceSpan name
+                  debugLsp $ "Found docs span: " <> show spanMb
                   case spanMb of
                     _ -> do
                       case name of
                         P.Qualified (P.BySourcePos pos') _ -> do
-                          liftLsp $ logDebugN $ "Found source pos: " <> show pos'
+                          debugLsp $ "Found source pos: " <> show pos'
                           locationRes filePath (Types.Range (sourcePosToPosition pos') (sourcePosToPosition pos'))
                         P.Qualified (P.ByModuleName nameModule) ident -> do
-                          liftLsp $ logDebugN $ "Found module name: " <> show nameModule
-                          declMb <- liftLsp $ getAstDeclarationInModule nameModule (printName ident)
-                          liftLsp $ logDebugN $ "Found decl: " <> show declMb
+                          debugLsp $ "Found module name: " <> show nameModule
+                          declMb <- getAstDeclarationInModule nameModule (printName ident)
+                          debugLsp $ "Found decl: " <> show declMb
                           forLsp declMb \decl -> do
-                            modFpMb <- liftLsp $ selectExternPathFromModuleName nameModule
+                            modFpMb <- selectExternPathFromModuleName nameModule
                             forLsp modFpMb \modFp -> do
-                              liftLsp $ logDebugN $ "Found modFp: " <> show modFp
+                              debugLsp $ "Found modFp: " <> show modFp
                               let sourceSpan = P.declSourceSpan decl
-                              liftLsp $ logDebugN $ "Found decl sourceSpan: " <> show sourceSpan
+                              debugLsp $ "Found decl sourceSpan: " <> show sourceSpan
                               locationRes modFp (spanToRange sourceSpan)
                     Just span ->
                       locationRes (P.spanName span) (spanToRange span)
                 _ -> do
-                  corefnExprMb <- liftLsp $ getCoreFnExprAt filePath pos
+                  corefnExprMb <- getCoreFnExprAt filePath pos
                   case corefnExprMb of
                     Just (CF.Var (ss, _comments, _meta) (P.Qualified qb ident)) -> do
-                      liftLsp $ logDebugN $ "Found Corefn Var source span: " <> show ss
+                      debugLsp $ "Found Corefn Var source span: " <> show ss
                       let name = P.runIdent ident
                       case qb of
                         P.ByModuleName coreMName -> do
-                          declMb <- liftLsp $ getEfDeclarationInModule coreMName name
+                          declMb <- getEfDeclarationInModule coreMName name
                           forLsp declMb \decl -> do
-                            modFpMb <- liftLsp $ selectExternPathFromModuleName coreMName
+                            modFpMb <- selectExternPathFromModuleName coreMName
                             forLsp modFpMb \modFp -> do
                               let sourceSpan = efDeclSourceSpan decl
                               locationRes modFp (spanToRange sourceSpan)
@@ -322,7 +261,7 @@ handlers diagErrs =
                           locationRes filePath (Types.Range (sourcePosToPosition srcPos) (sourcePosToPosition srcPos))
                     _ -> nullRes,
       Server.requestHandler Message.SMethod_TextDocumentCompletion $ \req res -> do
-        liftLsp $ logDebugN "SMethod_TextDocumentCompletion"
+        debugLsp "SMethod_TextDocumentCompletion"
         let Types.CompletionParams docIdent pos _prog _prog' completionCtx = req ^. LSP.params
             filePathMb = Types.uriToFilePath $ docIdent ^. LSP.uri
             uri :: Types.NormalizedUri
@@ -338,26 +277,21 @@ handlers diagErrs =
             forLsp :: Maybe a -> (a -> HandlerM () ()) -> HandlerM () ()
             forLsp val f = maybe nullRes f val
 
-        liftLsp $ logDebugN $ "Completion params: " <> show completionCtx
-        liftLsp $ logDebugN $ "filePathMb: " <> show filePathMb
+        debugLsp $ "Completion params: " <> show completionCtx
+        debugLsp $ "filePathMb: " <> show filePathMb
         forLsp filePathMb \filePath -> do
           vfMb <- Server.getVirtualFile uri
           forLsp vfMb \vf -> do
             let word = getWordAt (VFS._file_text vf) pos
-            liftLsp $ logDebugN $ "Word: " <> show word <> " len " <> show (T.length word)
+            debugLsp $ "Word: " <> show word <> " len " <> show (T.length word)
             if T.length word < 2
               then nullRes
               else do
-                mNameMb <- liftLsp $ selectExternModuleNameFromFilePath filePath
-                liftLsp $ logDebugN $ "Module name: " <> show mNameMb
+                mNameMb <- selectExternModuleNameFromFilePath filePath
+                debugLsp $ "Module name: " <> show mNameMb
                 forLsp mNameMb \mName -> do
-                  decls <- liftLsp $ getAstDeclarationsStartingWith mName word
-                  liftLsp $ logDebugN $ "Found decls: " <> show decls
-                  declDocs <-
-                    Map.fromList . catMaybes <$> forM decls \(declModule, decl) -> do
-                      let name = printName <$> P.declName decl
-                      docsMb <- liftLsp $ maybe (pure Nothing) (readDeclarationDocsAsMarkdown declModule) name
-                      pure $ (decl,) <$> docsMb
+                  decls <- getAstDeclarationsStartingWith mName word
+                  debugLsp $ "Found decls: " <> show decls
                   res $
                     Right $
                       Types.InL $
@@ -373,9 +307,7 @@ handlers diagErrs =
                                   _kind = declToCompletionItemKind decl,
                                   _tags = Nothing,
                                   _detail = Nothing,
-                                  _documentation =
-                                    Types.InR . Types.MarkupContent Types.MarkupKind_Markdown
-                                      <$> (Map.lookup decl declDocs <|> fmap wrapPursMd (printDeclarationTypeMb decl)),
+                                  _documentation = Nothing,
                                   _deprecated = Nothing, --  Maybe Bool
                                   _preselect = Nothing, --  Maybe Bool
                                   _sortText = Nothing, --  Maybe Text
@@ -392,18 +324,29 @@ handlers diagErrs =
                                   _data_ = Just $ A.toJSON $ Just $ CompleteItemData filePath mName declModule decl
                                 },
       Server.requestHandler Message.SMethod_CompletionItemResolve $ \req res -> do
+        debugLsp "SMethod_CompletionItemResolve"
         let completionItem = req ^. LSP.params
-            data_ = completionItem ^. LSP.data_ & decodeCompleteItemData
-        -- filePathMb = Types.uriToFilePath $ docIdent ^. LSP.uri
-        -- uri :: Types.NormalizedUri
-        -- uri =
-        --   req
-        --     ^. LSP.params
-        --       . LSP.textDocument
-        --       . LSP.uri
-        --       . to Types.toNormalizedUri
-        liftLsp $ logDebugN "SMethod_TextDocumentCompletionItemResolve"
-        res $ Right (set LSP.documentation Nothing completionItem)
+            result = completionItem ^. LSP.data_ & decodeCompleteItemData
+
+        case result of
+          A.Success (Just (CompleteItemData _filePath _mName declModule decl)) -> do
+            let label = foldMap printName (P.declName decl)
+            docsMb <- readDeclarationDocsAsMarkdown declModule label
+            let addDocs :: Types.CompletionItem -> Types.CompletionItem
+                addDocs =
+                  docsMb & maybe
+                    identity
+                    \docs ->
+                      set LSP.documentation (Just $ Types.InR $ Types.MarkupContent Types.MarkupKind_Markdown docs)
+
+                addImport :: Types.CompletionItem -> Types.CompletionItem
+                addImport = identity
+            res $
+              Right $
+                completionItem
+                  & addDocs
+                  & addImport
+          _ -> res $ Right completionItem
     ]
   where
     getFileDiagnotics :: (LSP.HasUri a2 Uri, LSP.HasTextDocument a1 a2, LSP.HasParams s a1) => s -> HandlerM config ([ErrorMessage], [Types.Diagnostic])
@@ -413,7 +356,7 @@ handlers diagErrs =
           fileName = Types.uriToFilePath uri
       case fileName of
         Just file -> do
-          res <- fmap snd <$> liftLspWithErr (rebuildFile file)
+          res <- rebuildFile file
           getResultDiagnostics res
         Nothing -> do
           sendInfoMsg $ "No file path for uri: " <> show uri
@@ -422,23 +365,20 @@ handlers diagErrs =
     getMsgUri :: (LSP.HasParams s a1, LSP.HasTextDocument a1 a2, LSP.HasUri a2 a3) => s -> a3
     getMsgUri msg = msg ^. LSP.params . LSP.textDocument . LSP.uri
 
-    getResultDiagnostics :: Either IdeError MultipleErrors -> HandlerM config ([ErrorMessage], [Types.Diagnostic])
+    getResultDiagnostics :: Either ([(FilePath, Text)], P.MultipleErrors) (FilePath, P.MultipleErrors) -> HandlerM config ([ErrorMessage], [Types.Diagnostic])
     getResultDiagnostics res = case res of
-      Left (RebuildError _ errs) -> do
+      Left (_, errs) -> do
         let errors = runMultipleErrors errs
             diags = errorMessageDiagnostic Types.DiagnosticSeverity_Error <$> errors
         pure (errors, diags)
-      Left err -> do
-        liftLsp $ logErrorN $ "Rebuild error: " <> textError err
-        pure ([], [])
-      Right errs | Errors.nonEmpty errs -> do
+      Right (_, errs) | Errors.nonEmpty errs -> do
         let errors = runMultipleErrors errs
             diags = errorMessageDiagnostic Types.DiagnosticSeverity_Warning <$> errors
         pure (errors, diags)
       _ -> pure ([], [])
       where
         errorMessageDiagnostic :: Types.DiagnosticSeverity -> ErrorMessage -> Types.Diagnostic
-        errorMessageDiagnostic severity msg@((ErrorMessage hints _)) =
+        errorMessageDiagnostic severity msg@((ErrorMessage _hints _)) =
           Types.Diagnostic
             (Types.Range start end)
             (Just severity)
@@ -469,14 +409,6 @@ spanToRange (Errors.SourceSpan _ start end) =
     (sourcePosToPosition start)
     (sourcePosToPosition end)
 
-sendError :: IdeError -> HandlerM config ()
-sendError err =
-  Server.sendNotification
-    Message.SMethod_WindowShowMessage
-    ( Types.ShowMessageParams Types.MessageType_Error $
-        "Something went wrong:\n" <> textError err
-    )
-
 sendInfoMsg :: (Server.MonadLsp config f) => Text -> f ()
 sendInfoMsg msg = Server.sendNotification Message.SMethod_WindowShowMessage (Types.ShowMessageParams Types.MessageType_Info msg)
 
@@ -488,16 +420,12 @@ main lspEnv = do
       { parseConfig = const $ const $ Right (),
         onConfigChange = const $ pure (),
         defaultConfig = (),
-        configSection = "oa-purescript-simple",
-        doInitialize = \env _req -> do
-          logT "Init OA purs lsp server"
-          pure $ Right env,
-        staticHandlers = \_caps -> do handlers diagErrs,
+        configSection = "oa-purescript-lsp",
+        doInitialize = \env _req -> pure $ Right env,
+        staticHandlers = \_caps -> handlers diagErrs,
         interpretHandler = \env ->
           Server.Iso
-            ( runErrLogger LogAll
-                . flip runReaderT lspEnv
-                . Server.runLspT env
+            ( Server.runLspT env . flip runReaderT lspEnv
             )
             liftIO,
         options = lspOptions
@@ -519,55 +447,3 @@ lspOptions =
     { Server.optTextDocumentSync = Just syncOptions,
       Server.optExecuteCommandCommands = Just ["lsp-purescript-command"]
     }
-
-spy :: (Show a) => Text -> a -> a
-spy msg a = unsafePerformIO $ do
-  logT $ msg <> ": " <> show a
-  pure a
-
-unsafeLog :: (Show a) => a -> ()
-unsafeLog a = unsafePerformIO $ log_ a
-
-log_ :: (MonadIO m, Show a) => a -> m ()
-log_ = logToFile . show
-
-logT :: (MonadIO m) => Text -> m ()
-logT = logToFile
-
-logToFile :: (MonadIO m) => Text -> m ()
-logToFile txt =
-  liftIO $
-    catchError
-      ( do
-          createDirectoryIfMissing True "logs"
-          time <- show <$> getCurrentTime
-          writeFile ("logs/" <> time <> "-----" <> T.unpack txt) $ txt <> "\n"
-      )
-      (const $ pure ())
-
-wrapPursMd :: Text -> Text
-wrapPursMd txt = "```purescript\n" <> txt <> "\n```"
-
--- getCompletionsWithPrim ::
---   (Ide m) =>
---   [Filter] ->
---   Matcher IdeDeclarationAnn ->
---   Maybe P.ModuleName ->
---   Purs.Completion.CompletionOptions ->
---   m [Completion]
--- getCompletionsWithPrim filters matcher currentModule complOptions = do
---   modules <- getAllModules currentModule
---   let insertPrim = Map.union idePrimDeclarations
---   pure (getCompletions filters matcher complOptions (insertPrim modules))
-
--- getExactCompletionsWithPrim ::
---   (Ide m) =>
---   Text ->
---   [Filter] ->
---   Maybe P.ModuleName ->
---   m [Completion]
--- getExactCompletionsWithPrim search filters currentModule = do
---   modules <- getAllModules currentModule
---   let insertPrim = Map.union idePrimDeclarations
---   pure (getExactCompletions search filters (insertPrim modules))
--- z = getAllModules
