@@ -16,7 +16,13 @@ import Data.Text.Utf16.Rope.Mixed as Rope
 import Database.SQLite.Simple.ToField (ToField (toField))
 import Language.LSP.Protocol.Types (UInt)
 import Language.LSP.Protocol.Types qualified as Types
-import Language.PureScript qualified as P
+import Language.PureScript.AST qualified as P
+import Language.PureScript.Comments qualified as P
+import Language.PureScript.Environment qualified as P
+import Language.PureScript.Externs qualified as P
+import Language.PureScript.Linter qualified as P
+import Language.PureScript.Names qualified as P
+import Language.PureScript.Types qualified as P
 import Language.PureScript.AST.Declarations (declSourceAnn)
 import Language.PureScript.Errors qualified as Errors
 import Language.PureScript.Lsp.Cache.Query (getAstDeclarationsAtSrcPos)

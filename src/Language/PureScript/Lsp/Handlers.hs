@@ -57,7 +57,7 @@ getDiagnosticErrors diagErrs diags = liftIO $ flip Map.restrictKeys (Set.fromLis
 handlers :: DiagnosticErrors -> Server.Handlers (HandlerM ())
 handlers diagErrs =
   mconcat
-    [ Server.notificationHandler Message.SMethod_Initialized $ \_not -> sendInfoMsg "Failed to initialise lsp server",
+    [ Server.notificationHandler Message.SMethod_Initialized $ \_not -> sendInfoMsg "Lsp initialized",
       Server.notificationHandler Message.SMethod_TextDocumentDidOpen $ \msg -> do
         debugLsp "TextDocumentDidOpen"
         let uri :: Uri
