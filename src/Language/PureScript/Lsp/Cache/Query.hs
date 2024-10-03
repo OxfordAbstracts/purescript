@@ -3,8 +3,6 @@
 
 module Language.PureScript.Lsp.Cache.Query where
 
--- import Language.PureScript.Bundle (getImportedModules)
-
 import Codec.Serialise (deserialise)
 import Data.Aeson (encode)
 import Data.Aeson qualified as A
@@ -26,18 +24,6 @@ import Language.PureScript.Lsp.Types (LspEnvironment)
 import Language.PureScript.Names qualified as P
 import Protolude
 
--- import Control.Monad.Logger (logDebugN)
-
--- getEfDeclarationAt :: (MonadIO m, MonadReader LspEnvironment m) => Position -> m (Maybe P.Declaration)
--- getEfDeclarationAt pos = do
---   decls <-
---     DB.queryNamed
---       "SELECT * FROM declarations WHERE startLine <= :line AND endLine >= :line AND startColumn <= :column AND endColumn >= :column"
---       [":line" := line
---       , ":column" := column
---       ]
---   pure $ listToMaybe decls
--- getImportedModules
 
 getCoreFnExprAt :: (MonadIO m, MonadReader LspEnvironment m) => FilePath -> LSP.Position -> m (Maybe (CF.Expr CF.Ann))
 getCoreFnExprAt path (LSP.Position line col) = do
