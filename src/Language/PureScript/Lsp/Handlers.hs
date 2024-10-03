@@ -28,6 +28,7 @@ import Language.PureScript.Lsp.Cache (selectExternModuleNameFromFilePath, select
 import Language.PureScript.Lsp.Cache.Query (getAstDeclarationInModule, getAstDeclarationsStartingWith, getCoreFnExprAt, getEfDeclarationInModule)
 import Language.PureScript.Lsp.Diagnostics (getFileDiagnotics, getMsgUri)
 import Language.PureScript.Lsp.Docs (readDeclarationDocsAsMarkdown, readQualifiedNameDocsAsMarkdown, readQualifiedNameDocsSourceSpan)
+import Language.PureScript.Lsp.Imports (addImportToTextEdit)
 import Language.PureScript.Lsp.Log (debugLsp)
 import Language.PureScript.Lsp.Print (printDeclarationType, printName)
 import Language.PureScript.Lsp.Rebuild (rebuildFile)
@@ -293,7 +294,7 @@ handlers =
                                   _additionalTextEdits = Nothing, --  Maybe [Types.TextEdit]
                                   _commitCharacters = Nothing, --  Maybe [Text]
                                   _command = Nothing, --  Maybe Types.Command
-                                  _data_ = Just $ A.toJSON $ Just $ CompleteItemData filePath mName declModule decl
+                                  _data_ = Just $ A.toJSON $ Just $ CompleteItemData filePath mName declModule decl word
                                 },
       Server.requestHandler Message.SMethod_CompletionItemResolve $ \req res -> do
         debugLsp "SMethod_CompletionItemResolve"
@@ -301,23 +302,20 @@ handlers =
             result = completionItem ^. LSP.data_ & decodeCompleteItemData
 
         case result of
-          A.Success (Just (CompleteItemData _filePath _mName declModule decl)) -> do
+          A.Success (Just cid@(CompleteItemData _filePath _mName declModule decl _)) -> do
             let label = foldMap printName (P.declName decl)
             docsMb <- readDeclarationDocsAsMarkdown declModule label
+            withImports <- addImportToTextEdit completionItem cid
             let addDocs :: Types.CompletionItem -> Types.CompletionItem
                 addDocs =
                   docsMb & maybe
                     identity
                     \docs ->
                       set LSP.documentation (Just $ Types.InR $ Types.MarkupContent Types.MarkupKind_Markdown docs)
-
-                addImport :: Types.CompletionItem -> Types.CompletionItem
-                addImport = identity
             res $
               Right $
-                completionItem
+                withImports
                   & addDocs
-                  & addImport
           _ -> res $ Right completionItem
     ]
 
