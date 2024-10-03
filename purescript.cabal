@@ -348,6 +348,7 @@ library
     Language.PureScript.Lsp.Cache
     Language.PureScript.Lsp.Cache.IO
     Language.PureScript.Lsp.Cache.Query
+    Language.PureScript.Lsp.Handlers
     Language.PureScript.Lsp.Log
     Language.PureScript.Lsp.Prim
     Language.PureScript.Lsp.Print

@@ -25,6 +25,7 @@ logLsp :: (MonadIO m, MonadReader LspEnvironment m) => LogMsgSeverity -> Text ->
 logLsp msgLogLevel msg = do
   logLevel <- confLogLevel . lspConfig <$> ask
   when (shouldLog msgLogLevel logLevel) $ do
+    -- Use stderr for logging as LSP messages should be on stdout
     liftIO $ putErrLn (show msgLogLevel <> ": " <> show msg :: Text)
 
 
