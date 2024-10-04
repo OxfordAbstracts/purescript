@@ -47,7 +47,7 @@ rebuildFile srcPath = do
       pure $ Left ([(fp, input)], CST.toMultipleErrors fp parseError)
     Right (pwarnings, m) -> do
       let moduleName = P.getModuleName m
-      externsResult <- sortExterns m =<< selectDependenciesMap moduleName
+      externsResult <- sortExterns m =<< selectDependenciesMap m
       case externsResult of
         Left err -> pure $ Left ([], err)
         Right externs -> do
