@@ -15,6 +15,7 @@ import Language.PureScript.Names qualified as P
 import Protolude
 import System.Directory (doesDirectoryExist, doesFileExist, getDirectoryContents, makeAbsolute)
 import System.FilePath (normalise, (</>))
+
 -- import Language.PureScript.Lsp.Prim (primExterns)
 
 selectAllExternsMap :: (MonadIO m, MonadReader LspEnvironment m) => m (Map P.ModuleName ExternsFile)
@@ -24,6 +25,38 @@ selectAllExternsMap = do
 selectAllExterns :: (MonadIO m, MonadReader LspEnvironment m) => m [ExternsFile]
 selectAllExterns = do
   DB.query_ (Query "SELECT value FROM externs") <&> fmap (deserialise . fromOnly)
+
+
+selectDependenciesMap :: (MonadIO m, MonadReader LspEnvironment m) => P.ModuleName -> m (Map P.ModuleName ExternsFile)
+selectDependenciesMap mName = do
+  Map.fromList . fmap (\ef -> (efModuleName ef, ef)) <$> selectDependencies mName
+
+selectDependencies :: (MonadIO m, MonadReader LspEnvironment m) => P.ModuleName -> m [ExternsFile]
+selectDependencies mName = do
+  res <- DB.queryNamed (Query query') [":module_name" := P.runModuleName mName]
+  pure $ deserialise . fromOnly <$> res
+  where
+    query' =
+      unlines
+        [ "with recursive",
+          "graph(imported_module, level) as (",
+          " select module_name , 1 as level",
+          " from ef_imports where module_name = :module_name",
+          " union ",
+          " select d.imported_module as dep, graph.level + 1 as level",
+          " from graph join ef_imports d on graph.imported_module = d.module_name",
+          "),",
+          "topo as (",
+          " select imported_module, max(level) as level",
+          " from graph group by imported_module",
+          "),",
+          "module_names as (select distinct(module_name)",
+          "from topo join ef_imports on topo.imported_module = ef_imports.module_name ",
+          "and module_name != :module_name",
+          "order by level desc)",
+          "select * from externs ",
+          "join module_names on externs.module_name = module_names.module_name;"
+        ]
 
 selectExternFromFilePath :: (MonadIO m, MonadReader LspEnvironment m) => FilePath -> m (Maybe ExternsFile)
 selectExternFromFilePath path = do
@@ -38,9 +71,8 @@ selectExternModuleNameFromFilePath path = do
   pure $ P.ModuleName . fromOnly <$> listToMaybe res
 
 selectExternPathFromModuleName :: (MonadIO m, MonadReader LspEnvironment m) => P.ModuleName -> m (Maybe FilePath)
-selectExternPathFromModuleName mName = 
+selectExternPathFromModuleName mName =
   DB.queryNamed (Query "SELECT path FROM externs WHERE module_name = :module_name") [":module_name" := P.runModuleName mName] <&> listToMaybe . fmap fromOnly
-
 
 -- | Finds all the externs inside the output folder and returns the
 -- corresponding module names

@@ -75,7 +75,7 @@ compile PSCMakeOptions {..} = do
   conn <- mkConnection pscmOutputDir
   initDb conn
   moduleFiles <- readUTF8FilesT input
-  (makeErrors, makeWarnings) <- P.compile pscmOpts input conn pscmOutputDir pscmUsePrefix
+  (makeErrors, makeWarnings) <- P.compile pscmOpts moduleFiles conn pscmOutputDir pscmUsePrefix
   printWarningsAndErrors (P.optionsVerboseErrors pscmOpts) pscmJSONErrors moduleFiles makeWarnings makeErrors
   exitSuccess
 

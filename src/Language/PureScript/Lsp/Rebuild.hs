@@ -19,7 +19,7 @@ import Language.PureScript.Externs (ExternsFile (efModuleName))
 import Language.PureScript.Externs qualified as P
 import Language.PureScript.Ide.Rebuild (updateCacheDb)
 import Language.PureScript.Ide.Types (ModuleMap)
-import Language.PureScript.Lsp.Cache (selectAllExternsMap)
+import Language.PureScript.Lsp.Cache (selectDependenciesMap)
 import Language.PureScript.Lsp.ReadFile (lspReadFile)
 import Language.PureScript.Lsp.Types (LspConfig (..), LspEnvironment (lspConfig, lspDbConnection))
 import Language.PureScript.Make (ffiCodegen')
@@ -47,9 +47,9 @@ rebuildFile srcPath = do
       pure $ Left ([(fp, input)], CST.toMultipleErrors fp parseError)
     Right (pwarnings, m) -> do
       let moduleName = P.getModuleName m
-      externsResult <- sortExterns m =<< selectAllExternsMap
+      externsResult <- sortExterns m =<< selectDependenciesMap moduleName
       case externsResult of
-        Left err -> pure $ Left $ ([], err)
+        Left err -> pure $ Left ([], err)
         Right externs -> do
           outputDirectory <- asks (confOutputPath . lspConfig)
           let filePathMap = M.singleton moduleName (Left P.RebuildAlways)

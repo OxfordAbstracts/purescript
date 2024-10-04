@@ -305,9 +305,16 @@ insertEfExport conn moduleName' dr = do
   where
     span = P.declRefSourceSpan dr
 
+
+initDb' :: Connection -> IO ()
+initDb' conn = catchError (initDb conn) \err -> do 
+  print ("DB connection error: " :: Text)
+  print err
+  pure ()
+
 initDb :: Connection -> IO ()
 initDb conn = do
-  -- dropTables conn
+  dropTables conn
   SQL.execute_ conn "pragma journal_mode=wal;"
   SQL.execute_ conn "pragma foreign_keys = ON;"
   SQL.execute_ conn "CREATE TABLE IF NOT EXISTS ast_declarations (module_name TEXT, name TEXT, value TEXT, shown TEXT, start_line INTEGER, end_line INTEGER, start_col INTEGER, end_col INTEGER, lines INTEGER, cols INTEGER, exported BOOLEAN)"

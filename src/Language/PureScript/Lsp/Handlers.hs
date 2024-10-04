@@ -25,6 +25,7 @@ import Language.PureScript.Compile (compile)
 import Language.PureScript.CoreFn.Expr qualified as CF
 import Language.PureScript.Docs.Convert.Single (convertComments)
 import Language.PureScript.Errors qualified as Errors
+import Language.PureScript.Glob (PSCGlobs (..), toInputGlobs, warnFileTypeNotFound)
 import Language.PureScript.Ide.Error (prettyPrintTypeSingleLine)
 import Language.PureScript.Lsp.Cache (selectExternModuleNameFromFilePath, selectExternPathFromModuleName)
 import Language.PureScript.Lsp.Cache.Query (getAstDeclarationInModule, getAstDeclarationsStartingWith, getCoreFnExprAt, getEfDeclarationInModule)
@@ -34,10 +35,12 @@ import Language.PureScript.Lsp.Imports (addImportToTextEdit)
 import Language.PureScript.Lsp.Log (debugLsp)
 import Language.PureScript.Lsp.Print (printDeclarationType, printName)
 import Language.PureScript.Lsp.Rebuild (codegenTargets, rebuildFile)
-import Language.PureScript.Lsp.Types (CompleteItemData (CompleteItemData), LspEnvironment (lspConfig, lspDbConnection), decodeCompleteItemData, LspConfig (confGlobs, confOutputPath))
+import Language.PureScript.Lsp.Types (CompleteItemData (CompleteItemData), LspConfig (confGlobs, confOutputPath), LspEnvironment (lspConfig, lspDbConnection), decodeCompleteItemData)
 import Language.PureScript.Lsp.Util (declToCompletionItemKind, efDeclSourceSpan, efDeclSourceType, getNamesAtPosition, getWordAt, lookupTypeInEnv, sourcePosToPosition)
+import Language.PureScript.Make.Index (initDb)
 import Language.PureScript.Names (disqualify, runIdent)
 import Protolude hiding (to)
+import System.IO.UTF8 (readUTF8FilesT)
 
 type HandlerM config = ReaderT LspEnvironment (Server.LspT config IO)
 
@@ -71,25 +74,6 @@ handlers =
             Types.DocumentDiagnosticReport $
               Types.InL $
                 Types.RelatedFullDocumentDiagnosticReport Types.AString Nothing diagnostics Nothing,
-      Server.requestHandler (Message.SMethod_CustomMethod $ Proxy @"build") $ \_req res -> do
-        debugLsp "SMethod_CustomMethod rebuild"
-        config <- asks lspConfig
-        conn <- asks lspDbConnection
-        (result, warnings) <-
-          liftIO $
-            compile
-              (P.Options False False codegenTargets)
-              (confGlobs config)
-              conn
-              (confOutputPath config)
-              False
-
-        let diags :: [Types.Diagnostic]
-            diags =
-              (errorMessageDiagnostic Types.DiagnosticSeverity_Error <$> either P.runMultipleErrors (const []) result)
-                <> (errorMessageDiagnostic Types.DiagnosticSeverity_Warning <$> P.runMultipleErrors warnings)
-
-        res $ Right $ A.toJSON diags,
       Server.requestHandler Message.SMethod_TextDocumentCodeAction $ \req res -> do
         let params = req ^. LSP.params
             diags = params ^. LSP.context . LSP.diagnostics
@@ -337,7 +321,35 @@ handlers =
               Right $
                 withImports
                   & addDocs
-          _ -> res $ Right completionItem
+          _ -> res $ Right completionItem,
+      Server.requestHandler (Message.SMethod_CustomMethod $ Proxy @"build") $ \_req res -> do
+        debugLsp "SMethod_CustomMethod build"
+        config <- asks lspConfig
+        conn <- asks lspDbConnection
+        liftIO $ initDb conn
+        input <-
+          liftIO $
+            toInputGlobs $
+              PSCGlobs
+                { pscInputGlobs = confGlobs config,
+                  pscInputGlobsFromFile = Nothing,
+                  pscExcludeGlobs = [],
+                  pscWarnFileTypeNotFound = warnFileTypeNotFound "lsp server"
+                }
+        moduleFiles <- liftIO $ readUTF8FilesT input
+        (result, warnings) <-
+          liftIO $
+            compile
+              (P.Options False False codegenTargets)
+              moduleFiles
+              conn
+              (confOutputPath config)
+              False
+        let diags :: [Types.Diagnostic]
+            diags =
+              (errorMessageDiagnostic Types.DiagnosticSeverity_Error <$> either P.runMultipleErrors (const []) result)
+                <> (errorMessageDiagnostic Types.DiagnosticSeverity_Warning <$> P.runMultipleErrors warnings)
+        res $ Right $ A.toJSON diags
     ]
 
 spanToRange :: Errors.SourceSpan -> Types.Range
