@@ -152,10 +152,10 @@ getAstDeclarationsStartingWith moduleName' prefix = do
     DB.queryNamed
       "SELECT module_name, value FROM ast_declarations \
       \WHERE (module_name = :module_name OR exported) \
-      \AND name LIKE :prefix \
+      \AND name GLOB :prefix \
       \ORDER BY name ASC \
       \LIMIT 100"
       [ ":module_name" := P.runModuleName moduleName',
-        ":prefix" := prefix <> "%"
+        ":prefix" := prefix <> "*"
       ]
   pure $ bimap P.ModuleName deserialise <$> decls

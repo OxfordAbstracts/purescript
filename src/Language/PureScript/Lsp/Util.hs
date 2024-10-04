@@ -76,7 +76,7 @@ getNamesAtPosition pos moduleName' src = do
   let search = getWordAt src pos
   debugLsp $ "Looking up " <> search <> " in module " <> P.runModuleName moduleName'
   decls <- getAstDeclarationsAtSrcPos moduleName' (positionToSourcePos pos)
-  debugLsp $ "Found declarations: " <> T.pack (show $ length decls) <> show (fmap (T.take 400 . show) decls)
+  debugLsp $ "Found declarations: " <> T.pack (show $ length decls) 
   pure $
     mconcat $
       decls <&> \decl -> do

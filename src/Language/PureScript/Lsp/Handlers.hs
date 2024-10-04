@@ -195,7 +195,7 @@ handlers =
             debugLsp $ "Pos: " <> show pos
             forLsp mNameMb \mName -> do
               names <- getNamesAtPosition pos mName (VFS._file_text vf)
-              debugLsp $ "Found names: " <> show names
+              debugLsp $ "Found names: " <> show (length names)
 
               case head names of
                 Just name -> do
@@ -211,7 +211,7 @@ handlers =
                         P.Qualified (P.ByModuleName nameModule) ident -> do
                           debugLsp $ "Found module name: " <> show nameModule
                           declMb <- getAstDeclarationInModule nameModule (printName ident)
-                          debugLsp $ "Found decl: " <> show declMb
+                          debugLsp $ "Found decl: " <> show (isJust declMb)
                           forLsp declMb \decl -> do
                             modFpMb <- selectExternPathFromModuleName nameModule
                             forLsp modFpMb \modFp -> do
@@ -240,7 +240,7 @@ handlers =
                     _ -> nullRes,
       Server.requestHandler Message.SMethod_TextDocumentCompletion $ \req res -> do
         debugLsp "SMethod_TextDocumentCompletion"
-        let Types.CompletionParams docIdent pos _prog _prog' completionCtx = req ^. LSP.params
+        let Types.CompletionParams docIdent pos _prog _prog' _completionCtx = req ^. LSP.params
             filePathMb = Types.uriToFilePath $ docIdent ^. LSP.uri
             uri :: Types.NormalizedUri
             uri =
@@ -255,13 +255,12 @@ handlers =
             forLsp :: Maybe a -> (a -> HandlerM () ()) -> HandlerM () ()
             forLsp val f = maybe nullRes f val
 
-        debugLsp $ "Completion params: " <> show completionCtx
         debugLsp $ "filePathMb: " <> show filePathMb
         forLsp filePathMb \filePath -> do
           vfMb <- Server.getVirtualFile uri
           forLsp vfMb \vf -> do
             let word = getWordAt (VFS._file_text vf) pos
-            debugLsp $ "Word: " <> show word <> " len " <> show (T.length word)
+            debugLsp $ "Word len " <> show (T.length word)
             if T.length word < 2
               then nullRes
               else do
@@ -269,7 +268,7 @@ handlers =
                 debugLsp $ "Module name: " <> show mNameMb
                 forLsp mNameMb \mName -> do
                   decls <- getAstDeclarationsStartingWith mName word
-                  debugLsp $ "Found decls: " <> show decls
+                  debugLsp $ "Found decls: " <> show (length decls)
                   res $
                     Right $
                       Types.InL $

@@ -1,5 +1,7 @@
 module Language.PureScript.Lsp.Log where
 
+import Data.Text qualified as T
+import Data.Time (UTCTime (utctDayTime), defaultTimeLocale, formatTime, getCurrentTime)
 import Language.PureScript.Lsp.Types (LspConfig (confLogLevel), LspEnvironment (lspConfig), LspLogLevel (..))
 import Protolude
 
@@ -22,8 +24,16 @@ logLsp :: (MonadIO m, MonadReader LspEnvironment m) => LogMsgSeverity -> Text ->
 logLsp msgLogLevel msg = do
   logLevel <- confLogLevel . lspConfig <$> ask
   when (shouldLog msgLogLevel logLevel) $ do
-    -- Use stderr for logging as LSP messages should be on stdout
-    liftIO $ putErrLn (printLogMsgSeverity msgLogLevel <> ": " <> show msg)
+    now <- liftIO $ utctDayTime <$> getCurrentTime
+    liftIO $
+      putErrLn -- Use stderr for logging as LSP messages should be on stdout
+        ( printLogMsgSeverity msgLogLevel
+            <> ": "
+            <> T.pack (formatTime defaultTimeLocale "%T" now)
+            <> " "
+            <> ": "
+            <> show msg
+        )
 
 data LogMsgSeverity
   = LogMsgInfo
