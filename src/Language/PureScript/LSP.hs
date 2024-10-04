@@ -1,7 +1,7 @@
 {-# LANGUAGE PolyKinds #-}
 {-# OPTIONS_GHC -Wno-unticked-promoted-constructors #-}
 
-module Language.PureScript.Lsp (main) where
+module Language.PureScript.Lsp (main, serverDefinition) where
 
 import Control.Concurrent.STM.TChan
 import Control.Monad.IO.Unlift
@@ -16,21 +16,24 @@ import Protolude hiding (to)
 main :: LspEnvironment -> IO Int
 main lspEnv = do
   rin <- atomically newTChan :: IO (TChan ReactorInput)
-  Server.runServer $
-    Server.ServerDefinition
-      { parseConfig = const $ const $ Right (),
-        onConfigChange = const $ pure (),
-        defaultConfig = (),
-        configSection = "oa-purescript-lsp",
-        doInitialize = \env _ -> forkIO (reactor rin) >> pure (Right env),
-        staticHandlers = \_caps -> lspHandlers lspEnv rin,
-        interpretHandler = \serverEnv ->
-          Server.Iso
-            ( Server.runLspT serverEnv . flip runReaderT lspEnv
-            )
-            liftIO,
-        options = lspOptions
-      }
+  Server.runServer $ serverDefinition lspEnv rin
+
+serverDefinition :: LspEnvironment -> TChan ReactorInput -> ServerDefinition ()
+serverDefinition lspEnv rin =
+  Server.ServerDefinition
+    { parseConfig = const $ const $ Right (),
+      onConfigChange = const $ pure (),
+      defaultConfig = (),
+      configSection = "oa-purescript-lsp",
+      doInitialize = \env _ -> forkIO (reactor rin) >> pure (Right env),
+      staticHandlers = \_caps -> lspHandlers lspEnv rin,
+      interpretHandler = \serverEnv ->
+        Server.Iso
+          ( Server.runLspT serverEnv . flip runReaderT lspEnv
+          )
+          liftIO,
+      options = lspOptions
+    }
 
 syncOptions :: Types.TextDocumentSyncOptions
 syncOptions =
