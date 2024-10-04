@@ -72,8 +72,8 @@ rebuildFile srcPath = do
               pure (Left ([(fp, input)], errors))
             Right newExterns -> do
               pure $ Right (fp, CST.toMultipleWarnings fp pwarnings <> warnings)
-  where
-    codegenTargets = Set.fromList [P.JS, P.CoreFn, P.Docs]
+codegenTargets :: Set P.CodegenTarget
+codegenTargets = Set.fromList [P.JS, P.CoreFn, P.Docs]
 
 -- | Shuts the compiler up about progress messages
 shushProgress :: (Monad m) => P.MakeActions m -> P.MakeActions m
@@ -95,9 +95,9 @@ enableForeignCheck ::
   S.Set P.CodegenTarget ->
   P.MakeActions P.Make ->
   P.MakeActions P.Make
-enableForeignCheck foreigns codegenTargets ma =
+enableForeignCheck foreigns codegenTargets' ma =
   ma
-    { P.ffiCodegen = ffiCodegen' foreigns codegenTargets Nothing
+    { P.ffiCodegen = ffiCodegen' foreigns codegenTargets' Nothing
     }
 
 -- | Returns a topologically sorted list of dependent ExternsFiles for the given

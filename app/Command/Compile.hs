@@ -2,7 +2,6 @@ module Command.Compile (command) where
 
 import Control.Applicative (Alternative (..))
 import Control.Monad (when)
-import Control.Monad.IO.Class (liftIO)
 import Data.Aeson qualified as A
 import Data.Bool (bool)
 import Data.ByteString.Lazy.UTF8 qualified as LBU8
@@ -12,16 +11,15 @@ import Data.Set qualified as S
 import Data.Text qualified as T
 import Data.Traversable (for)
 import Language.PureScript qualified as P
-import Language.PureScript.CST qualified as CST
+import Language.PureScript.Compile qualified as P 
 import Language.PureScript.DB (mkConnection)
 import Language.PureScript.Errors.JSON (JSONResult (..), toJSONErrors)
 import Language.PureScript.Glob (PSCGlobs (..), toInputGlobs, warnFileTypeNotFound)
-import Language.PureScript.Make (buildMakeActions, inferForeignModules, runMake)
-import Language.PureScript.Make.Index (addAllIndexing, initDb)
+import Language.PureScript.Make.Index (initDb)
 import Options.Applicative qualified as Opts
 import SharedCLI qualified
 import System.Console.ANSI qualified as ANSI
-import System.Directory (createDirectoryIfMissing, getCurrentDirectory)
+import System.Directory (getCurrentDirectory)
 import System.Exit (exitFailure, exitSuccess)
 import System.IO (hPutStr, stderr, stdout)
 import System.IO.UTF8 (readUTF8FilesT)
@@ -74,20 +72,14 @@ compile PSCMakeOptions {..} = do
           "Usage: For basic information, try the `--help' option."
         ]
     exitFailure
+  conn <- mkConnection pscmOutputDir
+  initDb conn
   moduleFiles <- readUTF8FilesT input
-  (makeErrors, makeWarnings) <- runMake pscmOpts $ do
-    ms <- CST.parseModulesFromFiles id moduleFiles
-    let filePathMap = M.fromList $ map (\(fp, pm) -> (P.getModuleName $ CST.resPartial pm, Right fp)) ms
-    foreigns <- inferForeignModules filePathMap
-    liftIO $ createDirectoryIfMissing True pscmOutputDir
-    conn <- liftIO $ mkConnection pscmOutputDir
-    liftIO $ initDb conn
-    let makeActions =
-          addAllIndexing conn $
-              buildMakeActions pscmOutputDir filePathMap foreigns pscmUsePrefix
-    P.make makeActions (map snd ms)
+  (makeErrors, makeWarnings) <- P.compile pscmOpts input conn pscmOutputDir pscmUsePrefix
   printWarningsAndErrors (P.optionsVerboseErrors pscmOpts) pscmJSONErrors moduleFiles makeWarnings makeErrors
   exitSuccess
+
+
 
 outputDirectory :: Opts.Parser FilePath
 outputDirectory =

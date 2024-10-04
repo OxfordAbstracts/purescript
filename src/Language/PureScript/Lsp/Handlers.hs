@@ -1,6 +1,7 @@
 {-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE TypeApplications #-}
 {-# OPTIONS_GHC -Wno-overlapping-patterns #-}
 
 module Language.PureScript.Lsp.Handlers where
@@ -20,19 +21,20 @@ import Language.LSP.Server (getConfig)
 import Language.LSP.Server qualified as Server
 import Language.LSP.VFS qualified as VFS
 import Language.PureScript qualified as P
+import Language.PureScript.Compile (compile)
 import Language.PureScript.CoreFn.Expr qualified as CF
 import Language.PureScript.Docs.Convert.Single (convertComments)
 import Language.PureScript.Errors qualified as Errors
 import Language.PureScript.Ide.Error (prettyPrintTypeSingleLine)
 import Language.PureScript.Lsp.Cache (selectExternModuleNameFromFilePath, selectExternPathFromModuleName)
 import Language.PureScript.Lsp.Cache.Query (getAstDeclarationInModule, getAstDeclarationsStartingWith, getCoreFnExprAt, getEfDeclarationInModule)
-import Language.PureScript.Lsp.Diagnostics (getFileDiagnotics, getMsgUri)
+import Language.PureScript.Lsp.Diagnostics (errorMessageDiagnostic, getFileDiagnotics, getMsgUri)
 import Language.PureScript.Lsp.Docs (readDeclarationDocsAsMarkdown, readQualifiedNameDocsAsMarkdown, readQualifiedNameDocsSourceSpan)
 import Language.PureScript.Lsp.Imports (addImportToTextEdit)
 import Language.PureScript.Lsp.Log (debugLsp)
 import Language.PureScript.Lsp.Print (printDeclarationType, printName)
-import Language.PureScript.Lsp.Rebuild (rebuildFile)
-import Language.PureScript.Lsp.Types (CompleteItemData (CompleteItemData), LspEnvironment, decodeCompleteItemData)
+import Language.PureScript.Lsp.Rebuild (codegenTargets, rebuildFile)
+import Language.PureScript.Lsp.Types (CompleteItemData (CompleteItemData), LspEnvironment (lspConfig, lspDbConnection), decodeCompleteItemData, LspConfig (confGlobs, confOutputPath))
 import Language.PureScript.Lsp.Util (declToCompletionItemKind, efDeclSourceSpan, efDeclSourceType, getNamesAtPosition, getWordAt, lookupTypeInEnv, sourcePosToPosition)
 import Language.PureScript.Names (disqualify, runIdent)
 import Protolude hiding (to)
@@ -69,6 +71,25 @@ handlers =
             Types.DocumentDiagnosticReport $
               Types.InL $
                 Types.RelatedFullDocumentDiagnosticReport Types.AString Nothing diagnostics Nothing,
+      Server.requestHandler (Message.SMethod_CustomMethod $ Proxy @"build") $ \_req res -> do
+        debugLsp "SMethod_CustomMethod rebuild"
+        config <- asks lspConfig
+        conn <- asks lspDbConnection
+        (result, warnings) <-
+          liftIO $
+            compile
+              (P.Options False False codegenTargets)
+              (confGlobs config)
+              conn
+              (confOutputPath config)
+              False
+
+        let diags :: [Types.Diagnostic]
+            diags =
+              (errorMessageDiagnostic Types.DiagnosticSeverity_Error <$> either P.runMultipleErrors (const []) result)
+                <> (errorMessageDiagnostic Types.DiagnosticSeverity_Warning <$> P.runMultipleErrors warnings)
+
+        res $ Right $ A.toJSON diags,
       Server.requestHandler Message.SMethod_TextDocumentCodeAction $ \req res -> do
         let params = req ^. LSP.params
             diags = params ^. LSP.context . LSP.diagnostics
@@ -135,7 +156,7 @@ handlers =
             Just (CF.Constructor (ss, comments, _meta) tName cMame _) -> do
               docsMb <- do
                 mNameMb <- selectExternModuleNameFromFilePath (P.spanName ss)
-                maybe (pure Nothing) (`readDeclarationDocsAsMarkdown` (P.runProperName tName)) mNameMb
+                maybe (pure Nothing) (`readDeclarationDocsAsMarkdown` P.runProperName tName) mNameMb
               case docsMb of
                 Nothing -> markdownTypeRes (P.runProperName cMame) (Just $ P.runProperName tName) comments
                 Just docs -> markdownRes docs

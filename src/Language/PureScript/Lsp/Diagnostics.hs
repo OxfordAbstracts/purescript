@@ -46,41 +46,41 @@ getResultDiagnostics res = case res of
         diags = errorMessageDiagnostic Types.DiagnosticSeverity_Warning <$> errors
     (errors, diags)
   _ -> ([], [])
+
+errorMessageDiagnostic :: Types.DiagnosticSeverity -> ErrorMessage -> Types.Diagnostic
+errorMessageDiagnostic severity msg@((ErrorMessage _hints _)) =
+  let textEdits :: [Types.TextEdit]
+      textEdits =
+        toSuggestion msg
+          & maybeToList
+            >>= suggestionToEdit
+
+      suggestionToEdit :: JsonErrors.ErrorSuggestion -> [Types.TextEdit]
+      suggestionToEdit (JsonErrors.ErrorSuggestion replacement (Just JsonErrors.ErrorPosition {..})) =
+        let rangeStart = Types.Position (fromIntegral $ startLine - 1) (fromIntegral $ startColumn - 1)
+            rangeEnd = Types.Position (fromIntegral $ endLine - 1) (fromIntegral $ endColumn - 1)
+         in pure $ Types.TextEdit (Types.Range rangeStart rangeEnd) replacement
+      suggestionToEdit _ = []
+   in Types.Diagnostic
+        (Types.Range start end)
+        (Just severity)
+        (Just $ Types.InR $ errorCode msg)
+        (Just $ Types.CodeDescription $ Types.Uri $ errorDocUri msg)
+        (T.pack <$> spanName)
+        (T.pack $ render $ prettyPrintSingleError noColorPPEOptions msg)
+        Nothing
+        Nothing
+        (Just $ A.toJSON textEdits)
   where
-    errorMessageDiagnostic :: Types.DiagnosticSeverity -> ErrorMessage -> Types.Diagnostic
-    errorMessageDiagnostic severity msg@((ErrorMessage _hints _)) =
-      let textEdits :: [Types.TextEdit]
-          textEdits =
-            toSuggestion msg
-              & maybeToList
-              >>= suggestionToEdit
+    notFound = Types.Position 0 0
+    (spanName, start, end) = getPositions $ errorSpan msg
 
-          suggestionToEdit :: JsonErrors.ErrorSuggestion -> [Types.TextEdit]
-          suggestionToEdit (JsonErrors.ErrorSuggestion replacement (Just JsonErrors.ErrorPosition {..})) =
-            let rangeStart = Types.Position (fromIntegral $ startLine - 1) (fromIntegral $ startColumn - 1)
-                rangeEnd = Types.Position (fromIntegral $ endLine - 1) (fromIntegral $ endColumn - 1)
-             in pure $ Types.TextEdit (Types.Range rangeStart rangeEnd) replacement
-          suggestionToEdit _ = []
-       in Types.Diagnostic
-            (Types.Range start end)
-            (Just severity)
-            (Just $ Types.InR $ errorCode msg)
-            (Just $ Types.CodeDescription $ Types.Uri $ errorDocUri msg)
-            (T.pack <$> spanName)
-            (T.pack $ render $ prettyPrintSingleError noColorPPEOptions msg)
-            Nothing
-            Nothing
-            (Just $ A.toJSON textEdits)
-      where
-        notFound = Types.Position 0 0
-        (spanName, start, end) = getPositions $ errorSpan msg
+    getPositions = fromMaybe (Nothing, notFound, notFound) . getPositionsMb
 
-        getPositions = fromMaybe (Nothing, notFound, notFound) . getPositionsMb
-
-        getPositionsMb = fmap $ \spans ->
-          let (Errors.SourceSpan name (Errors.SourcePos startLine startCol) (Errors.SourcePos endLine endCol)) =
-                NEL.head spans
-           in ( Just name,
-                Types.Position (fromIntegral $ startLine - 1) (fromIntegral $ startCol - 1),
-                Types.Position (fromIntegral $ endLine - 1) (fromIntegral $ endCol - 1)
-              )
+    getPositionsMb = fmap $ \spans ->
+      let (Errors.SourceSpan name (Errors.SourcePos startLine startCol) (Errors.SourcePos endLine endCol)) =
+            NEL.head spans
+       in ( Just name,
+            Types.Position (fromIntegral $ startLine - 1) (fromIntegral $ startCol - 1),
+            Types.Position (fromIntegral $ endLine - 1) (fromIntegral $ endCol - 1)
+          )

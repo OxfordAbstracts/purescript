@@ -35,7 +35,6 @@ spec = describe "lsp" $ do
   it "should start" do
     runSessionWithConfig sessionConfig "purs lsp server" fullLatestClientCaps "tests/purs/lsp" do
       doc <- openDoc "Main.purs" "purs"
-
       defs2 <- getDefinitions doc (Position 2 0)
       defs3 <- getDefinitions doc (Position 3 0)
       defs4 <- getDefinitions doc (Position 4 0)

@@ -278,6 +278,7 @@ library
     Language.PureScript.CST.Types
     Language.PureScript.CST.Utils
     Language.PureScript.Comments
+    Language.PureScript.Compile
     Language.PureScript.Constants.Prim
     Language.PureScript.Crash
     Language.PureScript.DB
