@@ -24,30 +24,3 @@ cachedRebuild = do
   liftIO . atomically $ do
     st' <- readTVar st
     pure $ currentFile st'
-
-getInitialized :: (MonadIO m, MonadReader LspEnvironment m) => m Bool
-getInitialized = do
-  st <- lspStateVar <$> ask
-  liftIO . atomically $ do
-    st' <- readTVar st
-    pure $ lspInitalized st'
-
-initFinished :: (MonadIO m, MonadReader LspEnvironment m) => m ()
-initFinished = do
-  st <- lspStateVar <$> ask
-  liftIO . atomically . modifyTVar st $ \x ->
-    x
-      { lspInitalized = True
-      }
-
-whenInitialized :: (MonadIO m, MonadReader LspEnvironment m) => m () -> m ()
-whenInitialized action = do
-  initialized <- getInitialized
-  when initialized action
-
-waitForInit :: (MonadIO m, MonadReader LspEnvironment m) => m ()
-waitForInit = do
-  initialized <- getInitialized
-  unless initialized $ do
-    liftIO $ threadDelay 100000
-    waitForInit

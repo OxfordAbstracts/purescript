@@ -25,7 +25,7 @@ data LspEnvironment = LspEnvironment
 mkEnv :: LspConfig -> IO LspEnvironment
 mkEnv conf = do
   connection <- mkConnection $ confOutputPath conf
-  st <- newTVarIO (LspState Nothing False)
+  st <- newTVarIO (LspState Nothing)
   pure $ LspEnvironment conf connection st
 
 data LspConfig = LspConfig
@@ -36,8 +36,7 @@ data LspConfig = LspConfig
   deriving (Show)
 
 data LspState = LspState
-  { currentFile :: Maybe CurrentFile,
-    lspInitalized :: Bool
+  { currentFile :: Maybe CurrentFile
   }
   deriving (Show)
 
