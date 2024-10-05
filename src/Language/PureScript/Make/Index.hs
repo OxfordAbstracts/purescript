@@ -38,7 +38,7 @@ import Language.PureScript.Ide.Error (IdeError (GeneralError, RebuildError))
 import Language.PureScript.Ide.Rebuild (updateCacheDb)
 import Language.PureScript.Ide.Types (ModuleMap)
 import Language.PureScript.Ide.Util (ideReadFile)
-import Language.PureScript.Lsp.Print (printEfDeclName, printName)
+import Language.PureScript.Lsp.Print (printEfDeclName, printName, printDeclarationType)
 import Language.PureScript.Lsp.Types (LspConfig (..), LspEnvironment (lspConfig))
 import Language.PureScript.Lsp.Util (efDeclCategory, efDeclSourceSpan)
 import Language.PureScript.Make (ffiCodegen')
@@ -77,11 +77,11 @@ indexAstModule conn m@(P.Module _ss _comments name decls exportRefs) = liftIO do
         end = P.spanEnd ss
     SQL.executeNamed 
       conn 
-      (SQL.Query "INSERT INTO ast_declarations (module_name, name, value, shown, start_line, end_line, start_col, end_col, lines, cols, exported) VALUES (:module_name, :name, :value, :shown, :start_line, :end_line, :start_col, :end_col, :lines, :cols, :exported)")
+      (SQL.Query "INSERT INTO ast_declarations (module_name, name, value, printed_type, start_line, end_line, start_col, end_col, lines, cols, exported) VALUES (:module_name, :name, :value, :printed_type, :start_line, :end_line, :start_col, :end_col, :lines, :cols, :exported)")
       [ ":module_name" := P.runModuleName name,
         ":name" := printName <$> P.declName decl,
         ":value" := serialise decl,
-        ":shown" :=( show decl :: Text),
+        ":printed_type" := printDeclarationType decl,
         ":start_line" := P.sourcePosLine start,
         ":end_line" := P.sourcePosLine end,
         ":start_col" := P.sourcePosColumn start,
@@ -314,10 +314,10 @@ initDb' conn = catchError (initDb conn) \err -> do
 
 initDb :: Connection -> IO ()
 initDb conn = do
-  dropTables conn
+  -- dropTables conn
   SQL.execute_ conn "pragma journal_mode=wal;"
   SQL.execute_ conn "pragma foreign_keys = ON;"
-  SQL.execute_ conn "CREATE TABLE IF NOT EXISTS ast_declarations (module_name TEXT, name TEXT, value TEXT, shown TEXT, start_line INTEGER, end_line INTEGER, start_col INTEGER, end_col INTEGER, lines INTEGER, cols INTEGER, exported BOOLEAN)"
+  SQL.execute_ conn "CREATE TABLE IF NOT EXISTS ast_declarations (module_name TEXT, name TEXT, value TEXT, printed_type TEXT, start_line INTEGER, end_line INTEGER, start_col INTEGER, end_col INTEGER, lines INTEGER, cols INTEGER, exported BOOLEAN)"
   SQL.execute_ conn "CREATE TABLE IF NOT EXISTS ast_expressions (module_name TEXT, value TEXT, shown TEXT, start_line INTEGER, end_line INTEGER, start_col INTEGER, end_col INTEGER, length INTEGER)"
   SQL.execute_ conn "CREATE TABLE IF NOT EXISTS envs (module_name TEXT PRIMARY KEY, value TEXT)"
   SQL.execute_ conn "CREATE TABLE IF NOT EXISTS corefn_modules (name TEXT PRIMARY KEY, path TEXT, value TEXT, UNIQUE(name) on conflict replace, UNIQUE(path) on conflict replace)"

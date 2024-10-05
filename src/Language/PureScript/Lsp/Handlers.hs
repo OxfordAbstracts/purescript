@@ -40,7 +40,10 @@ import Language.PureScript.Lsp.Util (declToCompletionItemKind, efDeclSourceSpan,
 import Language.PureScript.Make.Index (initDb)
 import Language.PureScript.Names (disqualify, runIdent)
 import Protolude hiding (to)
+import System.Directory (createDirectoryIfMissing, listDirectory, removePathForcibly)
+import System.FilePath ((</>))
 import System.IO.UTF8 (readUTF8FilesT)
+import Language.PureScript.DB (dbFile)
 
 type HandlerM config = ReaderT LspEnvironment (Server.LspT config IO)
 
@@ -169,7 +172,7 @@ handlers =
                         forLsp typeMb \t -> markdownTypeRes (printName $ disqualify name) (Just $ prettyPrintTypeSingleLine t) []
                       Just docs -> markdownRes docs,
       Server.requestHandler Message.SMethod_TextDocumentDefinition $ \req res -> do
-        sendInfoMsg "SMethod_TextDocumentDefinition"
+        debugLsp "SMethod_TextDocumentDefinition"
         let Types.DefinitionParams docIdent pos _prog _prog' = req ^. LSP.params
             filePathMb = Types.uriToFilePath $ docIdent ^. LSP.uri
             uri :: Types.NormalizedUri
@@ -186,7 +189,7 @@ handlers =
 
             forLsp :: Maybe a -> (a -> HandlerM () ()) -> HandlerM () ()
             forLsp val f = maybe nullRes f val
-
+        debugLsp $ "filePathMb: " <> show filePathMb
         forLsp filePathMb \filePath -> do
           vfMb <- Server.getVirtualFile uri
           forLsp vfMb \vf -> do
@@ -321,6 +324,19 @@ handlers =
                 withImports
                   & addDocs
           _ -> res $ Right completionItem,
+      Server.requestHandler (Message.SMethod_CustomMethod $ Proxy @"delete output") $ \_req res -> do
+        debugLsp "SMethod_CustomMethod delete output"
+        outDir <- asks (confOutputPath . lspConfig)
+        debugLsp $ "Deleting output directory: " <> show outDir
+        liftIO $ createDirectoryIfMissing True outDir
+        contents <- liftIO $ listDirectory outDir
+        for_ contents \f -> do
+          debugLsp $ T.pack f
+          unless (f == dbFile || dbFile `isPrefixOf` f) do
+            let path = outDir </> f
+            debugLsp $ "Deleting: " <> show f
+            liftIO $ removePathForcibly path
+        res $ Right A.Null,
       Server.requestHandler (Message.SMethod_CustomMethod $ Proxy @"build") $ \_req res -> do
         debugLsp "SMethod_CustomMethod build"
         config <- asks lspConfig

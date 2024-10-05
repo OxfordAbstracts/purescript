@@ -154,7 +154,7 @@ getAstDeclarationsStartingWith moduleName' prefix = do
       \WHERE (module_name = :module_name OR exported) \
       \AND name GLOB :prefix \
       \ORDER BY name ASC \
-      \LIMIT 100"
+      \LIMIT 50"
       [ ":module_name" := P.runModuleName moduleName',
         ":prefix" := prefix <> "*"
       ]

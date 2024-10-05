@@ -15,6 +15,7 @@ import Language.PureScript.Environment qualified as P
 import Language.PureScript.Externs qualified as P
 import Language.PureScript.Names qualified as P
 import Protolude
+import System.Directory (createDirectoryIfMissing)
 
 data LspEnvironment = LspEnvironment
   { lspConfig :: LspConfig,
@@ -24,6 +25,7 @@ data LspEnvironment = LspEnvironment
 
 mkEnv :: LspConfig -> IO LspEnvironment
 mkEnv conf = do
+  createDirectoryIfMissing True $ confOutputPath conf
   connection <- mkConnection $ confOutputPath conf
   st <- newTVarIO (LspState Nothing)
   pure $ LspEnvironment conf connection st

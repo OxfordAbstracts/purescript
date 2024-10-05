@@ -17,21 +17,22 @@ import Database.SQLite.Simple.ToField (ToField (toField))
 import Language.LSP.Protocol.Types (UInt)
 import Language.LSP.Protocol.Types qualified as Types
 import Language.PureScript.AST qualified as P
+import Language.PureScript.AST.Declarations (declSourceAnn)
 import Language.PureScript.Comments qualified as P
 import Language.PureScript.Environment qualified as P
+import Language.PureScript.Errors qualified as Errors
 import Language.PureScript.Externs qualified as P
 import Language.PureScript.Linter qualified as P
-import Language.PureScript.Names qualified as P
-import Language.PureScript.Types qualified as P
-import Language.PureScript.AST.Declarations (declSourceAnn)
-import Language.PureScript.Errors qualified as Errors
 import Language.PureScript.Lsp.Cache.Query (getAstDeclarationsAtSrcPos)
+-- import Language.PureScript.Sugar.BindingGroups (usedTypeNames)
+
+import Language.PureScript.Lsp.Log (debugLsp)
 import Language.PureScript.Lsp.Print (printName)
 import Language.PureScript.Lsp.State (cachedRebuild)
 import Language.PureScript.Lsp.Types (CurrentFile (currentEnv), LspEnvironment)
--- import Language.PureScript.Sugar.BindingGroups (usedTypeNames)
+import Language.PureScript.Names qualified as P
+import Language.PureScript.Types qualified as P
 import Protolude hiding (to)
-import Language.PureScript.Lsp.Log (debugLsp)
 
 posInSpan :: Types.Position -> Errors.SourceSpan -> Bool
 posInSpan (Types.Position line col) (Errors.SourceSpan _ (Errors.SourcePos startLine startCol) (Errors.SourcePos endLine endCol)) =
@@ -45,16 +46,22 @@ getDeclarationAtPos pos = find (posInSpan pos . fst . declSourceAnn)
 
 getWordAt :: Rope -> Types.Position -> Text
 getWordAt file Types.Position {..} =
-  let (_, after) = splitAtLine (fromIntegral _line) file
-      (ropeLine, _) = splitAtLine 1 after
-      line' = Rope.toText ropeLine
-   in getWordOnLine line' _character
+  if Rope.lengthInLines file < fromIntegral _line
+    then ""
+    else
+      let (_, after) = splitAtLine (fromIntegral _line) file
+          (ropeLine, _) = splitAtLine 1 after
+          line' = Rope.toText ropeLine
+       in getWordOnLine line' _character
 
 getWordOnLine :: Text -> UInt -> Text
 getWordOnLine line' col =
-  let start = getPrevWs (fromIntegral col - 1) line'
-      end = getNextWs (fromIntegral col) line'
-   in T.strip $ T.take (end - start) $ T.drop start line'
+  if T.length line' < fromIntegral col
+    then ""
+    else
+      let start = getPrevWs (fromIntegral col - 1) line'
+          end = getNextWs (fromIntegral col) line'
+       in T.strip $ T.take (end - start) $ T.drop start line'
   where
     getNextWs :: Int -> Text -> Int
     getNextWs idx txt | idx >= T.length txt = idx
@@ -76,7 +83,7 @@ getNamesAtPosition pos moduleName' src = do
   let search = getWordAt src pos
   debugLsp $ "Looking up " <> search <> " in module " <> P.runModuleName moduleName'
   decls <- getAstDeclarationsAtSrcPos moduleName' (positionToSourcePos pos)
-  debugLsp $ "Found declarations: " <> T.pack (show $ length decls) 
+  debugLsp $ "Found declarations: " <> T.pack (show $ length decls)
   pure $
     mconcat $
       decls <&> \decl -> do
@@ -207,10 +214,10 @@ positionToSourcePos (Types.Position line col) =
   Errors.SourcePos (fromIntegral $ line + 1) (fromIntegral $ col + 1)
 
 declToCompletionItemKind :: P.Declaration -> Maybe Types.CompletionItemKind
-declToCompletionItemKind = \case 
+declToCompletionItemKind = \case
   P.DataDeclaration {} -> Just Types.CompletionItemKind_EnumMember
   P.TypeSynonymDeclaration {} -> Just Types.CompletionItemKind_Struct
-  P.DataBindingGroupDeclaration {} -> Nothing 
+  P.DataBindingGroupDeclaration {} -> Nothing
   P.TypeClassDeclaration {} -> Just Types.CompletionItemKind_Interface
   P.TypeDeclaration {} -> Just Types.CompletionItemKind_Class
   P.ValueDeclaration {} -> Just Types.CompletionItemKind_Value
@@ -218,8 +225,3 @@ declToCompletionItemKind = \case
   P.RoleDeclaration {} -> Nothing
   P.ExternDeclaration {} -> Just Types.CompletionItemKind_Value
   _ -> Nothing
-
-  
-
-  
-  

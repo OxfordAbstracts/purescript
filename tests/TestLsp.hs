@@ -40,29 +40,19 @@ import Test.Hspec (Spec, describe, it, shouldBe)
 -- runPursLspSession ::
 
 spec :: Spec
-spec = describe "lsp  " $ do
+spec =
   it "should get definitions" do
-    runSessionWithConfig sessionConfig ("purs lsp server --log-level debug " <> globs) fullLatestClientCaps "tests/purs/lsp" do
+    runSessionWithConfig sessionConfig ("purs lsp server " <> globs) fullLatestClientCaps "tests/purs/lsp" do
       void rebuildReq
       doc <- openDoc "Main.purs" "purs"
-      defs2 <- getDefinitions doc (Position 2 0)
-      liftIO $ print "defs2" *> print defs2
-      defs3 <- getDefinitions doc (Position 3 0)
-      liftIO $ print "defs3" *> print defs3
-      defs4 <- getDefinitions doc (Position 4 0)
-      liftIO $ print "defs4" *> print defs4
-      let expRange = Range (Position 4 0) (Position 4 3)
+      defsAtLine4 <- getDefinitions doc (Position 4 1)
+      let expRange = Range (Position 4 0) (Position 4 24)
       liftIO do
-        print "defs2"
-        print defs2
-        print "defs3"
-        print defs3
-        print "defs4"
-        print defs4
-        defs2 `shouldBe` (InL $ Definition $ InL $ Location (doc ^. uri) expRange)
+        defsAtLine4 `shouldBe` InL (Definition $ InL $ Location (doc ^. uri) expRange)
       pure ()
   where
     rebuildReq = do
+      void $ request (SMethod_CustomMethod $ Proxy @"delete output") A.Null
       rsp <- request (SMethod_CustomMethod $ Proxy @"build") A.Null
       liftIO $ do
         print "got build response"
@@ -79,23 +69,6 @@ sessionConfig = SessionConfig 30 True True True clientConfig True True True Noth
 
     pursLspConfig :: Map Text.Text A.Value
     pursLspConfig = Map.empty
-
--- Map.fromList
---   [("field", A.Object mempty)]
-
---   it "should run a test" $ do
---     "abc" `shouldBe` "abc"
-
--- runPursLspSession :: String -> ClientCapabilities -> FilePath -> Session b -> IO b
--- runPursLspSession testConfig caps root session = do
---   rin <- atomically newTChan
---   env <- mkEnv $ LspConfig "/output" ["."] LogError
---   server <- async $ void $ runServer $ serverDefinition env rin
---   res <- runSession testConfig caps root session
---   void $ timeout 3000000 $ do
---     Left (fromException -> Just ExitSuccess) <- waitCatch server
---     pure ()
---   pure res
 
 globs :: [Char]
 globs = prelude <> " " <> srcGlob

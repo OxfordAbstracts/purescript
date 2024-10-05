@@ -6,4 +6,7 @@ import System.FilePath ((</>))
 
 mkConnection :: FilePath -> IO Connection
 mkConnection outputDir =  
-  open (outputDir </> "purescript.sqlite")
+  open (outputDir </> dbFile)
+
+dbFile :: FilePath
+dbFile = "purescript.sqlite"
