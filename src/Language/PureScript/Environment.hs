@@ -52,13 +52,23 @@ data Environment = Environment
 instance NFData Environment
 
 
-data EnvironmentLazy m = EnvironmentLazy 
-  { namesLazy :: Qualified Ident -> m (Maybe (SourceType, NameKind, NameVisibility))
-  , typesLazy :: Qualified (ProperName 'TypeName) -> m (Maybe (SourceType, TypeKind))
-  , dataConstructorsLazy :: Qualified (ProperName 'ConstructorName) -> m (Maybe (DataDeclType, ProperName 'TypeName, SourceType, [Ident]))
-  , typeSynonymsLazy :: Qualified (ProperName 'TypeName) -> m (Maybe ([(Text, Maybe SourceType)], SourceType))
-  , typeClassDictionariesLazy :: QualifiedBy -> m (Maybe (M.Map (Qualified (ProperName 'ClassName)) (M.Map (Qualified Ident) (NEL.NonEmpty NamedDict))))
-  , typeClassesLazy :: Qualified (ProperName 'ClassName) -> m (Maybe TypeClassData)
+data EnvironmentFn m = EnvironmentFn 
+  { namesFn :: Qualified Ident -> m (Maybe (SourceType, NameKind, NameVisibility))
+  , typesFn :: Qualified (ProperName 'TypeName) -> m (Maybe (SourceType, TypeKind))
+  , dataConstructorsFn :: Qualified (ProperName 'ConstructorName) -> m (Maybe (DataDeclType, ProperName 'TypeName, SourceType, [Ident]))
+  , typeSynonymsFn :: Qualified (ProperName 'TypeName) -> m (Maybe ([(Text, Maybe SourceType)], SourceType))
+  , typeClassDictionariesFn :: QualifiedBy -> m (Maybe (M.Map (Qualified (ProperName 'ClassName)) (M.Map (Qualified Ident) (NEL.NonEmpty NamedDict))))
+  , typeClassesFn :: Qualified (ProperName 'ClassName) -> m (Maybe TypeClassData)
+  }
+
+toEnvFn :: Applicative m => Environment -> EnvironmentFn m
+toEnvFn env = EnvironmentFn
+  { namesFn = \k -> pure $ M.lookup k (names env)
+  , typesFn = \k -> pure $ M.lookup k (types env)
+  , dataConstructorsFn = \k -> pure $ M.lookup k (dataConstructors env)
+  , typeSynonymsFn = \k -> pure $ M.lookup k (typeSynonyms env)
+  , typeClassDictionariesFn = \k -> pure $ M.lookup k (typeClassDictionaries env)
+  , typeClassesFn = \k -> pure $ M.lookup k (typeClasses env)
   }
 
 -- | Information about a type class
