@@ -1,7 +1,7 @@
 -- |
 -- Desugaring passes
 --
-module Language.PureScript.Sugar (desugar, module S) where
+module Language.PureScript.Sugar (desugar, desugarLsp, module S) where
 
 import Control.Category ((>>>))
 import Control.Monad ((>=>))
@@ -72,4 +72,22 @@ desugar externs =
     >=> checkFixityExports
     >=> deriveInstances
     >=> desugarTypeClasses externs
+    >=> createBindingGroupsModule
+
+-- TODO: add desugarImports, rebracket and desugarTypeClasses but getting externs and used imports from the DB
+desugarLsp
+  :: MonadSupply m
+  => MonadError MultipleErrors m
+  => Module
+  -> m Module
+desugarLsp  =
+  desugarSignedLiterals
+    >>> desugarObjectConstructors
+    >=> desugarDoModule
+    >=> desugarAdoModule
+    >=> desugarLetPatternModule
+    >>> desugarCasesModule
+    >=> desugarTypeDeclarationsModule
+    >=> checkFixityExports
+    >=> deriveInstances
     >=> createBindingGroupsModule
