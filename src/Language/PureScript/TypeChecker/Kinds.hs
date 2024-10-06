@@ -51,11 +51,12 @@ import Language.PureScript.Crash (HasCallStack, internalError)
 import Language.PureScript.Environment qualified as E
 import Language.PureScript.Errors
 import Language.PureScript.Names (pattern ByNullSourcePos, ModuleName, Name(..), ProperName(..), ProperNameType(..), Qualified(..), QualifiedBy(..), coerceProperName, mkQualified)
-import Language.PureScript.TypeChecker.Monad (CheckState(..), Substitution(..), UnkLevel(..), Unknown, bindLocalTypeVariables, debugType, getEnv, lookupTypeVariable, unsafeCheckCurrentModule, withErrorMessageHint, withFreshSubstitution)
+import Language.PureScript.TypeChecker.Monad (CheckState(..), Substitution(..), UnkLevel(..), Unknown, bindLocalTypeVariables, debugType, lookupTypeVariable, unsafeCheckCurrentModule, withErrorMessageHint, withFreshSubstitution, getType, getTypeSynonym)
 import Language.PureScript.TypeChecker.Skolems (newSkolemConstant, newSkolemScope, skolemize)
 import Language.PureScript.TypeChecker.Synonyms (replaceAllTypeSynonyms)
 import Language.PureScript.Types
 import Language.PureScript.Pretty.Types (prettyPrintType)
+import Protolude (isNothing)
 
 generalizeUnknowns :: [(Unknown, SourceType)] -> SourceType -> SourceType
 generalizeUnknowns unks ty =
@@ -87,7 +88,7 @@ unknownVarNames used unks =
   vars :: [Text]
   vars = fmap (("k" <>) . T.pack . show) ([1..] :: [Int])
 
-apply :: (MonadState CheckState m) => SourceType -> m SourceType
+apply :: (MonadState (CheckState m) m) => SourceType -> m SourceType
 apply ty = flip substituteType ty <$> gets checkSubstitution
 
 substituteType :: Substitution -> SourceType -> SourceType
@@ -100,22 +101,22 @@ substituteType sub = everywhereOnTypes $ \case
   other ->
     other
 
-freshUnknown :: (MonadState CheckState m) => m Unknown
+freshUnknown :: (MonadState (CheckState m) m) => m Unknown
 freshUnknown = do
   k <- gets checkNextType
   modify $ \st -> st { checkNextType = k + 1 }
   pure k
 
-freshKind :: (MonadState CheckState m) => SourceSpan -> m SourceType
+freshKind :: (MonadState (CheckState m) m) => SourceSpan -> m SourceType
 freshKind ss = freshKindWithKind ss E.kindType
 
-freshKindWithKind :: (MonadState CheckState m) => SourceSpan -> SourceType -> m SourceType
+freshKindWithKind :: (MonadState (CheckState m) m) => SourceSpan -> SourceType -> m SourceType
 freshKindWithKind ss kind = do
   u <- freshUnknown
   addUnsolved Nothing u kind
   pure $ TUnknown (ss, []) u
 
-addUnsolved :: (MonadState CheckState m) => Maybe UnkLevel -> Unknown -> SourceType -> m ()
+addUnsolved :: (MonadState (CheckState m) m) => Maybe UnkLevel -> Unknown -> SourceType -> m ()
 addUnsolved lvl unk kind = modify $ \st -> do
   let
     newLvl = UnkLevel $ case lvl of
@@ -125,7 +126,7 @@ addUnsolved lvl unk kind = modify $ \st -> do
     uns = M.insert unk (newLvl, kind) $ substUnsolved subs
   st { checkSubstitution = subs { substUnsolved = uns } }
 
-solve :: (MonadState CheckState m) => Unknown -> SourceType -> m ()
+solve :: (MonadState (CheckState m) m) => Unknown -> SourceType -> m ()
 solve unk solution = modify $ \st -> do
   let
     subs = checkSubstitution st
@@ -133,7 +134,7 @@ solve unk solution = modify $ \st -> do
   st { checkSubstitution = subs { substType = tys } }
 
 lookupUnsolved
-  :: (MonadState CheckState m, MonadError MultipleErrors m, HasCallStack)
+  :: (MonadState (CheckState m) m, MonadError MultipleErrors m, HasCallStack)
   => Unknown
   -> m (UnkLevel, SourceType)
 lookupUnsolved u = do
@@ -143,7 +144,7 @@ lookupUnsolved u = do
     Just res -> return res
 
 unknownsWithKinds
-  :: forall m. (MonadState CheckState m, MonadError MultipleErrors m, HasCallStack)
+  :: forall m. (MonadState (CheckState m) m, MonadError MultipleErrors m, HasCallStack)
   => [Unknown]
   -> m [(Unknown, SourceType)]
 unknownsWithKinds = fmap (fmap snd . nubBy ((==) `on` fst) . sortOn fst . join) . traverse go
@@ -154,7 +155,7 @@ unknownsWithKinds = fmap (fmap snd . nubBy ((==) `on` fst) . sortOn fst . join) 
     pure $ (lvl, (u, ty)) : rest
 
 inferKind
-  :: (MonadError MultipleErrors m, MonadState CheckState m, HasCallStack)
+  :: (MonadError MultipleErrors m, MonadState (CheckState m) m, HasCallStack)
   => SourceType
   -> m (SourceType, SourceType)
 inferKind = \tyToInfer ->
@@ -164,8 +165,8 @@ inferKind = \tyToInfer ->
   where
   go = \case
     ty@(TypeConstructor ann v) -> do
-      env <- getEnv
-      case M.lookup v (E.types env) of
+      t <- getType v
+      case t of
         Nothing ->
           throwError . errorMessage' (fst ann) . UnknownName . fmap TyName $ v
         Just (kind, E.LocalTypeVariable) -> do
@@ -174,8 +175,8 @@ inferKind = \tyToInfer ->
         Just (kind, _) -> do
           pure (ty, kind $> ann)
     ConstrainedType ann' con@(Constraint ann v _ _ _) ty -> do
-      env <- getEnv
-      con' <- case M.lookup (coerceProperName <$> v) (E.types env) of
+      t <- getType (coerceProperName <$> v)
+      con' <- case t of
         Nothing ->
           throwError . errorMessage' (fst ann) . UnknownName . fmap TyClassName $ v
         Just _ ->
@@ -242,7 +243,7 @@ inferKind = \tyToInfer ->
       internalError $ "inferKind: Unimplemented case \n" <> prettyPrintType 100 ty
 
 inferAppKind
-  :: (MonadError MultipleErrors m, MonadState CheckState m, HasCallStack)
+  :: (MonadError MultipleErrors m, MonadState (CheckState m) m, HasCallStack)
   => SourceAnn
   -> (SourceType, SourceType)
   -> SourceType
@@ -269,13 +270,13 @@ inferAppKind ann (fn, fnKind) arg = case fnKind of
     cannotApplyTypeToType fn arg
   where
   requiresSynonymsToExpand = \case
-    TypeConstructor _ v -> M.notMember v . E.typeSynonyms <$> getEnv
+    TypeConstructor _ v -> isNothing <$> getTypeSynonym v
     TypeApp _ l _ -> requiresSynonymsToExpand l
     KindApp _ l _ -> requiresSynonymsToExpand l
     _ -> pure True
 
 cannotApplyTypeToType
-  :: (MonadError MultipleErrors m, MonadState CheckState m, HasCallStack)
+  :: (MonadError MultipleErrors m, MonadState (CheckState m) m, HasCallStack)
   => SourceType
   -> SourceType
   -> m a
@@ -285,7 +286,7 @@ cannotApplyTypeToType fn arg = do
   internalCompilerError . T.pack $ "Cannot apply type to type: " <> debugType (srcTypeApp fn arg)
 
 cannotApplyKindToType
-  :: (MonadError MultipleErrors m, MonadState CheckState m, HasCallStack)
+  :: (MonadError MultipleErrors m, MonadState (CheckState m) m, HasCallStack)
   => SourceType
   -> SourceType
   -> m a
@@ -296,7 +297,7 @@ cannotApplyKindToType poly arg = do
   internalCompilerError . T.pack $ "Cannot apply kind to type: " <> debugType (srcKindApp poly arg)
 
 checkKind
-  :: (MonadError MultipleErrors m, MonadState CheckState m, HasCallStack)
+  :: (MonadError MultipleErrors m, MonadState (CheckState m) m, HasCallStack)
   => SourceType
   -> SourceType
   -> m SourceType
@@ -310,13 +311,13 @@ checkKind = checkKind' False
 -- error.
 --
 checkIsSaturatedType
-  :: (MonadError MultipleErrors m, MonadState CheckState m, HasCallStack)
+  :: (MonadError MultipleErrors m, MonadState (CheckState m) m, HasCallStack)
   => SourceType
   -> m SourceType
 checkIsSaturatedType ty = checkKind' True ty E.kindType
 
 checkKind'
-  :: (MonadError MultipleErrors m, MonadState CheckState m, HasCallStack)
+  :: (MonadError MultipleErrors m, MonadState (CheckState m) m, HasCallStack)
   => Bool
   -> SourceType
   -> SourceType
@@ -331,7 +332,7 @@ checkKind' requireSynonymsToExpand ty kind2 = do
         instantiateKind (ty', kind1') kind2'
 
 instantiateKind
-  :: (MonadError MultipleErrors m, MonadState CheckState m, HasCallStack)
+  :: (MonadError MultipleErrors m, MonadState (CheckState m) m, HasCallStack)
   => (SourceType, SourceType)
   -> SourceType
   -> m SourceType
@@ -349,7 +350,7 @@ instantiateKind (ty, kind1) kind2 = case kind1 of
     _ -> False
 
 subsumesKind
-  :: (MonadError MultipleErrors m, MonadState CheckState m, HasCallStack)
+  :: (MonadError MultipleErrors m, MonadState (CheckState m) m, HasCallStack)
   => SourceType
   -> SourceType
   -> m ()
@@ -380,7 +381,7 @@ subsumesKind = go
       unifyKinds a b
 
 unifyKinds
-  :: (MonadError MultipleErrors m, MonadState CheckState m, HasCallStack)
+  :: (MonadError MultipleErrors m, MonadState (CheckState m) m, HasCallStack)
   => SourceType
   -> SourceType
   -> m ()
@@ -393,7 +394,7 @@ unifyKinds = unifyKindsWithFailure $ \w1 w2 ->
 -- | local position context. This is useful when invoking kind unification
 -- | outside of kind checker internals.
 unifyKinds'
-  :: (MonadError MultipleErrors m, MonadState CheckState m, HasCallStack)
+  :: (MonadError MultipleErrors m, MonadState (CheckState m) m, HasCallStack)
   => SourceType
   -> SourceType
   -> m ()
@@ -404,7 +405,7 @@ unifyKinds' = unifyKindsWithFailure $ \w1 w2 ->
 
 -- | Check the kind of a type, failing if it is not of kind *.
 checkTypeKind
-  :: (MonadError MultipleErrors m, MonadState CheckState m, HasCallStack)
+  :: (MonadError MultipleErrors m, MonadState (CheckState m) m, HasCallStack)
   => SourceType
   -> SourceType
   -> m ()
@@ -412,7 +413,7 @@ checkTypeKind ty kind =
   unifyKindsWithFailure (\_ _ -> throwError . errorMessage $ ExpectedType ty kind) kind E.kindType
 
 unifyKindsWithFailure
-  :: (MonadError MultipleErrors m, MonadState CheckState m, HasCallStack)
+  :: (MonadError MultipleErrors m, MonadState (CheckState m) m, HasCallStack)
   => (SourceType -> SourceType -> m ())
   -> SourceType
   -> SourceType
@@ -464,7 +465,7 @@ unifyKindsWithFailure onFailure = go
       onFailure (rowFromList w1) (rowFromList w2)
 
 solveUnknown
-  :: (MonadError MultipleErrors m, MonadState CheckState m, HasCallStack)
+  :: (MonadError MultipleErrors m, MonadState (CheckState m) m, HasCallStack)
   => Unknown
   -> SourceType
   -> m ()
@@ -475,7 +476,7 @@ solveUnknown a' p1 = do
   solve a' p2
 
 solveUnknownAsFunction
-  :: (MonadError MultipleErrors m, MonadState CheckState m, HasCallStack)
+  :: (MonadError MultipleErrors m, MonadState (CheckState m) m, HasCallStack)
   => SourceAnn
   -> Unknown
   -> m SourceType
@@ -490,7 +491,7 @@ solveUnknownAsFunction ann u = do
   pure uarr
 
 promoteKind
-  :: (MonadError MultipleErrors m, MonadState CheckState m, HasCallStack)
+  :: (MonadError MultipleErrors m, MonadState (CheckState m) m, HasCallStack)
   => Unknown
   -> SourceType
   -> m SourceType
@@ -512,7 +513,7 @@ promoteKind u2 ty = do
       pure ty'
 
 elaborateKind
-  :: (MonadError MultipleErrors m, MonadState CheckState m, HasCallStack)
+  :: (MonadError MultipleErrors m, MonadState (CheckState m) m, HasCallStack)
   => SourceType
   -> m SourceType
 elaborateKind = \case
@@ -521,8 +522,8 @@ elaborateKind = \case
   TypeLevelInt ann _ ->
     pure $ E.tyInt $> ann
   TypeConstructor ann v -> do
-    env <- getEnv
-    case M.lookup v (E.types env) of
+    t <- getType v
+    case t of
       Nothing ->
         throwError . errorMessage' (fst ann) . UnknownName . fmap TyName $ v
       Just (kind, _) ->
@@ -588,7 +589,7 @@ checkEscapedSkolems ty =
     errorMessage' (fst $ getAnnForType ty') $ EscapedSkolem name (Just ss) ty'
 
 kindOfWithUnknowns
-  :: (MonadError MultipleErrors m, MonadState CheckState m, HasCallStack)
+  :: (MonadError MultipleErrors m, MonadState (CheckState m) m, HasCallStack)
   => SourceType
   -> m (([(Unknown, SourceType)], SourceType), SourceType)
 kindOfWithUnknowns ty = do
@@ -598,14 +599,14 @@ kindOfWithUnknowns ty = do
 
 -- | Infer the kind of a single type
 kindOf
-  :: (MonadError MultipleErrors m, MonadState CheckState m, HasCallStack)
+  :: (MonadError MultipleErrors m, MonadState (CheckState m) m, HasCallStack)
   => SourceType
   -> m (SourceType, SourceType)
 kindOf = fmap (first snd) . kindOfWithScopedVars
 
 -- | Infer the kind of a single type, returning the kinds of any scoped type variables
 kindOfWithScopedVars
-  :: (MonadError MultipleErrors m, MonadState CheckState m, HasCallStack)
+  :: (MonadError MultipleErrors m, MonadState (CheckState m) m, HasCallStack)
   => SourceType
   -> m (([(Text, SourceType)], SourceType), SourceType)
 kindOfWithScopedVars ty = do
@@ -628,7 +629,7 @@ type DataDeclarationResult =
   )
 
 kindOfData
-  :: forall m. (MonadError MultipleErrors m, MonadState CheckState m)
+  :: forall m. (MonadError MultipleErrors m, MonadState (CheckState m) m)
   => ModuleName
   -> DataDeclarationArgs
   -> m DataDeclarationResult
@@ -636,7 +637,7 @@ kindOfData moduleName dataDecl =
   head . (^. _2) <$> kindsOfAll moduleName [] [dataDecl] []
 
 inferDataDeclaration
-  :: forall m. (MonadError MultipleErrors m, MonadState CheckState m)
+  :: forall m. (MonadError MultipleErrors m, MonadState (CheckState m) m)
   => ModuleName
   -> DataDeclarationArgs
   -> m [(DataConstructorDeclaration, SourceType)]
@@ -656,7 +657,7 @@ inferDataDeclaration moduleName (ann, tyName, tyArgs, ctors) = do
         fmap (fmap (addVisibility visibility . mkForAll ctorBinders)) . inferDataConstructor tyCtor'
 
 inferDataConstructor
-  :: forall m. (MonadError MultipleErrors m, MonadState CheckState m)
+  :: forall m. (MonadError MultipleErrors m, MonadState (CheckState m) m)
   => SourceType
   -> DataConstructorDeclaration
   -> m (DataConstructorDeclaration, SourceType)
@@ -680,7 +681,7 @@ type TypeDeclarationResult =
   )
 
 kindOfTypeSynonym
-  :: forall m. (MonadError MultipleErrors m, MonadState CheckState m)
+  :: forall m. (MonadError MultipleErrors m, MonadState (CheckState m) m)
   => ModuleName
   -> TypeDeclarationArgs
   -> m TypeDeclarationResult
@@ -688,7 +689,7 @@ kindOfTypeSynonym moduleName typeDecl =
   head . (^. _1) <$> kindsOfAll moduleName [typeDecl] [] []
 
 inferTypeSynonym
-  :: forall m. (MonadError MultipleErrors m, MonadState CheckState m)
+  :: forall m. (MonadError MultipleErrors m, MonadState (CheckState m) m)
   => ModuleName
   -> TypeDeclarationArgs
   -> m SourceType
@@ -797,7 +798,7 @@ type ClassDeclarationResult =
   )
 
 kindOfClass
-  :: forall m. (MonadError MultipleErrors m, MonadState CheckState m)
+  :: forall m. (MonadError MultipleErrors m, MonadState (CheckState m) m)
   => ModuleName
   -> ClassDeclarationArgs
   -> m ClassDeclarationResult
@@ -805,7 +806,7 @@ kindOfClass moduleName clsDecl =
   head . (^. _3) <$> kindsOfAll moduleName [] [] [clsDecl]
 
 inferClassDeclaration
-  :: forall m. (MonadError MultipleErrors m, MonadState CheckState m)
+  :: forall m. (MonadError MultipleErrors m, MonadState (CheckState m) m)
   => ModuleName
   -> ClassDeclarationArgs
   -> m ([(Text, SourceType)], [SourceConstraint], [Declaration])
@@ -821,7 +822,7 @@ inferClassDeclaration moduleName (ann, clsName, clsArgs, superClasses, decls) = 
         <*> for decls checkClassMemberDeclaration
 
 checkClassMemberDeclaration
-  :: forall m. (MonadError MultipleErrors m, MonadState CheckState m)
+  :: forall m. (MonadError MultipleErrors m, MonadState (CheckState m) m)
   => Declaration
   -> m Declaration
 checkClassMemberDeclaration = \case
@@ -830,7 +831,7 @@ checkClassMemberDeclaration = \case
   _ -> internalError "Invalid class member declaration"
 
 applyClassMemberDeclaration
-  :: forall m. (MonadError MultipleErrors m, MonadState CheckState m)
+  :: forall m. (MonadError MultipleErrors m, MonadState (CheckState m) m)
   => Declaration
   -> m Declaration
 applyClassMemberDeclaration = \case
@@ -846,7 +847,7 @@ mapTypeDeclaration f = \case
     other
 
 checkConstraint
-  :: forall m. (MonadError MultipleErrors m, MonadState CheckState m)
+  :: forall m. (MonadError MultipleErrors m, MonadState (CheckState m) m)
   => SourceConstraint
   -> m SourceConstraint
 checkConstraint (Constraint ann clsName kinds args dat) = do
@@ -855,7 +856,7 @@ checkConstraint (Constraint ann clsName kinds args dat) = do
   pure $ Constraint ann clsName kinds' args' dat
 
 applyConstraint
-  :: forall m. (MonadError MultipleErrors m, MonadState CheckState m)
+  :: forall m. (MonadError MultipleErrors m, MonadState (CheckState m) m)
   => SourceConstraint
   -> m SourceConstraint
 applyConstraint (Constraint ann clsName kinds args dat) = do
@@ -878,7 +879,7 @@ type InstanceDeclarationResult =
   )
 
 checkInstanceDeclaration
-  :: forall m. (MonadError MultipleErrors m, MonadState CheckState m)
+  :: forall m. (MonadError MultipleErrors m, MonadState (CheckState m) m)
   => ModuleName
   -> InstanceDeclarationArgs
   -> m InstanceDeclarationResult
@@ -899,7 +900,7 @@ checkInstanceDeclaration moduleName (ann, constraints, clsName, args) = do
     pure (allConstraints, allKinds, allArgs, varKinds)
 
 checkKindDeclaration
-  :: forall m. (MonadSupply m, MonadError MultipleErrors m, MonadState CheckState m)
+  :: forall m. (MonadSupply m, MonadError MultipleErrors m, MonadState (CheckState m) m)
   => ModuleName
   -> SourceType
   -> m SourceType
@@ -934,19 +935,19 @@ checkKindDeclaration _ ty = do
     other -> pure other
 
 existingSignatureOrFreshKind
-  :: forall m. MonadState CheckState m
+  :: forall m. MonadState (CheckState m) m
   => ModuleName
   -> SourceSpan
   -> ProperName 'TypeName
   -> m SourceType
 existingSignatureOrFreshKind moduleName ss name = do
-  env <- getEnv
-  case M.lookup (Qualified (ByModuleName moduleName) name) (E.types env) of
+  t <- getType (Qualified (ByModuleName moduleName) name)
+  case t of
     Nothing -> freshKind ss
     Just (kind, _) -> pure kind
 
 kindsOfAll
-  :: forall m. (MonadError MultipleErrors m, MonadState CheckState m)
+  :: forall m. (MonadError MultipleErrors m, MonadState (CheckState m) m)
   => ModuleName
   -> [TypeDeclarationArgs]
   -> [DataDeclarationArgs]
