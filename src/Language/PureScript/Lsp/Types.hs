@@ -54,7 +54,7 @@ data CompleteItemData = CompleteItemData
   { cidPath :: FilePath,
     cidModuleName :: P.ModuleName,
     cidImportedModuleName :: P.ModuleName,
-    cidImportedDeclaration :: P.Declaration, 
+    cidName :: Text,
     cidWord :: Text
   }
   deriving (Show, Eq, Generic, ToJSON, FromJSON)

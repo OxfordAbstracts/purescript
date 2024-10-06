@@ -23,27 +23,27 @@ import Language.LSP.VFS qualified as VFS
 import Language.PureScript qualified as P
 import Language.PureScript.Compile (compile)
 import Language.PureScript.CoreFn.Expr qualified as CF
+import Language.PureScript.DB (dbFile)
 import Language.PureScript.Docs.Convert.Single (convertComments)
 import Language.PureScript.Errors qualified as Errors
 import Language.PureScript.Glob (PSCGlobs (..), toInputGlobs, warnFileTypeNotFound)
 import Language.PureScript.Ide.Error (prettyPrintTypeSingleLine)
 import Language.PureScript.Lsp.Cache (selectExternModuleNameFromFilePath, selectExternPathFromModuleName)
-import Language.PureScript.Lsp.Cache.Query (getAstDeclarationInModule, getAstDeclarationsStartingWith, getCoreFnExprAt, getEfDeclarationInModule)
+import Language.PureScript.Lsp.Cache.Query (CompletionResult (crModule, crName, crType), getAstDeclarationInModule, getAstDeclarationsStartingWith, getCoreFnExprAt, getEfDeclarationInModule)
 import Language.PureScript.Lsp.Diagnostics (errorMessageDiagnostic, getFileDiagnotics, getMsgUri)
 import Language.PureScript.Lsp.Docs (readDeclarationDocsAsMarkdown, readQualifiedNameDocsAsMarkdown, readQualifiedNameDocsSourceSpan)
 import Language.PureScript.Lsp.Imports (addImportToTextEdit)
 import Language.PureScript.Lsp.Log (debugLsp)
-import Language.PureScript.Lsp.Print (printDeclarationType, printName)
+import Language.PureScript.Lsp.Print (printName)
 import Language.PureScript.Lsp.Rebuild (codegenTargets, rebuildFile)
 import Language.PureScript.Lsp.Types (CompleteItemData (CompleteItemData), LspConfig (confGlobs, confOutputPath), LspEnvironment (lspConfig, lspDbConnection), decodeCompleteItemData)
-import Language.PureScript.Lsp.Util (declToCompletionItemKind, efDeclSourceSpan, efDeclSourceType, getNamesAtPosition, getWordAt, lookupTypeInEnv, sourcePosToPosition)
+import Language.PureScript.Lsp.Util (efDeclSourceSpan, efDeclSourceType, getNamesAtPosition, getWordAt, lookupTypeInEnv, sourcePosToPosition)
 import Language.PureScript.Make.Index (initDb)
 import Language.PureScript.Names (disqualify, runIdent)
 import Protolude hiding (to)
 import System.Directory (createDirectoryIfMissing, listDirectory, removePathForcibly)
 import System.FilePath ((</>))
 import System.IO.UTF8 (readUTF8FilesT)
-import Language.PureScript.DB (dbFile)
 
 type HandlerM config = ReaderT LspEnvironment (Server.LspT config IO)
 
@@ -270,47 +270,49 @@ handlers =
                 mNameMb <- selectExternModuleNameFromFilePath filePath
                 debugLsp $ "Module name: " <> show mNameMb
                 forLsp mNameMb \mName -> do
-                  decls <- getAstDeclarationsStartingWith mName word
+                  let limit = 50
+                  decls <- getAstDeclarationsStartingWith limit 0 mName word
                   debugLsp $ "Found decls: " <> show (length decls)
                   res $
                     Right $
-                      Types.InL $
-                        decls <&> \(declModule, decl) ->
-                          let label = foldMap printName (P.declName decl)
-                           in Types.CompletionItem
-                                { _label = label,
-                                  _labelDetails =
-                                    Just $
-                                      Types.CompletionItemLabelDetails
-                                        (Just $ " " <> printDeclarationType decl)
-                                        (Just $ " " <> P.runModuleName declModule),
-                                  _kind = declToCompletionItemKind decl,
-                                  _tags = Nothing,
-                                  _detail = Nothing,
-                                  _documentation = Nothing,
-                                  _deprecated = Nothing, --  Maybe Bool
-                                  _preselect = Nothing, --  Maybe Bool
-                                  _sortText = Nothing, --  Maybe Text
-                                  _filterText = Nothing, --  Maybe Text
-                                  _insertText = Nothing, --  Maybe Text
-                                  _insertTextFormat = Nothing, --  Maybe Types.InsertTextFormat
-                                  _insertTextMode = Nothing, --  Maybe Types.InsertTextMode
-                                  _textEdit = Nothing, --  Maybe
-                                  --                (Types.TextEdit Types.|? Types.InsertReplaceEdit)
-                                  _textEditText = Nothing, --  Maybe Text
-                                  _additionalTextEdits = Nothing, --  Maybe [Types.TextEdit]
-                                  _commitCharacters = Nothing, --  Maybe [Text]
-                                  _command = Nothing, --  Maybe Types.Command
-                                  _data_ = Just $ A.toJSON $ Just $ CompleteItemData filePath mName declModule decl word
-                                },
+                      Types.InR $
+                        Types.InL $
+                          Types.CompletionList (length decls >= limit) Nothing $
+                            decls <&> \cr ->
+                              let label = crName cr
+                               in Types.CompletionItem
+                                    { _label = label,
+                                      _labelDetails =
+                                        Just $
+                                          Types.CompletionItemLabelDetails
+                                            (Just $ " " <> crType cr)
+                                            (Just $ " " <> P.runModuleName (crModule cr)),
+                                      _kind = Nothing, --  Maybe Types.CompletionItemKind TODO: add kind
+                                      _tags = Nothing,
+                                      _detail = Nothing,
+                                      _documentation = Nothing,
+                                      _deprecated = Nothing, --  Maybe Bool
+                                      _preselect = Nothing, --  Maybe Bool
+                                      _sortText = Nothing, --  Maybe Text
+                                      _filterText = Nothing, --  Maybe Text
+                                      _insertText = Nothing, --  Maybe Text
+                                      _insertTextFormat = Nothing, --  Maybe Types.InsertTextFormat
+                                      _insertTextMode = Nothing, --  Maybe Types.InsertTextMode
+                                      _textEdit = Nothing, --  Maybe
+                                      --                (Types.TextEdit Types.|? Types.InsertReplaceEdit)
+                                      _textEditText = Nothing, --  Maybe Text
+                                      _additionalTextEdits = Nothing, --  Maybe [Types.TextEdit]
+                                      _commitCharacters = Nothing, --  Maybe [Text]
+                                      _command = Nothing, --  Maybe Types.Command
+                                      _data_ = Just $ A.toJSON $ Just $ CompleteItemData filePath mName (crModule cr) label word
+                                    },
       Server.requestHandler Message.SMethod_CompletionItemResolve $ \req res -> do
         debugLsp "SMethod_CompletionItemResolve"
         let completionItem = req ^. LSP.params
             result = completionItem ^. LSP.data_ & decodeCompleteItemData
 
         case result of
-          A.Success (Just cid@(CompleteItemData _filePath _mName declModule decl _)) -> do
-            let label = foldMap printName (P.declName decl)
+          A.Success (Just cid@(CompleteItemData _filePath _mName declModule label _)) -> do
             docsMb <- readDeclarationDocsAsMarkdown declModule label
             withImports <- addImportToTextEdit completionItem cid
             let addDocs :: Types.CompletionItem -> Types.CompletionItem

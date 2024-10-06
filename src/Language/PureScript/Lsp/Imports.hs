@@ -14,6 +14,7 @@ import Language.PureScript.Lsp.ReadFile (lspReadFile)
 import Language.PureScript.Lsp.Types (CompleteItemData (..), LspEnvironment)
 import Language.PureScript.Names qualified as P
 import Protolude
+import Language.PureScript.Lsp.Cache.Query (getAstDeclarationInModule)
 
 addImportToTextEdit :: (MonadIO m, MonadReader LspEnvironment m, MonadThrow m) => CompletionItem -> CompleteItemData -> m CompletionItem
 addImportToTextEdit completionItem completeItemData = do
@@ -21,16 +22,22 @@ addImportToTextEdit completionItem completeItemData = do
   pure $ set LSP.additionalTextEdits importEdits completionItem
 
 getImportEdits :: (MonadIO m, MonadReader LspEnvironment m, MonadThrow m) => CompleteItemData -> m (Maybe [TextEdit])
-getImportEdits (CompleteItemData path moduleName' importedModuleName decl _word) = do
+getImportEdits (CompleteItemData path moduleName' importedModuleName name _word) = do
   parseRes <- parseImportsFromFile path
   case parseRes of
     Left err -> do
       errorLsp $ "In " <> T.pack path <> " failed to parse imports from file: " <> err
       pure Nothing
     Right (_mn, before, imports, _after) -> do
-      addDeclarationToImports moduleName' importedModuleName decl imports
-        <&> pure . importsToTextEdit before
-        & pure
+      declMb <- getAstDeclarationInModule importedModuleName name
+      case declMb of
+        Nothing -> do
+          errorLsp $ "In " <> T.pack path <> " failed to get declaration from module: " <> name
+          pure Nothing
+        Just decl -> do
+          addDeclarationToImports moduleName' importedModuleName decl imports
+            <&> pure . importsToTextEdit before
+            & pure
 
 addDeclarationToImports :: P.ModuleName -> P.ModuleName -> P.Declaration -> [Import] -> Maybe [Import]
 addDeclarationToImports moduleName' importedModuleName decl imports

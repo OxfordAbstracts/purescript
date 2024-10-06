@@ -46,7 +46,7 @@ getDeclarationAtPos pos = find (posInSpan pos . fst . declSourceAnn)
 
 getWordAt :: Rope -> Types.Position -> Text
 getWordAt file Types.Position {..} =
-  if Rope.lengthInLines file < fromIntegral _line
+  if Rope.lengthInLines file < fromIntegral _line || _line < 0
     then ""
     else
       let (_, after) = splitAtLine (fromIntegral _line) file
@@ -56,7 +56,7 @@ getWordAt file Types.Position {..} =
 
 getWordOnLine :: Text -> UInt -> Text
 getWordOnLine line' col =
-  if T.length line' < fromIntegral col
+  if T.length line' < fromIntegral col || col < 0
     then ""
     else
       let start = getPrevWs (fromIntegral col - 1) line'

@@ -24,7 +24,6 @@ import Language.PureScript.Lsp.Types (LspEnvironment)
 import Language.PureScript.Names qualified as P
 import Protolude
 
-
 getCoreFnExprAt :: (MonadIO m, MonadReader LspEnvironment m) => FilePath -> LSP.Position -> m (Maybe (CF.Expr CF.Ann))
 getCoreFnExprAt path (LSP.Position line col) = do
   decls :: [SQL.Only Lazy.ByteString] <-
@@ -69,7 +68,6 @@ getCodeFnBindAt path (LSP.Position line col) = do
       =<< A.decode'
       =<< fromOnly
       <$> listToMaybe decls
-
 
 ------------------------------------------------------------------------------------------------------------------------
 ------------ Externs ---------------------------------------------------------------------------------------------------
@@ -145,17 +143,33 @@ getAstDeclarationsAtSrcPos moduleName' (SourcePos line col) = do
       ]
   pure $ deserialise . fromOnly <$> decls
 
+getAstDeclarationsStartingWith ::
+  (MonadIO m, MonadReader LspEnvironment m) =>
+  Int ->
+  Int ->
+  P.ModuleName ->
+  Text ->
+  m [CompletionResult]
+getAstDeclarationsStartingWith limit offset moduleName' prefix = do
+  DB.queryNamed
+    "SELECT name, printed_type, module_name FROM ast_declarations \
+    \WHERE (module_name = :module_name OR exported) \
+    \AND name GLOB :prefix \
+    \ORDER BY name ASC \
+    \LIMIT :limit \
+    \OFFSET :offset"
+    [ ":module_name" := P.runModuleName moduleName',
+      ":prefix" := prefix <> "*",
+      ":limit" := limit,
+      ":offset" := offset
+    ]
 
-getAstDeclarationsStartingWith :: (MonadIO m, MonadReader LspEnvironment m) => P.ModuleName -> Text -> m [(P.ModuleName, P.Declaration)]
-getAstDeclarationsStartingWith moduleName' prefix = do
-  decls :: [(Text, Lazy.ByteString )] <-
-    DB.queryNamed
-      "SELECT module_name, value FROM ast_declarations \
-      \WHERE (module_name = :module_name OR exported) \
-      \AND name GLOB :prefix \
-      \ORDER BY name ASC \
-      \LIMIT 50"
-      [ ":module_name" := P.runModuleName moduleName',
-        ":prefix" := prefix <> "*"
-      ]
-  pure $ bimap P.ModuleName deserialise <$> decls
+data CompletionResult = CompletionResult
+  { crName :: Text,
+    crType :: Text,
+    crModule :: P.ModuleName
+  }
+  deriving (Show, Generic)
+
+instance SQL.FromRow CompletionResult where
+  fromRow = CompletionResult <$> SQL.field <*> SQL.field <*> (P.ModuleName <$> SQL.field)
