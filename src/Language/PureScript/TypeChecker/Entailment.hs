@@ -113,7 +113,7 @@ combineContexts = M.unionWith (M.unionWith (M.unionWith (<>)))
 -- | Replace type class dictionary placeholders with inferred type class dictionaries
 replaceTypeClassDictionaries
   :: forall m
-   . (MonadState (CheckState m) m, MonadError MultipleErrors m, MonadWriter MultipleErrors m, MonadSupply m)
+   . (MonadState CheckState m, MonadError MultipleErrors m, MonadWriter MultipleErrors m, MonadSupply m)
   => Bool
   -> Expr
   -> m (Expr, [(Ident, InstanceContext, SourceConstraint)])
@@ -181,7 +181,7 @@ instance Monoid t => Monoid (Matched t) where
 -- return a type class dictionary reference.
 entails
   :: forall m
-   . (MonadState (CheckState m) m, MonadError MultipleErrors m, MonadWriter MultipleErrors m, MonadSupply m)
+   . (MonadState CheckState m, MonadError MultipleErrors m, MonadWriter MultipleErrors m, MonadSupply m)
   => SolverOptions
   -- ^ Solver options
   -> SourceConstraint
@@ -866,7 +866,7 @@ matches deps TypeClassDictionaryInScope{..} tys =
 -- | Add a dictionary for the constraint to the scope, and dictionaries
 -- for all implied superclass instances.
 newDictionaries
-  :: MonadState (CheckState m) m
+  :: MonadState CheckState m
   => [(Qualified (ProperName 'ClassName), Integer)]
   -> Qualified Ident
   -> SourceConstraint

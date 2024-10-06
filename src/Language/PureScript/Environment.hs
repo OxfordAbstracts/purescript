@@ -1,122 +1,75 @@
 {-# LANGUAGE DeriveAnyClass #-}
-
 module Language.PureScript.Environment where
 
-import Codec.Serialise (Serialise)
-import Codec.Serialise qualified as S
+import Prelude
+
+import GHC.Generics (Generic)
 import Control.DeepSeq (NFData)
 import Control.Monad (unless)
-import Data.Aeson ((.:), (.=))
+import Codec.Serialise (Serialise)
+import Data.Aeson ((.=), (.:))
 import Data.Aeson qualified as A
 import Data.Foldable (find, fold)
 import Data.Functor ((<&>))
 import Data.IntMap qualified as IM
 import Data.IntSet qualified as IS
-import Data.List.NonEmpty qualified as NEL
 import Data.Map qualified as M
-import Data.Maybe (fromMaybe, mapMaybe)
-import Data.Semigroup (First (..))
 import Data.Set qualified as S
+import Data.Maybe (fromMaybe, mapMaybe)
+import Data.Semigroup (First(..))
 import Data.Text (Text)
 import Data.Text qualified as T
-import GHC.Generics (Generic)
+import Data.List.NonEmpty qualified as NEL
+
 import Language.PureScript.AST.SourcePos (nullSourceAnn)
-import Language.PureScript.Constants.Prim qualified as C
 import Language.PureScript.Crash (internalError)
-import Language.PureScript.Names (Ident, ProperName (..), ProperNameType (..), Qualified, QualifiedBy, coerceProperName)
-import Language.PureScript.Roles (Role (..))
+import Language.PureScript.Names (Ident, ProperName(..), ProperNameType(..), Qualified, QualifiedBy, coerceProperName)
+import Language.PureScript.Roles (Role(..))
 import Language.PureScript.TypeClassDictionaries (NamedDict)
-import Language.PureScript.Types (SourceConstraint, SourceType, Type (..), TypeVarVisibility (..), eqType, freeTypeVariables, srcTypeConstructor)
-import Protolude ((&))
-import Prelude
+import Language.PureScript.Types (SourceConstraint, SourceType, Type(..), TypeVarVisibility(..), eqType, srcTypeConstructor, freeTypeVariables)
+import Language.PureScript.Constants.Prim qualified as C
+import Codec.Serialise qualified as S
 
 -- | The @Environment@ defines all values and types which are currently in scope:
 data Environment = Environment
-  { -- | Values currently in scope
-    names :: M.Map (Qualified Ident) (SourceType, NameKind, NameVisibility),
-    -- | Type names currently in scope
-    types :: M.Map (Qualified (ProperName 'TypeName)) (SourceType, TypeKind),
-    -- | Data constructors currently in scope, along with their associated type
-    -- constructor name, argument types and return type.
-    dataConstructors :: M.Map (Qualified (ProperName 'ConstructorName)) (DataDeclType, ProperName 'TypeName, SourceType, [Ident]),
-    -- | Type synonyms currently in scope
-    typeSynonyms :: M.Map (Qualified (ProperName 'TypeName)) ([(Text, Maybe SourceType)], SourceType),
-    -- | Available type class dictionaries. When looking up 'Nothing' in the
-    -- outer map, this returns the map of type class dictionaries in local
-    -- scope (ie dictionaries brought in by a constrained type).
-    typeClassDictionaries :: M.Map QualifiedBy (M.Map (Qualified (ProperName 'ClassName)) (M.Map (Qualified Ident) (NEL.NonEmpty NamedDict))),
-    -- | Type classes
-    typeClasses :: M.Map (Qualified (ProperName 'ClassName)) TypeClassData
-  }
-  deriving (Show, Generic, S.Serialise)
+  { names :: M.Map (Qualified Ident) (SourceType, NameKind, NameVisibility)
+  -- ^ Values currently in scope
+  , types :: M.Map (Qualified (ProperName 'TypeName)) (SourceType, TypeKind)
+  -- ^ Type names currently in scope
+  , dataConstructors :: M.Map (Qualified (ProperName 'ConstructorName)) (DataDeclType, ProperName 'TypeName, SourceType, [Ident])
+  -- ^ Data constructors currently in scope, along with their associated type
+  -- constructor name, argument types and return type.
+  , typeSynonyms :: M.Map (Qualified (ProperName 'TypeName)) ([(Text, Maybe SourceType)], SourceType)
+  -- ^ Type synonyms currently in scope
+  , typeClassDictionaries :: M.Map QualifiedBy (M.Map (Qualified (ProperName 'ClassName)) (M.Map (Qualified Ident) (NEL.NonEmpty NamedDict)))
+  -- ^ Available type class dictionaries. When looking up 'Nothing' in the
+  -- outer map, this returns the map of type class dictionaries in local
+  -- scope (ie dictionaries brought in by a constrained type).
+  , typeClasses :: M.Map (Qualified (ProperName 'ClassName)) TypeClassData
+  -- ^ Type classes
+  } deriving (Show, Generic, S.Serialise)
 
 instance NFData Environment
 
-data EnvironmentAsync m = EnvironmentAsync
-  -- Functions allow env vars to be lazily loaded
-  { namesAsync :: Qualified Ident -> m (Maybe (SourceType, NameKind, NameVisibility)),
-    typesAsync :: Qualified (ProperName 'TypeName) -> m (Maybe (SourceType, TypeKind)),
-    dataConstructorsAsync :: Qualified (ProperName 'ConstructorName) -> m (Maybe (DataDeclType, ProperName 'TypeName, SourceType, [Ident])),
-    typeSynonymsAsync :: Qualified (ProperName 'TypeName) -> m (Maybe ([(Text, Maybe SourceType)], SourceType)),
-    typeClassDictionariesAsync :: QualifiedBy -> Qualified (ProperName 'ClassName) -> m (Maybe (M.Map (Qualified Ident) (NEL.NonEmpty NamedDict))),
-    typeClassesAsync :: Qualified (ProperName 'ClassName) -> m (Maybe TypeClassData)
+
+data EnvironmentFn m = EnvironmentFn 
+  { namesFn :: Qualified Ident -> m (Maybe (SourceType, NameKind, NameVisibility))
+  , typesFn :: Qualified (ProperName 'TypeName) -> m (Maybe (SourceType, TypeKind))
+  , dataConstructorsFn :: Qualified (ProperName 'ConstructorName) -> m (Maybe (DataDeclType, ProperName 'TypeName, SourceType, [Ident]))
+  , typeSynonymsFn :: Qualified (ProperName 'TypeName) -> m (Maybe ([(Text, Maybe SourceType)], SourceType))
+  , typeClassDictionariesFn :: QualifiedBy -> m (Maybe (M.Map (Qualified (ProperName 'ClassName)) (M.Map (Qualified Ident) (NEL.NonEmpty NamedDict))))
+  , typeClassesFn :: Qualified (ProperName 'ClassName) -> m (Maybe TypeClassData)
   }
 
-nullAsyncEnv :: Applicative m => EnvironmentAsync m
-nullAsyncEnv =
-  EnvironmentAsync
-    { namesAsync = \_ -> pure Nothing,
-      typesAsync = \_ -> pure Nothing,
-      dataConstructorsAsync = \_ -> pure Nothing,
-      typeSynonymsAsync = \_ -> pure Nothing,
-      typeClassDictionariesAsync = \_ _ -> pure Nothing,
-      typeClassesAsync = \_ -> pure Nothing
-    }
-
-data EnvironmentWithAsync m = EnvironmentWithAsync
-  { envSync :: Environment,
-    envAsync :: EnvironmentAsync m
+toEnvFn :: Applicative m => Environment -> EnvironmentFn m
+toEnvFn env = EnvironmentFn
+  { namesFn = \k -> pure $ M.lookup k (names env)
+  , typesFn = \k -> pure $ M.lookup k (types env)
+  , dataConstructorsFn = \k -> pure $ M.lookup k (dataConstructors env)
+  , typeSynonymsFn = \k -> pure $ M.lookup k (typeSynonyms env)
+  , typeClassDictionariesFn = \k -> pure $ M.lookup k (typeClassDictionaries env)
+  , typeClassesFn = \k -> pure $ M.lookup k (typeClasses env)
   }
-
--- fromEnv :: (Ord t, Applicative f) => (Environment -> M.Map t a) -> (EnvironmentFn m -> t -> f (Maybe a)) -> t -> EnvironmentFn m -> f (Maybe a)
-
-fromEnv ::
-  (Ord k, Applicative f) =>
-  (Environment -> M.Map k a) ->
-  (EnvironmentAsync m -> k -> f (Maybe a)) ->
-  k ->
-  EnvironmentWithAsync m ->
-  f (Maybe a)
-fromEnv getMap getFn k env =
-  M.lookup k (getMap $ envSync env)
-    & maybe ((getFn $ envAsync env) k) (pure . Just)
-
-getName :: forall m. (Applicative m) => Qualified Ident -> EnvironmentWithAsync m -> m (Maybe (SourceType, NameKind, NameVisibility))
-getName = fromEnv names namesAsync
-
-getType :: forall m. (Applicative m) => Qualified (ProperName 'TypeName) -> EnvironmentWithAsync m -> m (Maybe (SourceType, TypeKind))
-getType = fromEnv types typesAsync
-
-getDataConstructor :: forall m. (Applicative m) => Qualified (ProperName 'ConstructorName) -> EnvironmentWithAsync m -> m (Maybe (DataDeclType, ProperName 'TypeName, SourceType, [Ident]))
-getDataConstructor = fromEnv dataConstructors dataConstructorsAsync
-
-getTypeSynonym :: forall m. (Applicative m) => Qualified (ProperName 'TypeName) -> EnvironmentWithAsync m -> m (Maybe ([(Text, Maybe SourceType)], SourceType))
-getTypeSynonym = fromEnv typeSynonyms typeSynonymsAsync
-
-getTypeClassDictionary :: forall m. (Applicative m) => QualifiedBy -> Qualified (ProperName 'ClassName) -> EnvironmentWithAsync m -> m (Maybe (M.Map (Qualified Ident) (NEL.NonEmpty NamedDict)))
-getTypeClassDictionary qb name env = case M.lookup qb (typeClassDictionaries $ envSync env) >>= M.lookup name of
-  Nothing -> typeClassDictionariesAsync (envAsync env) qb name
-  Just x -> pure $ Just x
-
-getTypeClass :: forall m. (Applicative m) => Qualified (ProperName 'ClassName) -> EnvironmentWithAsync m -> m (Maybe TypeClassData)
-getTypeClass = fromEnv typeClasses typeClassesAsync
-
-withNullAsyncEnv :: Applicative m => Environment -> EnvironmentWithAsync m
-withNullAsyncEnv env =
-  EnvironmentWithAsync
-    { envSync = env,
-      envAsync = nullAsyncEnv
-    }
 
 -- | Information about a type class
 data TypeClassData = TypeClassData

@@ -20,7 +20,7 @@ import Language.PureScript.AST (ErrorMessageHint(..), Expr(..), pattern NullSour
 import Language.PureScript.Crash (internalError)
 import Language.PureScript.Environment (tyFunction, tyRecord)
 import Language.PureScript.Errors (MultipleErrors, SimpleErrorMessage(..), errorMessage, internalCompilerError)
-import Language.PureScript.TypeChecker.Monad (CheckState, getHints, withErrorMessageHint)
+import Language.PureScript.TypeChecker.Monad (CheckState, getHints, getTypeClassDictionaries, withErrorMessageHint)
 import Language.PureScript.TypeChecker.Skolems (newSkolemConstant, skolemize)
 import Language.PureScript.TypeChecker.Unify (alignRowsWith, freshTypeWithKind, unifyTypes)
 import Language.PureScript.Types (RowListItem(..), SourceType, Type(..), eqType, isREmpty, replaceTypeVars, rowFromList)
@@ -59,7 +59,7 @@ defaultCoercion SNoElaborate = ()
 
 -- | Check that one type subsumes another, rethrowing errors to provide a better error message
 subsumes
-  :: (MonadError MultipleErrors m, MonadState (CheckState m) m)
+  :: (MonadError MultipleErrors m, MonadState CheckState m)
   => SourceType
   -> SourceType
   -> m (Expr -> Expr)
@@ -69,7 +69,7 @@ subsumes ty1 ty2 =
 
 -- | Check that one type subsumes another
 subsumes'
-  :: (MonadError MultipleErrors m, MonadState (CheckState m) m)
+  :: (MonadError MultipleErrors m, MonadState CheckState m)
   => ModeSing mode
   -> SourceType
   -> SourceType
@@ -97,7 +97,7 @@ subsumes' mode ty1 (KindedType _ ty2 _) =
 -- Only check subsumption for constrained types when elaborating.
 -- Otherwise fall back to unification.
 subsumes' SElaborate (ConstrainedType _ con ty1) ty2 = do
-  -- dicts <- getTypeClassDictionaries
+  dicts <- getTypeClassDictionaries
   hints <- getHints
   elaborate <- subsumes' SElaborate ty1 ty2
   let addDicts val = App val (TypeClassDictionary con dicts hints)
