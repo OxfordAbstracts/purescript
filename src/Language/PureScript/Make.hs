@@ -139,7 +139,7 @@ rebuildModuleWithIndex MakeActions {..} exEnv externs m@(Module _ _ moduleName _
               ++ prettyPrintMultipleErrors defaultPPEOptions errs
         Right d -> d
 
-  evalSupplyT nextVar'' $ codegen env' m renamed docs exts
+  evalSupplyT nextVar'' $ codegen env' mod' renamed docs exts
   return exts
 
 -- rebuildModuleUsingDbEnv ::
