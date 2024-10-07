@@ -26,9 +26,8 @@ import Language.PureScript.CoreFn.Expr qualified as CF
 import Language.PureScript.DB (dbFile)
 import Language.PureScript.Docs.Convert.Single (convertComments)
 import Language.PureScript.Errors qualified as Errors
-import Language.PureScript.Glob (PSCGlobs (..), toInputGlobs, warnFileTypeNotFound)
 import Language.PureScript.Ide.Error (prettyPrintTypeSingleLine)
-import Language.PureScript.Lsp.Cache (selectExternModuleNameFromFilePath, selectExternPathFromModuleName)
+import Language.PureScript.Lsp.Cache (selectExternModuleNameFromFilePath, selectExternPathFromModuleName, updateAvailableSrcs)
 import Language.PureScript.Lsp.Cache.Query (CompletionResult (crModule, crName, crType), getAstDeclarationInModule, getAstDeclarationsStartingWith, getCoreFnExprAt, getEfDeclarationInModule)
 import Language.PureScript.Lsp.Diagnostics (errorMessageDiagnostic, getFileDiagnotics, getMsgUri)
 import Language.PureScript.Lsp.Docs (readDeclarationDocsAsMarkdown, readQualifiedNameDocsAsMarkdown, readQualifiedNameDocsSourceSpan)
@@ -36,7 +35,7 @@ import Language.PureScript.Lsp.Imports (addImportToTextEdit)
 import Language.PureScript.Lsp.Log (debugLsp)
 import Language.PureScript.Lsp.Print (printName)
 import Language.PureScript.Lsp.Rebuild (codegenTargets, rebuildFile)
-import Language.PureScript.Lsp.Types (CompleteItemData (CompleteItemData), LspConfig (confGlobs, confOutputPath), LspEnvironment (lspConfig, lspDbConnection), decodeCompleteItemData)
+import Language.PureScript.Lsp.Types (CompleteItemData (CompleteItemData), LspConfig (confOutputPath), LspEnvironment (lspConfig, lspDbConnection), decodeCompleteItemData)
 import Language.PureScript.Lsp.Util (efDeclSourceSpan, efDeclSourceType, getNamesAtPosition, getWordAt, lookupTypeInEnv, sourcePosToPosition)
 import Language.PureScript.Make.Index (initDb)
 import Language.PureScript.Names (disqualify, runIdent)
@@ -50,7 +49,9 @@ type HandlerM config = ReaderT LspEnvironment (Server.LspT config IO)
 handlers :: Server.Handlers (HandlerM ())
 handlers =
   mconcat
-    [ Server.notificationHandler Message.SMethod_Initialized $ \_not -> sendInfoMsg "Lsp initialized",
+    [ Server.notificationHandler Message.SMethod_Initialized $ \_not -> do 
+        void updateAvailableSrcs
+        sendInfoMsg "Lsp initialized",
       Server.notificationHandler Message.SMethod_TextDocumentDidOpen $ \msg -> do
         debugLsp "TextDocumentDidOpen"
         let uri :: Uri
@@ -344,15 +345,7 @@ handlers =
         config <- asks lspConfig
         conn <- asks lspDbConnection
         liftIO $ initDb conn
-        input <-
-          liftIO $
-            toInputGlobs $
-              PSCGlobs
-                { pscInputGlobs = confGlobs config,
-                  pscInputGlobsFromFile = Nothing,
-                  pscExcludeGlobs = [],
-                  pscWarnFileTypeNotFound = warnFileTypeNotFound "lsp server"
-                }
+        input <- updateAvailableSrcs
         moduleFiles <- liftIO $ readUTF8FilesT input
         (result, warnings) <-
           liftIO $
