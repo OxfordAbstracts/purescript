@@ -29,7 +29,7 @@ selectAllExterns = do
   DB.query_ (Query "SELECT value FROM externs") <&> fmap (deserialise . fromOnly)
 
 selectDependenciesMap :: (MonadIO m, MonadReader LspEnvironment m) => P.Module -> m (Map P.ModuleName ExternsFile)
-selectDependenciesMap importedModuleNames = do
+selectDependenciesMap importedModuleNames =
   Map.fromList . fmap (\ef -> (efModuleName ef, ef)) <$> selectDependencies importedModuleNames
 
 selectDependencies :: (MonadIO m, MonadReader LspEnvironment m) => P.Module -> m [ExternsFile]
@@ -51,11 +51,12 @@ selectDependencies (P.Module _ _ _ decls _) = do
           " select imported_module, max(level) as level",
           " from graph group by imported_module",
           "),",
-          "module_names as (select distinct(module_name)",
+          "module_names as (select distinct(module_name), level",
           "from topo join ef_imports on topo.imported_module = ef_imports.module_name ",
           "order by level desc)",
           "select value from externs ",
-          "join module_names on externs.module_name = module_names.module_name;"
+          "join module_names on externs.module_name = module_names.module_name ",
+          "order by level desc, module_names.module_name desc;"
         ]
 
     importedModuleNames =
