@@ -4,6 +4,7 @@
 --
 module Language.PureScript.Sugar.TypeClasses
   ( desugarTypeClasses
+  , desugarTypeClassesUsingMemberMap
   , typeClassMemberName
   , superClassDictionaryNames
   ) where
@@ -49,7 +50,23 @@ desugarTypeClasses
   => [ExternsFile]
   -> Module
   -> m Module
-desugarTypeClasses externs = flip evalStateT initialState . desugarModule
+desugarTypeClasses externs = desugarTypeClassesUsingMemberMap 
+    $ M.fromList (externs >>= \ExternsFile{..} -> mapMaybe (fromExternsDecl efModuleName) efDeclarations)
+  where 
+  fromExternsDecl
+    :: ModuleName
+    -> ExternsDeclaration
+    -> Maybe ((ModuleName, ProperName 'ClassName), TypeClassData)
+  fromExternsDecl mn (EDClass name args members implies deps tcIsEmpty) = Just ((mn, name), typeClass) where
+    typeClass = makeTypeClassData args members implies deps tcIsEmpty
+  fromExternsDecl _ _ = Nothing
+  
+desugarTypeClassesUsingMemberMap
+  :: (MonadSupply m, MonadError MultipleErrors m)
+  => MemberMap
+  -> Module
+  -> m Module
+desugarTypeClassesUsingMemberMap classes = flip evalStateT initialState . desugarModule
   where
   initialState :: MemberMap
   initialState =
@@ -61,16 +78,10 @@ desugarTypeClasses externs = flip evalStateT initialState . desugarModule
       , M.mapKeys (qualify C.M_Prim_Symbol) primSymbolClasses
       , M.mapKeys (qualify C.M_Prim_Int) primIntClasses
       , M.mapKeys (qualify C.M_Prim_TypeError) primTypeErrorClasses
-      , M.fromList (externs >>= \ExternsFile{..} -> mapMaybe (fromExternsDecl efModuleName) efDeclarations)
+      , classes
       ]
 
-  fromExternsDecl
-    :: ModuleName
-    -> ExternsDeclaration
-    -> Maybe ((ModuleName, ProperName 'ClassName), TypeClassData)
-  fromExternsDecl mn (EDClass name args members implies deps tcIsEmpty) = Just ((mn, name), typeClass) where
-    typeClass = makeTypeClassData args members implies deps tcIsEmpty
-  fromExternsDecl _ _ = Nothing
+
 
 desugarModule
   :: (MonadSupply m, MonadError MultipleErrors m)

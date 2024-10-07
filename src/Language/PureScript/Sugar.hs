@@ -1,23 +1,22 @@
 -- |
 -- Desugaring passes
---
 module Language.PureScript.Sugar (desugar, desugarLsp, module S) where
 
 import Control.Category ((>>>))
-import Control.Monad ((>=>))
-import Control.Monad.Error.Class (MonadError)
 import Control.Monad.Supply.Class (MonadSupply)
-import Control.Monad.State.Class (MonadState)
 import Control.Monad.Writer.Class (MonadWriter)
-
+import Data.Map qualified as M
 import Language.PureScript.AST (Module)
+import Language.PureScript.Environment (Environment)
+import Language.PureScript.Environment qualified as P
 import Language.PureScript.Errors (MultipleErrors)
-import Language.PureScript.Externs (ExternsFile)
+import Language.PureScript.Externs (ExternsFile, ExternsFixity, ExternsTypeFixity)
 import Language.PureScript.Linter.Imports (UsedImports)
+import Language.PureScript.Names qualified as P
+import Language.PureScript.Sugar.AdoNotation as S
 import Language.PureScript.Sugar.BindingGroups as S
 import Language.PureScript.Sugar.CaseDeclarations as S
 import Language.PureScript.Sugar.DoNotation as S
-import Language.PureScript.Sugar.AdoNotation as S
 import Language.PureScript.Sugar.LetPattern as S
 import Language.PureScript.Sugar.Names as S
 import Language.PureScript.Sugar.ObjectWildcards as S
@@ -25,6 +24,7 @@ import Language.PureScript.Sugar.Operators as S
 import Language.PureScript.Sugar.TypeClasses as S
 import Language.PureScript.Sugar.TypeClasses.Deriving as S
 import Language.PureScript.Sugar.TypeDeclarations as S
+import Protolude
 
 -- |
 -- The desugaring pipeline proceeds as follows:
@@ -50,15 +50,14 @@ import Language.PureScript.Sugar.TypeDeclarations as S
 --  * Introduce newtypes for type class dictionaries and value declarations for instances
 --
 --  * Group mutually recursive value and data declarations into binding groups.
---
-desugar
-  :: MonadSupply m
-  => MonadError MultipleErrors m
-  => MonadWriter MultipleErrors m
-  => MonadState (Env, UsedImports) m
-  => [ExternsFile]
-  -> Module
-  -> m Module
+desugar ::
+  (MonadSupply m) =>
+  (MonadError MultipleErrors m) =>
+  (MonadWriter MultipleErrors m) =>
+  (MonadState (Env, UsedImports) m) =>
+  [ExternsFile] ->
+  Module ->
+  m Module
 desugar externs =
   desugarSignedLiterals
     >>> desugarObjectConstructors
@@ -74,13 +73,17 @@ desugar externs =
     >=> desugarTypeClasses externs
     >=> createBindingGroupsModule
 
--- TODO: add desugarImports, rebracket and desugarTypeClasses but getting externs and used imports from the DB
-desugarLsp
-  :: MonadSupply m
-  => MonadError MultipleErrors m
-  => Module
-  -> m Module
-desugarLsp  =
+desugarLsp ::
+  (MonadSupply m) =>
+  (MonadWriter MultipleErrors m) =>
+  (MonadError MultipleErrors m) =>
+  (MonadState (Env, UsedImports) m) =>
+  [(P.ModuleName, [ExternsFixity])] ->
+  [(P.ModuleName, [ExternsTypeFixity])] ->
+  Environment ->
+  Module ->
+  m Module
+desugarLsp fixities typeFixities env =
   desugarSignedLiterals
     >>> desugarObjectConstructors
     >=> desugarDoModule
@@ -88,6 +91,22 @@ desugarLsp  =
     >=> desugarLetPatternModule
     >>> desugarCasesModule
     >=> desugarTypeDeclarationsModule
+    >=> desugarImports
+    >=> rebracketFixitiesOnly fixities typeFixities
     >=> checkFixityExports
     >=> deriveInstances
+    >=> desugarTypeClassesUsingMemberMap typeClassData
     >=> createBindingGroupsModule
+  where
+    typeClassData =
+      P.typeClasses env
+        & M.toList
+        & mapMaybe addModuleName
+        & M.fromList
+
+addModuleName ::
+  (P.Qualified (P.ProperName 'P.ClassName), P.TypeClassData) ->
+  Maybe ((P.ModuleName, P.ProperName 'P.ClassName), P.TypeClassData)
+addModuleName = \case
+  (P.Qualified (P.ByModuleName mn) pn, tcd) -> Just ((mn, pn), tcd)
+  _ -> Nothing
