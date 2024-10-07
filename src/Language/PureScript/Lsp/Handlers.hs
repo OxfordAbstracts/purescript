@@ -307,9 +307,7 @@ handlers =
                                       _commitCharacters = Nothing, --  Maybe [Text]
                                       _command = Nothing, --  Maybe Types.Command
                                       _data_ = Just $ A.toJSON $ Just $ CompleteItemData filePath mName (crModule cr) label word
-                                    }
-                  t5 <- getPerfTime
-                  perfLsp (labelTimespec "t5" (diffTimeSpec t4 t5)),
+                                    },
       Server.requestHandler Message.SMethod_CompletionItemResolve $ \req res -> do
         debugLsp "SMethod_CompletionItemResolve"
         let completionItem = req ^. LSP.params
