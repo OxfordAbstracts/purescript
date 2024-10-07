@@ -152,7 +152,9 @@ getAstDeclarationsStartingWith ::
   m [CompletionResult]
 getAstDeclarationsStartingWith limit offset moduleName' prefix = do
   DB.queryNamed
-    "SELECT name, printed_type, module_name FROM ast_declarations \
+    "SELECT ast_declarations.name, ast_declarations.printed_type, ast_declarations.module_name FROM ast_declarations \
+    \INNER JOIN ast_modules on ast_declarations.module_name = ast_modules.name \
+    \INNER JOIN available_srcs on ast_modules.path = available_srcs.path \
     \WHERE (module_name = :module_name OR exported) \
     \AND name GLOB :prefix \
     \ORDER BY name ASC \
