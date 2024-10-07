@@ -4,6 +4,8 @@ import Data.Text qualified as T
 import Data.Time (UTCTime (utctDayTime), defaultTimeLocale, formatTime, getCurrentTime)
 import Language.PureScript.Lsp.Types (LspConfig (confLogLevel), LspEnvironment (lspConfig), LspLogLevel (..))
 import Protolude
+import System.Clock (TimeSpec, getTime, Clock (Monotonic), diffTimeSpec)
+import Language.PureScript.Ide.Logging (displayTimeSpec)
 
 infoLsp :: (MonadIO m, MonadReader LspEnvironment m) => Text -> m ()
 infoLsp = logLsp LogMsgInfo
@@ -34,6 +36,21 @@ logLsp msgLogLevel msg = do
             <> ": "
             <> show msg
         )
+
+logPerfStandard :: (MonadIO m, MonadReader LspEnvironment m) => Text -> m t -> m t
+logPerfStandard label f = logPerf (labelTimespec label) f
+
+logPerf :: (MonadIO m, MonadReader LspEnvironment m) => (TimeSpec -> Text) -> m t -> m t
+logPerf format f = do
+  start <- liftIO (getTime Monotonic)
+  result <- f
+  end <- liftIO (getTime Monotonic)
+  perfLsp (format (diffTimeSpec start end))
+  pure result
+
+
+labelTimespec :: Text -> TimeSpec -> Text
+labelTimespec label duration = label <> ": " <> displayTimeSpec duration
 
 data LogMsgSeverity
   = LogMsgInfo

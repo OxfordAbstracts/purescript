@@ -19,7 +19,8 @@ import Language.PureScript.Externs (ExternsFile (efModuleName))
 import Language.PureScript.Externs qualified as P
 import Language.PureScript.Ide.Rebuild (updateCacheDb)
 import Language.PureScript.Ide.Types (ModuleMap)
-import Language.PureScript.Lsp.Cache (selectDependenciesMap)
+import Language.PureScript.Lsp.Cache (selectDependencies)
+import Language.PureScript.Lsp.Log (logPerfStandard)
 import Language.PureScript.Lsp.ReadFile (lspReadFile)
 import Language.PureScript.Lsp.Types (LspConfig (..), LspEnvironment (lspConfig, lspDbConnection))
 import Language.PureScript.Make (ffiCodegen')
@@ -37,7 +38,7 @@ rebuildFile ::
   ) =>
   FilePath ->
   m (Either ([(FilePath, Text)], P.MultipleErrors) (FilePath, P.MultipleErrors))
-rebuildFile srcPath = do
+rebuildFile srcPath = logPerfStandard ("Rebuild file " <> T.pack srcPath) do
   (fp, input) <-
     case List.stripPrefix "data:" srcPath of
       Just source -> pure ("", T.pack source)
@@ -47,31 +48,30 @@ rebuildFile srcPath = do
       pure $ Left ([(fp, input)], CST.toMultipleErrors fp parseError)
     Right (pwarnings, m) -> do
       let moduleName = P.getModuleName m
-      externsResult <- sortExterns m =<< selectDependenciesMap m
-      case externsResult of
-        Left err -> pure $ Left ([], err)
-        Right externs -> do
-          outputDirectory <- asks (confOutputPath . lspConfig)
-          let filePathMap = M.singleton moduleName (Left P.RebuildAlways)
-          let pureRebuild = fp == ""
-          let modulePath = if pureRebuild then fp else srcPath
-          foreigns <- P.inferForeignModules (M.singleton moduleName (Right modulePath))
-          conn <- asks lspDbConnection
-          let makeEnv =
-                P.buildMakeActions outputDirectory filePathMap foreigns False
-                  & (if pureRebuild then enableForeignCheck foreigns codegenTargets . shushCodegen else identity)
-                  & shushProgress
-                  & addAllIndexing conn
-          (result, warnings) <- liftIO $ P.runMake (P.defaultOptions {P.optionsCodegenTargets = codegenTargets}) do
-            newExterns <- P.rebuildModule makeEnv externs m
-            unless pureRebuild $
-              updateCacheDb codegenTargets outputDirectory srcPath Nothing moduleName
-            pure newExterns
-          case result of
-            Left errors ->
-              pure (Left ([(fp, input)], errors))
-            Right newExterns -> do
-              pure $ Right (fp, CST.toMultipleWarnings fp pwarnings <> warnings)
+      !externs <- logPerfStandard "Select depenencies" $ selectDependencies m
+      outputDirectory <- asks (confOutputPath . lspConfig)
+      let filePathMap = M.singleton moduleName (Left P.RebuildAlways)
+      let pureRebuild = fp == ""
+      let modulePath = if pureRebuild then fp else srcPath
+      foreigns <- P.inferForeignModules (M.singleton moduleName (Right modulePath))
+      conn <- asks lspDbConnection
+      let makeEnv =
+            P.buildMakeActions outputDirectory filePathMap foreigns False
+              & (if pureRebuild then enableForeignCheck foreigns codegenTargets . shushCodegen else identity)
+              & shushProgress
+              & addAllIndexing conn
+      (!result, warnings) <- logPerfStandard ("Rebuild Module " <> T.pack srcPath) $ fmap force $ liftIO $ do
+        P.runMake (P.defaultOptions {P.optionsCodegenTargets = codegenTargets}) do
+          newExterns <- P.rebuildModule makeEnv externs m
+          unless pureRebuild $
+            updateCacheDb codegenTargets outputDirectory srcPath Nothing moduleName
+          pure newExterns
+      case result of
+        Left errors ->
+          pure (Left ([(fp, input)], errors))
+        Right newExterns -> do
+          pure $ Right (fp, CST.toMultipleWarnings fp pwarnings <> warnings)
+
 codegenTargets :: Set P.CodegenTarget
 codegenTargets = Set.fromList [P.JS, P.CoreFn, P.Docs]
 
@@ -101,10 +101,10 @@ enableForeignCheck foreigns codegenTargets' ma =
     }
 
 -- | Returns a topologically sorted list of dependent ExternsFiles for the given
--- module. Throws an error if there is a cyclic dependency within the
+-- module. Returns an error if there is a cyclic dependency within the
 -- ExternsFiles
 sortExterns ::
-  (MonadThrow m) =>
+  (Monad m) =>
   P.Module ->
   ModuleMap P.ExternsFile ->
   m (Either MultipleErrors [P.ExternsFile])
