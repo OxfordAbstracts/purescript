@@ -19,7 +19,16 @@ import Language.PureScript.Lsp.Types (LspEnvironment)
 import Protolude hiding (to)
 import Text.PrettyPrint.Boxes (render)
 
-getFileDiagnotics :: (LSP.HasParams s a1, LSP.HasTextDocument a1 a2, LSP.HasUri a2 Uri, MonadIO m, MonadThrow m, MonadReader LspEnvironment m) => s -> m ([ErrorMessage], [Diagnostic])
+getFileDiagnotics ::
+  ( LSP.HasParams s a1,
+    LSP.HasTextDocument a1 a2,
+    LSP.HasUri a2 Uri,
+    MonadIO m,
+    MonadThrow m,
+    MonadReader LspEnvironment m
+  ) =>
+  s ->
+  m ([ErrorMessage], [Diagnostic])
 getFileDiagnotics msg = do
   let uri :: Uri
       uri = getMsgUri msg

@@ -1,3 +1,4 @@
+{-# LANGUAGE ExplicitNamespaces #-}
 {-# LANGUAGE PolyKinds #-}
 {-# OPTIONS_GHC -Wno-unticked-promoted-constructors #-}
 
@@ -10,6 +11,8 @@ import Language.LSP.Protocol.Types qualified as Types
 import Language.LSP.Server as LSP.Server
 import Language.LSP.Server qualified as Server
 import Language.PureScript.Lsp.Handlers (HandlerM, handlers)
+import Language.PureScript.Lsp.Log (debugLsp)
+import Language.PureScript.Lsp.State (requestIsCancelled)
 import Language.PureScript.Lsp.Types (LspEnvironment)
 import Protolude hiding (to)
 
@@ -42,7 +45,7 @@ syncOptions =
       Types._change = Just Types.TextDocumentSyncKind_Incremental,
       Types._willSave = Just False,
       Types._willSaveWaitUntil = Just False,
-      Types._save = Just $ Types.InR $ Types.SaveOptions $ Just False
+      Types._save = Just $ Types.InL True
     }
 
 lspOptions :: Server.Options
@@ -71,16 +74,31 @@ reactor inp = do
 -- | Check if we have a handler, and if we create a haskell-lsp handler to pass it as
 -- input into the reactor
 lspHandlers :: LspEnvironment -> TChan ReactorInput -> Handlers (HandlerM ())
-lspHandlers lspEnv rin = mapHandlers goReq goNot handlers
+lspHandlers lspEnv rin = mapHandlers goReq goNotification handlers
   where
     goReq :: forall (a :: LSP.Method LSP.ClientToServer LSP.Request). LSP.Server.Handler (HandlerM ()) a -> LSP.Server.Handler (HandlerM ()) a
-    goReq f msg k = do
-      env <- getLspEnv
-      liftIO $ atomically $ writeTChan rin $ ReactorAction (runHandler env $ f msg k)
+    goReq f msg@(LSP.TRequestMessage _ id method _) k = do
+      let reqId = case id of
+            LSP.IdInt i -> Left i
+            LSP.IdString t -> Right t
+      debugLsp $ "Request: " <> show method <> " " <> show reqId
+      writeToChannel $
+        ifM
+          (requestIsCancelled reqId)
+          (k $ Left $ LSP.TResponseError (Types.InL Types.LSPErrorCodes_RequestCancelled) "Cancelled" Nothing)
+          (writeToChannel (f msg k))
 
-    goNot :: forall (a :: LSP.Method LSP.ClientToServer LSP.Notification). LSP.Server.Handler (HandlerM ()) a -> LSP.Server.Handler (HandlerM ()) a
-    goNot f msg = do
+
+    goNotification :: forall (a :: LSP.Method LSP.ClientToServer LSP.Notification). LSP.Server.Handler (HandlerM ()) a -> LSP.Server.Handler (HandlerM ()) a
+    goNotification f msg@(LSP.TNotificationMessage _ LSP.SMethod_CancelRequest _) = do
+      f msg -- cancel requests skip the queue
+    goNotification f msg = do
+      writeToChannel (f msg)
+
+    writeToChannel = writeToChannelWith writeTChan
+
+    writeToChannelWith fn a = do
       env <- getLspEnv
-      liftIO $ atomically $ writeTChan rin $ ReactorAction (runHandler env $ f msg)
+      liftIO $ atomically $ fn rin $ ReactorAction (runHandler env a)
 
     runHandler env a = runLspT env $ runReaderT a lspEnv

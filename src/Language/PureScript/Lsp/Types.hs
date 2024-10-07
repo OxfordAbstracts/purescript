@@ -27,7 +27,7 @@ mkEnv :: LspConfig -> IO LspEnvironment
 mkEnv conf = do
   createDirectoryIfMissing True $ confOutputPath conf
   connection <- mkConnection $ confOutputPath conf
-  st <- newTVarIO (LspState Nothing)
+  st <- newTVarIO (LspState Nothing mempty)
   pure $ LspEnvironment conf connection st
 
 data LspConfig = LspConfig
@@ -40,6 +40,7 @@ data LspConfig = LspConfig
 
 data LspState = LspState
   { currentFile :: Maybe CurrentFile
+  , cancelledRequests :: Set (Either Int32 Text)
   }
   deriving (Show)
 

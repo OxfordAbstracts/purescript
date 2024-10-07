@@ -32,7 +32,7 @@ import Language.PureScript.Lsp.Cache.Query (CompletionResult (crModule, crName, 
 import Language.PureScript.Lsp.Diagnostics (errorMessageDiagnostic, getFileDiagnotics, getMsgUri)
 import Language.PureScript.Lsp.Docs (readDeclarationDocsAsMarkdown, readQualifiedNameDocsAsMarkdown, readQualifiedNameDocsSourceSpan)
 import Language.PureScript.Lsp.Imports (addImportToTextEdit)
-import Language.PureScript.Lsp.Log (debugLsp, getPerfTime, labelTimespec, logPerfStandard, perfLsp)
+import Language.PureScript.Lsp.Log (debugLsp, logPerfStandard)
 import Language.PureScript.Lsp.Print (printName)
 import Language.PureScript.Lsp.Rebuild (codegenTargets, rebuildFile)
 import Language.PureScript.Lsp.Types (CompleteItemData (CompleteItemData), LspConfig (confOutputPath), LspEnvironment (lspConfig, lspDbConnection), decodeCompleteItemData)
@@ -40,10 +40,10 @@ import Language.PureScript.Lsp.Util (efDeclSourceSpan, efDeclSourceType, getName
 import Language.PureScript.Make.Index (initDb)
 import Language.PureScript.Names (disqualify, runIdent)
 import Protolude hiding (to)
-import System.Clock (diffTimeSpec)
 import System.Directory (createDirectoryIfMissing, listDirectory, removePathForcibly)
 import System.FilePath ((</>))
 import System.IO.UTF8 (readUTF8FilesT)
+import Language.PureScript.Lsp.State (cancelRequest)
 
 type HandlerM config = ReaderT LspEnvironment (Server.LspT config IO)
 
@@ -60,7 +60,7 @@ handlers =
             fileName = Types.uriToFilePath uri
 
         traverse_ rebuildFile fileName,
-      Server.notificationHandler Message.SMethod_TextDocumentDidChange $ \_msg -> debugLsp "TextDocumentDidChange",
+      Server.notificationHandler Message.SMethod_TextDocumentDidChange $ \_msg -> debugLsp "SMethod_TextDocumentDidChange",
       Server.notificationHandler Message.SMethod_TextDocumentDidSave $ \msg -> do
         debugLsp "SMethod_TextDocumentDidSave"
         let uri :: Uri
@@ -71,6 +71,10 @@ handlers =
         cfg <- getConfig
         debugLsp $ "Config changed: " <> show cfg,
       Server.notificationHandler Message.SMethod_SetTrace $ \_msg -> debugLsp "SMethod_SetTrace",
+      Server.notificationHandler Message.SMethod_CancelRequest $ \req -> do
+        let reqId = req ^. LSP.params . LSP.id
+        debugLsp $ "SMethod_CancelRequest " <> show reqId
+        cancelRequest reqId,
       Server.requestHandler Message.SMethod_TextDocumentDiagnostic $ \req res -> do
         debugLsp "SMethod_TextDocumentDiagnostic"
         (_errs, diagnostics) <- getFileDiagnotics req
@@ -79,6 +83,7 @@ handlers =
             Types.DocumentDiagnosticReport $
               Types.InL $
                 Types.RelatedFullDocumentDiagnosticReport Types.AString Nothing diagnostics Nothing,
+
       Server.requestHandler Message.SMethod_TextDocumentCodeAction $ \req res -> do
         let params = req ^. LSP.params
             diags = params ^. LSP.context . LSP.diagnostics
@@ -107,6 +112,7 @@ handlers =
                         Nothing
                         Nothing,
       Server.requestHandler Message.SMethod_TextDocumentHover $ \req res -> do
+        
         debugLsp "SMethod_TextDocumentHover"
         let Types.HoverParams docIdent pos _workDone = req ^. LSP.params
             filePathMb = Types.uriToFilePath $ docIdent ^. LSP.uri
