@@ -61,12 +61,12 @@ addAllIndexing conn ma =
 addAstModuleIndexing :: (MonadIO m) => Connection -> P.MakeActions m -> P.MakeActions m
 addAstModuleIndexing conn ma =
   ma
-    { P.codegen = \env astM m docs ext -> lift (indexAstModule conn astM) <* P.codegen ma env astM m docs ext
+    { P.codegen = \env astM m docs ext -> lift (indexAstModule conn astM ext) <* P.codegen ma env astM m docs ext
     }
 
-indexAstModule :: (MonadIO m) => Connection -> P.Module -> m ()
-indexAstModule conn m@(P.Module _ss _comments name decls exportRefs) = liftIO do
-  path <- makeAbsolute $ P.spanName (P.getModuleSourceSpan m)
+indexAstModule :: (MonadIO m) => Connection -> P.Module -> ExternsFile -> m ()
+indexAstModule conn m@(P.Module _ss _comments name decls exportRefs) extern = liftIO do
+  path <- makeAbsolute externPath
   SQL.executeNamed
     conn
     (SQL.Query "INSERT OR REPLACE INTO ast_modules (module_name, path) VALUES (:module_name, :path)")
@@ -97,6 +97,8 @@ indexAstModule conn m@(P.Module _ss _comments name decls exportRefs) = liftIO do
         ":cols" := P.sourcePosColumn end - P.sourcePosColumn start,
         ":exported" := Set.member decl exports
       ]
+  where
+    externPath = P.spanName (P.efSourceSpan extern)
 
 insertDeclExprs :: (MonadIO m) => Connection -> P.ModuleName -> P.Declaration -> m ()
 insertDeclExprs conn name decl = liftIO $ void $ handleDecl decl
@@ -313,7 +315,7 @@ insertEfExport conn moduleName' dr = do
 
 initDb :: Connection -> IO ()
 initDb conn = do
-  dropTables conn
+  -- dropTables conn
   SQL.execute_ conn "pragma journal_mode=wal;"
   SQL.execute_ conn "pragma foreign_keys = ON;"
   SQL.execute_ conn "CREATE TABLE IF NOT EXISTS ast_modules (module_name TEXT, path TEXT, UNIQUE(module_name) on conflict replace, UNIQUE(path) on conflict replace)"

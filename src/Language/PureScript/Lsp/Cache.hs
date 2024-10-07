@@ -16,8 +16,9 @@ import Language.PureScript.Lsp.DB qualified as DB
 import Language.PureScript.Lsp.Types (LspConfig (..), LspEnvironment (lspConfig))
 import Language.PureScript.Names qualified as P
 import Protolude
-import System.Directory (doesDirectoryExist, doesFileExist, getDirectoryContents, makeAbsolute)
+import System.Directory (doesDirectoryExist, doesFileExist, getDirectoryContents, makeAbsolute, canonicalizePath)
 import System.FilePath (normalise, (</>))
+import Language.PureScript.Lsp.Log (logPerfStandard)
 
 -- import Language.PureScript.Lsp.Prim (primExterns)
 
@@ -104,7 +105,7 @@ findAvailableExterns = do
           doesFileExist file
 
 updateAvailableSrcs :: (MonadIO m, MonadReader LspEnvironment m) => m [FilePath]
-updateAvailableSrcs = do
+updateAvailableSrcs = logPerfStandard "updateAvailableSrcs" $ do
   DB.execute_ "CREATE TABLE IF NOT EXISTS available_srcs (path TEXT PRIMARY KEY NOT NULL, UNIQUE(path) on conflict replace)"
   DB.execute_ (Query "DELETE FROM available_srcs")
   config <- asks lspConfig
@@ -117,8 +118,11 @@ updateAvailableSrcs = do
             pscExcludeGlobs = [],
             pscWarnFileTypeNotFound = warnFileTypeNotFound "lsp server"
           }
-  forM_ srcs $ \src -> do
+  for_ srcs $ \src -> do
+    canonPath <- liftIO $ canonicalizePath src
+    DB.executeNamed (Query "INSERT INTO available_srcs (path) VALUES (:path)") [":path" := canonPath]
     absPath <- liftIO $ makeAbsolute src
-    DB.executeNamed (Query "INSERT INTO available_srcs (path) VALUES (:path)") [":path" := absPath]
+    when (absPath /= canonPath) $
+      DB.executeNamed (Query "INSERT INTO available_srcs (path) VALUES (:path)") [":path" := absPath]
 
   pure srcs

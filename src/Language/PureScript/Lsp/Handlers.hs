@@ -32,7 +32,7 @@ import Language.PureScript.Lsp.Cache.Query (CompletionResult (crModule, crName, 
 import Language.PureScript.Lsp.Diagnostics (errorMessageDiagnostic, getFileDiagnotics, getMsgUri)
 import Language.PureScript.Lsp.Docs (readDeclarationDocsAsMarkdown, readQualifiedNameDocsAsMarkdown, readQualifiedNameDocsSourceSpan)
 import Language.PureScript.Lsp.Imports (addImportToTextEdit)
-import Language.PureScript.Lsp.Log (debugLsp)
+import Language.PureScript.Lsp.Log (debugLsp, getPerfTime, labelTimespec, logPerfStandard, perfLsp)
 import Language.PureScript.Lsp.Print (printName)
 import Language.PureScript.Lsp.Rebuild (codegenTargets, rebuildFile)
 import Language.PureScript.Lsp.Types (CompleteItemData (CompleteItemData), LspConfig (confOutputPath), LspEnvironment (lspConfig, lspDbConnection), decodeCompleteItemData)
@@ -40,6 +40,7 @@ import Language.PureScript.Lsp.Util (efDeclSourceSpan, efDeclSourceType, getName
 import Language.PureScript.Make.Index (initDb)
 import Language.PureScript.Names (disqualify, runIdent)
 import Protolude hiding (to)
+import System.Clock (diffTimeSpec)
 import System.Directory (createDirectoryIfMissing, listDirectory, removePathForcibly)
 import System.FilePath ((</>))
 import System.IO.UTF8 (readUTF8FilesT)
@@ -49,7 +50,7 @@ type HandlerM config = ReaderT LspEnvironment (Server.LspT config IO)
 handlers :: Server.Handlers (HandlerM ())
 handlers =
   mconcat
-    [ Server.notificationHandler Message.SMethod_Initialized $ \_not -> do 
+    [ Server.notificationHandler Message.SMethod_Initialized $ \_not -> do
         void updateAvailableSrcs
         sendInfoMsg "Lsp initialized",
       Server.notificationHandler Message.SMethod_TextDocumentDidOpen $ \msg -> do
@@ -242,7 +243,7 @@ handlers =
                         P.BySourcePos srcPos ->
                           locationRes filePath (Types.Range (sourcePosToPosition srcPos) (sourcePosToPosition srcPos))
                     _ -> nullRes,
-      Server.requestHandler Message.SMethod_TextDocumentCompletion $ \req res -> do
+      Server.requestHandler Message.SMethod_TextDocumentCompletion $ \req res -> logPerfStandard "SMethod_TextDocumentCompletion" do
         debugLsp "SMethod_TextDocumentCompletion"
         let Types.CompletionParams docIdent pos _prog _prog' _completionCtx = req ^. LSP.params
             filePathMb = Types.uriToFilePath $ docIdent ^. LSP.uri
@@ -272,7 +273,7 @@ handlers =
                 debugLsp $ "Module name: " <> show mNameMb
                 forLsp mNameMb \mName -> do
                   let limit = 50
-                  decls <- getAstDeclarationsStartingWith limit 0 mName word
+                  decls <- logPerfStandard "getAstDeclarationsStartingWith" $ getAstDeclarationsStartingWith limit 0 mName word
                   debugLsp $ "Found decls: " <> show (length decls)
                   res $
                     Right $
@@ -287,7 +288,7 @@ handlers =
                                         Just $
                                           Types.CompletionItemLabelDetails
                                             (Just $ " " <> crType cr)
-                                            (Just $ " " <> P.runModuleName (crModule cr)),
+                                            (Just $ P.runModuleName (crModule cr)),
                                       _kind = Nothing, --  Maybe Types.CompletionItemKind TODO: add kind
                                       _tags = Nothing,
                                       _detail = Nothing,
@@ -306,7 +307,9 @@ handlers =
                                       _commitCharacters = Nothing, --  Maybe [Text]
                                       _command = Nothing, --  Maybe Types.Command
                                       _data_ = Just $ A.toJSON $ Just $ CompleteItemData filePath mName (crModule cr) label word
-                                    },
+                                    }
+                  t5 <- getPerfTime
+                  perfLsp (labelTimespec "t5" (diffTimeSpec t4 t5)),
       Server.requestHandler Message.SMethod_CompletionItemResolve $ \req res -> do
         debugLsp "SMethod_CompletionItemResolve"
         let completionItem = req ^. LSP.params

@@ -42,12 +42,14 @@ logPerfStandard label f = logPerf (labelTimespec label) f
 
 logPerf :: (MonadIO m, MonadReader LspEnvironment m) => (TimeSpec -> Text) -> m t -> m t
 logPerf format f = do
-  start <- liftIO (getTime Monotonic)
+  start <- getPerfTime
   result <- f
-  end <- liftIO (getTime Monotonic)
+  end <- getPerfTime
   perfLsp (format (diffTimeSpec start end))
   pure result
 
+getPerfTime :: MonadIO m => m TimeSpec
+getPerfTime = liftIO (getTime Monotonic)
 
 labelTimespec :: Text -> TimeSpec -> Text
 labelTimespec label duration = label <> ": " <> displayTimeSpec duration
