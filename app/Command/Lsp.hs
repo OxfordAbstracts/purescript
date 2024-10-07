@@ -32,7 +32,7 @@ command = Opts.helper <*> subcommands
         ]
 
     server :: ServerOptions -> IO ()
-    server opts'@(ServerOptions dir globs _globsFromFile _globsExcluded outputPath logLevel) = do
+    server opts'@(ServerOptions dir globs globsFromFile _globsExcluded outputPath logLevel) = do
       when
         (logLevel == LogDebug || logLevel == LogAll)
         (hPutStrLn stderr ("Parsed Options:" :: Text) *> hPutStrLn stderr (show opts' :: Text))
@@ -41,6 +41,7 @@ command = Opts.helper <*> subcommands
             LspConfig
               { confOutputPath = outputPath,
                 confGlobs = globs,
+                confInputSrcFromFile = globsFromFile,
                 confLogLevel = logLevel
               }
       env <- mkEnv conf

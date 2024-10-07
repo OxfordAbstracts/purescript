@@ -33,6 +33,7 @@ mkEnv conf = do
 data LspConfig = LspConfig
   { confOutputPath :: FilePath,
     confGlobs :: [FilePath],
+    confInputSrcFromFile :: Maybe FilePath,
     confLogLevel :: LspLogLevel
   }
   deriving (Show)

@@ -10,6 +10,7 @@ import Database.SQLite.Simple
 import Language.PureScript.AST.Declarations as P
 import Language.PureScript.Externs (ExternsFile (efModuleName))
 import Language.PureScript.Externs qualified as P
+import Language.PureScript.Glob (PSCGlobs (..), toInputGlobs, warnFileTypeNotFound)
 import Language.PureScript.Ide.Error (IdeError (GeneralError))
 import Language.PureScript.Lsp.DB qualified as DB
 import Language.PureScript.Lsp.Types (LspConfig (..), LspEnvironment (lspConfig))
@@ -101,3 +102,23 @@ findAvailableExterns = do
       | otherwise = do
           let file = oDir </> d </> P.externsFileName
           doesFileExist file
+
+updateAvailableSrcs :: (MonadIO m, MonadReader LspEnvironment m) => m [FilePath]
+updateAvailableSrcs = do
+  DB.execute_ "CREATE TABLE IF NOT EXISTS available_srcs (path TEXT PRIMARY KEY NOT NULL, UNIQUE(path) on conflict replace)"
+  DB.execute_ (Query "DELETE FROM available_srcs")
+  config <- asks lspConfig
+  srcs <-
+    liftIO $
+      toInputGlobs $
+        PSCGlobs
+          { pscInputGlobs = confGlobs config,
+            pscInputGlobsFromFile = confInputSrcFromFile config,
+            pscExcludeGlobs = [],
+            pscWarnFileTypeNotFound = warnFileTypeNotFound "lsp server"
+          }
+  forM_ srcs $ \src -> do
+    absPath <- liftIO $ makeAbsolute src
+    DB.executeNamed (Query "INSERT INTO available_srcs (path) VALUES (:path)") [":path" := absPath]
+
+  pure srcs
