@@ -38,7 +38,7 @@ import Language.PureScript.Ide.Error (IdeError (GeneralError, RebuildError))
 import Language.PureScript.Ide.Rebuild (updateCacheDb)
 import Language.PureScript.Ide.Types (ModuleMap)
 import Language.PureScript.Ide.Util (ideReadFile)
-import Language.PureScript.Lsp.Print (printEfDeclName, printName, printDeclarationType)
+import Language.PureScript.Lsp.Print (printDeclarationType, printEfDeclName, printName)
 import Language.PureScript.Lsp.Types (LspConfig (..), LspEnvironment (lspConfig))
 import Language.PureScript.Lsp.Util (efDeclCategory, efDeclSourceSpan)
 import Language.PureScript.Make (ffiCodegen')
@@ -55,8 +55,8 @@ addAllIndexing :: (MonadIO m) => Connection -> P.MakeActions m -> P.MakeActions 
 addAllIndexing conn ma =
   addAstModuleIndexing conn $
     -- addEnvIndexing conn $
-      addCoreFnIndexing conn $
-        addExternIndexing conn ma
+    addCoreFnIndexing conn $
+      addExternIndexing conn ma
 
 addAstModuleIndexing :: (MonadIO m) => Connection -> P.MakeActions m -> P.MakeActions m
 addAstModuleIndexing conn ma =
@@ -66,17 +66,24 @@ addAstModuleIndexing conn ma =
 
 indexAstModule :: (MonadIO m) => Connection -> P.Module -> m ()
 indexAstModule conn m@(P.Module _ss _comments name decls exportRefs) = liftIO do
+  path <- makeAbsolute $ P.spanName (P.getModuleSourceSpan m)
+  SQL.executeNamed
+    conn
+    (SQL.Query "INSERT OR REPLACE INTO ast_modules (module_name, path) VALUES (:module_name, :path)")
+    [ ":module_name" := P.runModuleName name,
+      ":path" := path
+    ]
   SQL.execute conn "DELETE FROM ast_declarations WHERE module_name = ?" (SQL.Only $ P.runModuleName name)
   SQL.execute conn "DELETE FROM ast_expressions WHERE module_name = ?" (SQL.Only $ P.runModuleName name)
-  
+
   let exports = Set.fromList $ P.exportedDeclarations m
 
   forM_ decls \decl -> do
     let (ss, _) = P.declSourceAnn decl
     let start = P.spanStart ss
         end = P.spanEnd ss
-    SQL.executeNamed 
-      conn 
+    SQL.executeNamed
+      conn
       (SQL.Query "INSERT INTO ast_declarations (module_name, name, value, printed_type, start_line, end_line, start_col, end_col, lines, cols, exported) VALUES (:module_name, :name, :value, :printed_type, :start_line, :end_line, :start_col, :end_col, :lines, :cols, :exported)")
       [ ":module_name" := P.runModuleName name,
         ":name" := printName <$> P.declName decl,
@@ -90,33 +97,32 @@ indexAstModule conn m@(P.Module _ss _comments name decls exportRefs) = liftIO do
         ":cols" := P.sourcePosColumn end - P.sourcePosColumn start,
         ":exported" := Set.member decl exports
       ]
-      
 
-insertDeclExprs :: (MonadIO m) => Connection -> P.ModuleName ->  P.Declaration -> m ()
+insertDeclExprs :: (MonadIO m) => Connection -> P.ModuleName -> P.Declaration -> m ()
 insertDeclExprs conn name decl = liftIO $ void $ handleDecl decl
   where
-      (handleDecl, _, _) =
-        P.everywhereOnValuesM
-          pure
-          (\e -> e <$ insertAstExpr e)
-          pure
+    (handleDecl, _, _) =
+      P.everywhereOnValuesM
+        pure
+        (\e -> e <$ insertAstExpr e)
+        pure
 
-      insertAstExpr :: P.Expr -> IO ()
-      insertAstExpr expr =
-        SQL.execute
-          conn
-          (SQL.Query "INSERT INTO ast_expressions (module_name, value, shown, start_line, end_line, start_col, end_col, length) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
-          ( P.runModuleName name,
-            serialise expr,
-            show expr :: Text,
-            fmap (P.sourcePosLine . P.spanStart) ss,
-            fmap (P.sourcePosLine . P.spanEnd) ss,
-            fmap (P.sourcePosColumn . P.spanStart) ss,
-            fmap (P.sourcePosColumn . P.spanEnd) ss,
-            T.length (show expr :: Text)
-          )
-        where
-          ss = exprSourceSpan expr
+    insertAstExpr :: P.Expr -> IO ()
+    insertAstExpr expr =
+      SQL.execute
+        conn
+        (SQL.Query "INSERT INTO ast_expressions (module_name, value, shown, start_line, end_line, start_col, end_col, length) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+        ( P.runModuleName name,
+          serialise expr,
+          show expr :: Text,
+          fmap (P.sourcePosLine . P.spanStart) ss,
+          fmap (P.sourcePosLine . P.spanEnd) ss,
+          fmap (P.sourcePosColumn . P.spanStart) ss,
+          fmap (P.sourcePosColumn . P.spanEnd) ss,
+          T.length (show expr :: Text)
+        )
+      where
+        ss = exprSourceSpan expr
 
 addEnvIndexing :: (MonadIO m) => Connection -> P.MakeActions m -> P.MakeActions m
 addEnvIndexing conn ma =
@@ -310,6 +316,7 @@ initDb conn = do
   dropTables conn
   SQL.execute_ conn "pragma journal_mode=wal;"
   SQL.execute_ conn "pragma foreign_keys = ON;"
+  SQL.execute_ conn "CREATE TABLE IF NOT EXISTS ast_modules (module_name TEXT, path TEXT, UNIQUE(module_name) on conflict replace, UNIQUE(path) on conflict replace)"
   SQL.execute_ conn "CREATE TABLE IF NOT EXISTS ast_declarations (module_name TEXT, name TEXT, value TEXT, printed_type TEXT, start_line INTEGER, end_line INTEGER, start_col INTEGER, end_col INTEGER, lines INTEGER, cols INTEGER, exported BOOLEAN)"
   SQL.execute_ conn "CREATE TABLE IF NOT EXISTS ast_expressions (module_name TEXT, value TEXT, shown TEXT, start_line INTEGER, end_line INTEGER, start_col INTEGER, end_col INTEGER, length INTEGER)"
   SQL.execute_ conn "CREATE TABLE IF NOT EXISTS envs (module_name TEXT PRIMARY KEY, value TEXT)"
@@ -321,6 +328,8 @@ initDb conn = do
   SQL.execute_ conn "CREATE TABLE IF NOT EXISTS ef_imports (module_name TEXT references externs(module_name) ON DELETE CASCADE, imported_module TEXT, import_type TEXT, imported_as TEXT, value BLOB)"
   SQL.execute_ conn "CREATE TABLE IF NOT EXISTS ef_exports (module_name TEXT references externs(module_name) ON DELETE CASCADE, export_name TEXT, value BLOB, name BLOB, printed_name TEXT, start_col INTEGER, start_line INTEGER, end_col INTEGER, end_line INTEGER)"
   SQL.execute_ conn "CREATE TABLE IF NOT EXISTS ef_declarations (module_name TEXT references externs(module_name) ON DELETE CASCADE, name TEXT, value BLOB, start_col INTEGER, start_line INTEGER, end_col INTEGER, end_line INTEGER, category TEXT, shown TEXT)"
+
+  SQL.execute_ conn "CREATE TABLE IF NOT EXISTS available_srcs (path TEXT PRIMARY KEY NOT NULL, UNIQUE(path) on conflict replace)"
 
   addDbIndexes conn
 
@@ -558,4 +567,3 @@ dropTables conn = do
 --             (SkS {rss = 2})
 --         )
 --     )
-
