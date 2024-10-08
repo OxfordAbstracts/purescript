@@ -17,7 +17,6 @@ import Language.LSP.Protocol.Message qualified as Message
 import Language.LSP.Protocol.Types (Uri)
 import Language.LSP.Protocol.Types qualified as LSP
 import Language.LSP.Protocol.Types qualified as Types
-import Language.LSP.Server (getConfig)
 import Language.LSP.Server qualified as Server
 import Language.LSP.VFS qualified as VFS
 import Language.PureScript qualified as P
