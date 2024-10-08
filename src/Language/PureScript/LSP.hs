@@ -1,4 +1,5 @@
 {-# LANGUAGE BlockArguments #-}
+{-# LANGUAGE ExistentialQuantification #-}
 {-# LANGUAGE ExplicitNamespaces #-}
 {-# LANGUAGE PolyKinds #-}
 {-# OPTIONS_GHC -Wno-unticked-promoted-constructors #-}
@@ -9,6 +10,8 @@ module Language.PureScript.Lsp (main, serverDefinition) where
 import Control.Concurrent.STM.TChan
 import Control.Monad.IO.Unlift
 import Data.Aeson qualified as A
+import Data.Aeson.Types qualified as A
+import Data.Text qualified as T
 import Language.LSP.Protocol.Message qualified as LSP
 import Language.LSP.Protocol.Types qualified as Types
 import Language.LSP.Server as LSP.Server
@@ -19,8 +22,6 @@ import Language.PureScript.Lsp.ServerConfig (ServerConfig, defaultFromEnv)
 import Language.PureScript.Lsp.State (requestIsCancelled)
 import Language.PureScript.Lsp.Types (LspEnvironment)
 import Protolude hiding (to)
-import Data.Aeson.Types qualified as A
-import Data.Text qualified as T
 
 main :: LspEnvironment -> IO Int
 main lspEnv = do
@@ -81,7 +82,16 @@ reactor inp = do
     withAsync act \a -> do
       res <- waitCatch a
       case res of
-        Left e -> putErrLn $ "Request failed. Method: " <> method <> ". id: " <> show reqId <> ". Error: " <> show e
+        Left e ->
+          putErrLn
+            ( "Request failed. Method: "
+                <> show method
+                <> ". id: "
+                <> show reqId
+                <> ". Error: "
+                <> show e ::
+                Text
+            )
         Right _ -> pure ()
 
 -- | Check if we have a handler, and if we create a haskell-lsp handler to pass it as
@@ -94,7 +104,8 @@ lspHandlers lspEnv rin = mapHandlers goReq goNotification handlers
       let reqId = case id of
             LSP.IdInt i -> Left i
             LSP.IdString t -> Right t
-      writeToChannel (Just reqId) (show reqId) $
+
+      writeToChannel (Just reqId) (show method) $
         ifM
           (requestIsCancelled reqId)
           (k $ Left $ LSP.TResponseError (Types.InL Types.LSPErrorCodes_RequestCancelled) "Cancelled" Nothing)
