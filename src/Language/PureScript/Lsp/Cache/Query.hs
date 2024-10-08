@@ -165,6 +165,56 @@ getAstDeclarationsStartingWith limit offset moduleName' prefix = do
       ":limit" := limit,
       ":offset" := offset
     ]
+    
+
+getAstDeclarationsStartingWithAndSearchingModuleNames ::
+  (MonadIO m, MonadReader LspEnvironment m) =>
+  Int ->
+  Int ->
+  P.ModuleName ->
+  P.ModuleName ->
+  Text ->
+  m [CompletionResult]
+getAstDeclarationsStartingWithAndSearchingModuleNames limit offset moduleName' moduleNameContains prefix = do
+  DB.queryNamed
+    "SELECT ast_declarations.name, ast_declarations.printed_type, ast_declarations.module_name FROM ast_declarations \
+    \INNER JOIN ast_modules on ast_declarations.module_name = ast_modules.module_name \
+    \INNER JOIN available_srcs on ast_modules.path = available_srcs.path \
+    \WHERE (ast_declarations.module_name = :module_name OR ast_declarations.exported) \
+    \AND ast_declarations.module_name GLOB :module_name_contains \
+    \AND name GLOB :prefix \
+    \ORDER BY name ASC \
+    \LIMIT :limit \
+    \OFFSET :offset"
+    [ ":module_name" := P.runModuleName moduleName',
+      ":prefix" := prefix <> "*",
+      ":module_name_contains" :=  "*" <> P.runModuleName moduleNameContains <> "*",
+      ":limit" := limit,
+      ":offset" := offset
+    ]
+
+getAstDeclarationsStartingWithOnlyInModule ::
+  (MonadIO m, MonadReader LspEnvironment m) =>
+  Int ->
+  Int ->
+  P.ModuleName ->
+  Text ->
+  m [CompletionResult]
+getAstDeclarationsStartingWithOnlyInModule limit offset moduleName' prefix = do
+  DB.queryNamed
+    "SELECT ast_declarations.name, ast_declarations.printed_type, ast_declarations.module_name FROM ast_declarations \
+    \INNER JOIN ast_modules on ast_declarations.module_name = ast_modules.module_name \
+    \INNER JOIN available_srcs on ast_modules.path = available_srcs.path \
+    \WHERE ast_declarations.module_name = :module_name \
+    \AND name GLOB :prefix \
+    \ORDER BY name ASC \
+    \LIMIT :limit \
+    \OFFSET :offset"
+    [ ":module_name" := P.runModuleName moduleName',
+      ":prefix" := prefix <> "*",
+      ":limit" := limit,
+      ":offset" := offset
+    ]
 
 data CompletionResult = CompletionResult
   { crName :: Text,

@@ -44,24 +44,26 @@ posInSpan (Types.Position line col) (Errors.SourceSpan _ (Errors.SourcePos start
 getDeclarationAtPos :: Types.Position -> [P.Declaration] -> Maybe P.Declaration
 getDeclarationAtPos pos = find (posInSpan pos . fst . declSourceAnn)
 
-getWordAt :: Rope -> Types.Position -> Text
-getWordAt file Types.Position {..} =
+getWordAt :: Rope -> Types.Position -> (Types.Range, Text)
+getWordAt file pos@(Types.Position {..}) =
   if Rope.lengthInLines file < fromIntegral _line || _line < 0
-    then ""
+    then (Types.Range pos pos, "")
     else
       let (_, after) = splitAtLine (fromIntegral _line) file
           (ropeLine, _) = splitAtLine 1 after
           line' = Rope.toText ropeLine
-       in getWordOnLine line' _character
+          (wordStartCol, wordEndCol, _word) = getWordOnLine line' _character
+       in (Types.Range (Types.Position _line $ fromIntegral wordStartCol) (Types.Position _line $ fromIntegral wordEndCol), _word)
 
-getWordOnLine :: Text -> UInt -> Text
+
+getWordOnLine :: Text -> UInt -> (Int, Int, Text)
 getWordOnLine line' col =
   if T.length line' < fromIntegral col || col < 0
-    then ""
+    then (fromIntegral col, fromIntegral col, "")
     else
       let start = getPrevWs (fromIntegral col - 1) line'
           end = getNextWs (fromIntegral col) line'
-       in T.strip $ T.take (end - start) $ T.drop start line'
+       in (start, end, T.strip $ T.take (end - start) $ T.drop start line')
   where
     getNextWs :: Int -> Text -> Int
     getNextWs idx txt | idx >= T.length txt = idx
@@ -80,7 +82,7 @@ getWordOnLine line' col =
 
 getNamesAtPosition :: (MonadIO m, MonadReader LspEnvironment m) => Types.Position -> P.ModuleName -> Rope -> m (Set (P.Qualified P.Name))
 getNamesAtPosition pos moduleName' src = do
-  let search = getWordAt src pos
+  let (_, search) = getWordAt src pos
   debugLsp $ "Looking up " <> search <> " in module " <> P.runModuleName moduleName'
   decls <- getAstDeclarationsAtSrcPos moduleName' (positionToSourcePos pos)
   debugLsp $ "Found declarations: " <> T.pack (show $ length decls)

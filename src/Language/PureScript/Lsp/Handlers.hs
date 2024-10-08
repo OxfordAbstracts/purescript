@@ -27,14 +27,16 @@ import Language.PureScript.DB (dbFile)
 import Language.PureScript.Docs.Convert.Single (convertComments)
 import Language.PureScript.Errors qualified as Errors
 import Language.PureScript.Ide.Error (prettyPrintTypeSingleLine)
+import Language.PureScript.Ide.Imports (Import (..))
 import Language.PureScript.Lsp.Cache (selectExternModuleNameFromFilePath, selectExternPathFromModuleName, updateAvailableSrcs)
-import Language.PureScript.Lsp.Cache.Query (CompletionResult (crModule, crName, crType), getAstDeclarationInModule, getAstDeclarationsStartingWith, getCoreFnExprAt, getEfDeclarationInModule)
+import Language.PureScript.Lsp.Cache.Query (CompletionResult (crModule, crName, crType), getAstDeclarationInModule, getAstDeclarationsStartingWith, getAstDeclarationsStartingWithOnlyInModule, getCoreFnExprAt, getEfDeclarationInModule, getAstDeclarationsStartingWithAndSearchingModuleNames)
 import Language.PureScript.Lsp.Diagnostics (errorMessageDiagnostic, getFileDiagnotics, getMsgUri)
 import Language.PureScript.Lsp.Docs (readDeclarationDocsAsMarkdown, readQualifiedNameDocsAsMarkdown, readQualifiedNameDocsSourceSpan)
-import Language.PureScript.Lsp.Imports (addImportToTextEdit)
+import Language.PureScript.Lsp.Imports (addImportToTextEdit, getIdentModuleQualifier, getMatchingImport)
 import Language.PureScript.Lsp.Log (debugLsp, logPerfStandard)
 import Language.PureScript.Lsp.Print (printName)
 import Language.PureScript.Lsp.Rebuild (codegenTargets, rebuildFile)
+import Language.PureScript.Lsp.State (cancelRequest)
 import Language.PureScript.Lsp.Types (CompleteItemData (CompleteItemData), LspConfig (confOutputPath), LspEnvironment (lspConfig, lspDbConnection), decodeCompleteItemData)
 import Language.PureScript.Lsp.Util (efDeclSourceSpan, efDeclSourceType, getNamesAtPosition, getWordAt, lookupTypeInEnv, sourcePosToPosition)
 import Language.PureScript.Make.Index (initDb)
@@ -43,7 +45,6 @@ import Protolude hiding (to)
 import System.Directory (createDirectoryIfMissing, listDirectory, removePathForcibly)
 import System.FilePath ((</>))
 import System.IO.UTF8 (readUTF8FilesT)
-import Language.PureScript.Lsp.State (cancelRequest)
 
 type HandlerM config = ReaderT LspEnvironment (Server.LspT config IO)
 
@@ -83,7 +84,6 @@ handlers =
             Types.DocumentDiagnosticReport $
               Types.InL $
                 Types.RelatedFullDocumentDiagnosticReport Types.AString Nothing diagnostics Nothing,
-
       Server.requestHandler Message.SMethod_TextDocumentCodeAction $ \req res -> do
         let params = req ^. LSP.params
             diags = params ^. LSP.context . LSP.diagnostics
@@ -112,7 +112,6 @@ handlers =
                         Nothing
                         Nothing,
       Server.requestHandler Message.SMethod_TextDocumentHover $ \req res -> do
-        
         debugLsp "SMethod_TextDocumentHover"
         let Types.HoverParams docIdent pos _workDone = req ^. LSP.params
             filePathMb = Types.uriToFilePath $ docIdent ^. LSP.uri
@@ -270,8 +269,8 @@ handlers =
         forLsp filePathMb \filePath -> do
           vfMb <- Server.getVirtualFile uri
           forLsp vfMb \vf -> do
-            let word = getWordAt (VFS._file_text vf) pos
-            debugLsp $ "Word len " <> show (T.length word)
+            let (range, word) = getWordAt (VFS._file_text vf) pos
+            debugLsp $ "Word " <> show word
             if T.length word < 2
               then nullRes
               else do
@@ -279,7 +278,16 @@ handlers =
                 debugLsp $ "Module name: " <> show mNameMb
                 forLsp mNameMb \mName -> do
                   let limit = 50
-                  decls <- logPerfStandard "getAstDeclarationsStartingWith" $ getAstDeclarationsStartingWith limit 0 mName word
+                      withQualifier = getIdentModuleQualifier word
+                      wordWithoutQual = maybe word snd withQualifier
+                  matchingImport <- maybe (pure Nothing) (getMatchingImport filePath . fst) withQualifier
+                  -- matchingImport =
+                  debugLsp $ "wordWithoutQual " <> show wordWithoutQual
+                  decls <- case (matchingImport, withQualifier) of
+                    (Just (Import importModuleName _ _), _) -> getAstDeclarationsStartingWithOnlyInModule limit 0 importModuleName wordWithoutQual
+                    (_, Just (wordModuleName, _)) -> getAstDeclarationsStartingWithAndSearchingModuleNames limit 0 mName wordModuleName wordWithoutQual
+                    _ -> logPerfStandard "getAstDeclarationsStartingWith" $ getAstDeclarationsStartingWith limit 0 mName wordWithoutQual
+                  -- Just
                   debugLsp $ "Found decls: " <> show (length decls)
                   res $
                     Right $
@@ -312,7 +320,7 @@ handlers =
                                       _additionalTextEdits = Nothing, --  Maybe [Types.TextEdit]
                                       _commitCharacters = Nothing, --  Maybe [Text]
                                       _command = Nothing, --  Maybe Types.Command
-                                      _data_ = Just $ A.toJSON $ Just $ CompleteItemData filePath mName (crModule cr) label word
+                                      _data_ = Just $ A.toJSON $ Just $ CompleteItemData filePath mName (crModule cr) label word range
                                     },
       Server.requestHandler Message.SMethod_CompletionItemResolve $ \req res -> do
         debugLsp "SMethod_CompletionItemResolve"
@@ -320,7 +328,7 @@ handlers =
             result = completionItem ^. LSP.data_ & decodeCompleteItemData
 
         case result of
-          A.Success (Just cid@(CompleteItemData _filePath _mName declModule label _)) -> do
+          A.Success (Just cid@(CompleteItemData _filePath _mName declModule label _ _)) -> do
             docsMb <- readDeclarationDocsAsMarkdown declModule label
             withImports <- addImportToTextEdit completionItem cid
             let addDocs :: Types.CompletionItem -> Types.CompletionItem

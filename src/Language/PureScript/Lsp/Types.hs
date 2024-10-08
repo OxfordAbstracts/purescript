@@ -16,6 +16,7 @@ import Language.PureScript.Externs qualified as P
 import Language.PureScript.Names qualified as P
 import Protolude
 import System.Directory (createDirectoryIfMissing)
+import Language.LSP.Protocol.Types (Range)
 
 data LspEnvironment = LspEnvironment
   { lspConfig :: LspConfig,
@@ -57,7 +58,8 @@ data CompleteItemData = CompleteItemData
     cidModuleName :: P.ModuleName,
     cidImportedModuleName :: P.ModuleName,
     cidName :: Text,
-    cidWord :: Text
+    cidWord :: Text, 
+    wordRange :: Range
   }
   deriving (Show, Eq, Generic, ToJSON, FromJSON)
 
