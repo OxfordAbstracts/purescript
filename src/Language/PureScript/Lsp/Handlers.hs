@@ -35,8 +35,8 @@ import Language.PureScript.Lsp.Imports (addImportToTextEdit, getIdentModuleQuali
 import Language.PureScript.Lsp.Log (logPerfStandard)
 import Language.PureScript.Lsp.Print (printName)
 import Language.PureScript.Lsp.Rebuild (codegenTargets, rebuildFile)
-import Language.PureScript.Lsp.ServerConfig (ServerConfig, setTraceValue, getMaxCompletions)
-import Language.PureScript.Lsp.State (cancelRequest)
+import Language.PureScript.Lsp.ServerConfig (ServerConfig, getMaxCompletions, setTraceValue)
+import Language.PureScript.Lsp.State (cancelRequest, removedCachedRebuild)
 import Language.PureScript.Lsp.Types (CompleteItemData (CompleteItemData), LspConfig (confOutputPath), LspEnvironment (lspConfig, lspDbConnection), decodeCompleteItemData)
 import Language.PureScript.Lsp.Util (efDeclSourceSpan, efDeclSourceType, getNamesAtPosition, getWordAt, lookupTypeInEnv, sourcePosToPosition)
 import Language.PureScript.Make.Index (initDb)
@@ -54,17 +54,15 @@ handlers =
     [ Server.notificationHandler Message.SMethod_Initialized $ \_not -> do
         void updateAvailableSrcs
         sendInfoMsg "Lsp initialized",
-      Server.notificationHandler Message.SMethod_TextDocumentDidOpen $ \msg -> do
+      Server.notificationHandler Message.SMethod_TextDocumentDidOpen $ \_msg -> do
+        pure (),
+      Server.notificationHandler Message.SMethod_TextDocumentDidSave $ \_msg -> do
+        pure (),
+      Server.notificationHandler Message.SMethod_TextDocumentDidClose $ \msg -> do
         let uri :: Uri
             uri = getMsgUri msg
             fileName = Types.uriToFilePath uri
-
-        traverse_ rebuildFile fileName,
-      Server.notificationHandler Message.SMethod_TextDocumentDidSave $ \msg -> do
-        let uri :: Uri
-            uri = getMsgUri msg
-            fileName = Types.uriToFilePath uri
-        traverse_ rebuildFile fileName,
+        traverse_ removedCachedRebuild fileName,
       Server.notificationHandler Message.SMethod_WorkspaceDidChangeConfiguration $ \_msg -> do
         pure (),
       Server.notificationHandler Message.SMethod_SetTrace $ \msg -> do
