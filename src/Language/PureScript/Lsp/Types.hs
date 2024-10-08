@@ -8,15 +8,17 @@ import Control.Concurrent.STM (TVar, newTVarIO)
 
 import Data.Aeson (FromJSON, ToJSON)
 import Data.Aeson qualified as A
+import Data.Aeson.Types qualified as AT
 import Database.SQLite.Simple (Connection)
 import Language.LSP.Protocol.Types (Range)
 import Language.PureScript.DB (mkConnection)
 import Language.PureScript.Environment qualified as P
 import Language.PureScript.Externs qualified as P
 import Language.PureScript.Names qualified as P
+import Language.PureScript.Sugar.Names (Env)
+import Language.PureScript.Sugar.Names qualified as P
 import Protolude
 import System.Directory (createDirectoryIfMissing)
-import Data.Aeson.Types qualified as AT
 
 data LspEnvironment = LspEnvironment
   { lspConfig :: LspConfig,
@@ -28,7 +30,7 @@ mkEnv :: LspConfig -> IO LspEnvironment
 mkEnv conf = do
   createDirectoryIfMissing True $ confOutputPath conf
   connection <- mkConnection $ confOutputPath conf
-  st <- newTVarIO (LspState mempty mempty)
+  st <- newTVarIO (LspState mempty P.primEnv mempty)
   pure $ LspEnvironment conf connection st
 
 data LspConfig = LspConfig
@@ -40,7 +42,8 @@ data LspConfig = LspConfig
   deriving (Show)
 
 data LspState = LspState
-  { openFiles :: Map FilePath OpenFile,
+  { openFiles :: [(FilePath, OpenFile)],
+    exportEnv :: Env,
     cancelledRequests :: Set (Either Int32 Text)
   }
   deriving (Show)
@@ -48,6 +51,7 @@ data LspState = LspState
 data OpenFile = OpenFile
   { ofModuleName :: P.ModuleName,
     ofExternsFile :: P.ExternsFile,
+    ofDependencies :: [P.ExternsFile],
     ofEnv :: P.Environment
   }
   deriving (Show)
@@ -83,7 +87,7 @@ instance A.ToJSON LspLogLevel where
     LogNone -> A.String "none"
 
 instance FromJSON LspLogLevel where
-  parseJSON v = case v of 
+  parseJSON v = case v of
     A.String "all" -> pure LogAll
     A.String "debug" -> pure LogDebug
     A.String "perf" -> pure LogPerf

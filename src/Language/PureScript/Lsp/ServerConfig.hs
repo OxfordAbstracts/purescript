@@ -15,7 +15,8 @@ data ServerConfig = ServerConfig
     logLevel :: LspLogLevel,
     traceValue :: TraceValue,
     maxTypeLength :: Maybe Int,
-    maxCompletions :: Maybe Int
+    maxCompletions :: Maybe Int, 
+    maxFilesInCache :: Maybe Int
   }
   deriving (Show, Eq, Generic, ToJSON, FromJSON)
 
@@ -48,6 +49,9 @@ defaultMaxTypeLength = 100
 defaultMaxCompletions :: Int
 defaultMaxCompletions = 50
 
+defaultMaxFilesInCache :: Int
+defaultMaxFilesInCache = 16
+
 getMaxTypeLength :: (MonadLsp ServerConfig m) => m Int
 getMaxTypeLength =
   fromMaybe defaultMaxTypeLength . maxTypeLength <$> getConfig
@@ -55,3 +59,7 @@ getMaxTypeLength =
 getMaxCompletions :: (MonadLsp ServerConfig m) => m Int
 getMaxCompletions =
   fromMaybe defaultMaxCompletions . maxCompletions <$> getConfig
+
+getMaxFilesInCache :: (MonadLsp ServerConfig m) => m Int
+getMaxFilesInCache =
+  fromMaybe defaultMaxFilesInCache . maxFilesInCache <$> getConfig

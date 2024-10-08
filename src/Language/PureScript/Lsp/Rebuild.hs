@@ -17,13 +17,15 @@ import Language.PureScript.Ide.Rebuild (updateCacheDb)
 import Language.PureScript.Lsp.Cache (selectDependencies)
 import Language.PureScript.Lsp.Log (logPerfStandard)
 import Language.PureScript.Lsp.ReadFile (lspReadFile)
-import Language.PureScript.Lsp.Types (LspConfig (..), LspEnvironment (lspConfig, lspDbConnection))
+import Language.PureScript.Lsp.Types (LspConfig (..), LspEnvironment (lspConfig, lspDbConnection), LspState)
 import Language.PureScript.Make (ffiCodegen')
 import Language.PureScript.Make qualified as P
 import Language.PureScript.Make.Index (addAllIndexing)
 import Language.PureScript.Names qualified as P
 import Language.PureScript.Options qualified as P
 import Protolude hiding (moduleName)
+import Language.PureScript.Lsp.State (buildExportEnvCache, addExternToExportEnv)
+import Control.Concurrent.STM (TVar)
 
 rebuildFile ::
   ( MonadIO m,
@@ -54,9 +56,10 @@ rebuildFile srcPath = logPerfStandard ("Rebuild file " <> T.pack srcPath) do
               & (if pureRebuild then enableForeignCheck foreigns codegenTargets . shushCodegen else identity)
               & shushProgress
               & addAllIndexing conn
+      !exportEnv <- logPerfStandard "build export cache" $ buildExportEnvCache m externs
       (!result, warnings) <- logPerfStandard ("Rebuild Module " <> T.pack srcPath) $ fmap force $ liftIO $ do
         P.runMake (P.defaultOptions {P.optionsCodegenTargets = codegenTargets}) do
-          newExterns <- P.rebuildModule makeEnv externs m
+          newExterns <- P.rebuildModule' makeEnv exportEnv externs m
           unless pureRebuild $
             updateCacheDb codegenTargets outputDirectory srcPath Nothing moduleName
           pure newExterns
@@ -64,7 +67,7 @@ rebuildFile srcPath = logPerfStandard ("Rebuild file " <> T.pack srcPath) do
         Left errors ->
           pure (Left ([(fp, input)], errors))
         Right newExterns -> do
-          -- cacheRebuild srcPath newExterns
+          addExternToExportEnv newExterns
           pure $ Right (fp, CST.toMultipleWarnings fp pwarnings <> warnings)
 
 codegenTargets :: Set P.CodegenTarget
@@ -94,3 +97,11 @@ enableForeignCheck foreigns codegenTargets' ma =
     { P.ffiCodegen = ffiCodegen' foreigns codegenTargets' Nothing
     }
 
+
+cacheEnv :: TVar LspState -> P.MakeActions P.Make -> P.MakeActions P.Make
+cacheEnv stVar ma =
+  ma
+    { P.readCacheDb = \_ -> do
+        st <- liftIO $ readTVarIO stVar
+        pure $ P.CacheDb (P.cacheDb st)
+    }
