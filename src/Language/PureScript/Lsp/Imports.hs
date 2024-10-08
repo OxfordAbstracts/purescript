@@ -114,7 +114,11 @@ importsToTextEdit before imports =
   TextEdit
     ( LSP.Range
         (LSP.Position beforeLine 0)
-        (LSP.Position (beforeLine + fromIntegral (length printed) + 1) 0)
+        ( LSP.Position
+            ( beforeLine + fromIntegral (length printed) - 1
+            )
+            (maybe 0 (fromIntegral . T.length) $ lastMay printed)
+        )
     )
     (T.unlines printed)
   where

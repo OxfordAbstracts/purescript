@@ -2,6 +2,7 @@
 {-# LANGUAGE ExplicitNamespaces #-}
 {-# LANGUAGE PolyKinds #-}
 {-# OPTIONS_GHC -Wno-unticked-promoted-constructors #-}
+{-# OPTIONS_GHC -Wno-unused-top-binds #-}
 
 module Language.PureScript.Lsp (main, serverDefinition) where
 
@@ -55,6 +56,13 @@ lspOptions =
     { Server.optTextDocumentSync = Just syncOptions,
       Server.optExecuteCommandCommands = Just ["lsp-purescript-command"]
     }
+
+-- data ReactorInputs = ReactorInputs
+--   { risMain :: TChan ReactorInput,
+--     risCompletion :: TChan ReactorInput, 
+--     risHover :: TChan ReactorInput,
+--     ris
+--   }
 
 -- The reactor is a process that serialises and buffers all requests from the
 -- LSP client, so they can be sent to the backend compiler one at a time, and a

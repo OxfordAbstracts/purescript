@@ -192,6 +192,7 @@ getAstDeclarationsStartingWithAndSearchingModuleNames limit offset moduleName' m
       ":limit" := limit,
       ":offset" := offset
     ]
+    
 
 getAstDeclarationsStartingWithOnlyInModule ::
   (MonadIO m, MonadReader LspEnvironment m) =>
@@ -215,6 +216,8 @@ getAstDeclarationsStartingWithOnlyInModule limit offset moduleName' prefix = do
       ":limit" := limit,
       ":offset" := offset
     ]
+
+-- getPrintedType
 
 data CompletionResult = CompletionResult
   { crName :: Text,
