@@ -117,7 +117,6 @@ lspHandlers lspEnv rin = mapHandlers goReq goNotification handlers
     goNotification f msg@(LSP.TNotificationMessage _ method _) = do
       writeToChannel Nothing (show method) (f msg)
 
-    -- writeToChannel :: Either Int Text -> HandlerM ServerConfig () -> IO ()
     writeToChannel = writeToChannelWith writeTChan
 
     writeToChannelWith fn reqId method a = do
