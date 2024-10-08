@@ -28,7 +28,7 @@ import Language.PureScript.Lsp.Cache.Query (getAstDeclarationsAtSrcPos)
 
 import Language.PureScript.Lsp.Print (printName)
 import Language.PureScript.Lsp.State (cachedRebuild)
-import Language.PureScript.Lsp.Types (LspEnvironment, OpenFile (ofEnv))
+import Language.PureScript.Lsp.Types (LspEnvironment, OpenFile (ofFinalEnv))
 import Language.PureScript.Names qualified as P
 import Language.PureScript.Types qualified as P
 import Protolude hiding (to)
@@ -139,7 +139,7 @@ getNamesAtPosition pos moduleName' src = do
 
 lookupTypeInEnv :: (MonadReader LspEnvironment m, MonadIO m) => FilePath -> P.Qualified P.Name -> m (Maybe P.SourceType)
 lookupTypeInEnv fp (P.Qualified qb name) = do
-  envMb :: Maybe P.Environment <- fmap ofEnv <$> cachedRebuild fp
+  envMb :: Maybe P.Environment <- fmap ofFinalEnv <$> cachedRebuild fp
   pure $
     envMb
       >>= ( \(P.Environment {..}) -> case name of

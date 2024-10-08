@@ -2,7 +2,6 @@ module Language.PureScript.Lsp.Diagnostics where
 
 import Control.Lens ((^.))
 import Control.Monad.Catch (MonadThrow)
-import Control.Monad.IO.Unlift
 import Data.Aeson qualified as A
 import Data.List.NonEmpty qualified as NEL
 import Data.Text qualified as T
@@ -18,12 +17,14 @@ import Language.PureScript.Lsp.Rebuild (rebuildFile)
 import Language.PureScript.Lsp.Types (LspEnvironment)
 import Protolude hiding (to)
 import Text.PrettyPrint.Boxes (render)
+import Language.LSP.Server (MonadLsp)
+import Language.PureScript.Lsp.ServerConfig (ServerConfig)
 
 getFileDiagnotics ::
   ( LSP.HasParams s a1,
     LSP.HasTextDocument a1 a2,
     LSP.HasUri a2 Uri,
-    MonadIO m,
+    MonadLsp ServerConfig m,
     MonadThrow m,
     MonadReader LspEnvironment m
   ) =>

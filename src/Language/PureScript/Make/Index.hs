@@ -61,7 +61,7 @@ addAllIndexing conn ma =
 addAstModuleIndexing :: (MonadIO m) => Connection -> P.MakeActions m -> P.MakeActions m
 addAstModuleIndexing conn ma =
   ma
-    { P.codegen = \env astM m docs ext -> lift (indexAstModule conn astM ext) <* P.codegen ma env astM m docs ext
+    { P.codegen = \prevEnv env astM m docs ext -> lift (indexAstModule conn astM ext) <* P.codegen ma prevEnv env astM m docs ext
     }
 
 indexAstModule :: (MonadIO m) => Connection -> P.Module -> ExternsFile -> m ()
@@ -129,7 +129,7 @@ insertDeclExprs conn name decl = liftIO $ void $ handleDecl decl
 addEnvIndexing :: (MonadIO m) => Connection -> P.MakeActions m -> P.MakeActions m
 addEnvIndexing conn ma =
   ma
-    { P.codegen = \env astM m docs ext -> lift (indexEnv conn (P.getModuleName astM) env) <* P.codegen ma env astM m docs ext
+    { P.codegen = \prevEnv env astM m docs ext -> lift (indexEnv conn (P.getModuleName astM) env) <* P.codegen ma prevEnv env astM m docs ext
     }
 
 indexEnv :: (MonadIO m) => Connection -> P.ModuleName -> P.Environment -> m ()
@@ -145,7 +145,7 @@ indexEnv conn name env =
 addCoreFnIndexing :: (MonadIO m) => Connection -> P.MakeActions m -> P.MakeActions m
 addCoreFnIndexing conn ma =
   ma
-    { P.codegen = \env astM m docs ext -> lift (indexCoreFn conn m) <* P.codegen ma env astM m docs ext
+    { P.codegen = \prevEnv env astM m docs ext -> lift (indexCoreFn conn m) <* P.codegen ma prevEnv env astM m docs ext
     }
 
 indexCoreFn :: forall m. (MonadIO m) => Connection -> CF.Module CF.Ann -> m ()
@@ -240,7 +240,7 @@ indexCoreFn conn m = do
 addExternIndexing :: (MonadIO m) => Connection -> P.MakeActions m -> P.MakeActions m
 addExternIndexing conn ma =
   ma
-    { P.codegen = \env astM m docs ext -> lift (indexExtern conn ext) <* P.codegen ma env astM m docs ext
+    { P.codegen = \prevEnv env astM m docs ext -> lift (indexExtern conn ext) <* P.codegen ma prevEnv env astM m docs ext
     }
 
 indexExtern :: (MonadIO m) => Connection -> ExternsFile -> m ()

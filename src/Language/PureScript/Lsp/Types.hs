@@ -52,7 +52,8 @@ data OpenFile = OpenFile
   { ofModuleName :: P.ModuleName,
     ofExternsFile :: P.ExternsFile,
     ofDependencies :: [P.ExternsFile],
-    ofEnv :: P.Environment
+    ofStartingEnv :: P.Environment,
+    ofFinalEnv :: P.Environment
   }
   deriving (Show)
 

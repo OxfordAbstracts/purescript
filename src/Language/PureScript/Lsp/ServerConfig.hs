@@ -33,7 +33,8 @@ defaultFromEnv env =
         LogWarning -> TraceValue_Messages
         _ -> TraceValue_Off,
       maxTypeLength = Nothing,
-      maxCompletions = Nothing
+      maxCompletions = Nothing, 
+      maxFilesInCache = Nothing
     }
   where
     logLevel = confLogLevel $ lspConfig env
