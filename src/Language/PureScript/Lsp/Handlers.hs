@@ -169,7 +169,7 @@ handlers =
                     docsMb <- readQualifiedNameDocsAsMarkdown name
                     case docsMb of
                       Nothing -> do
-                        typeMb <- lookupTypeInEnv name
+                        typeMb <- lookupTypeInEnv filePath name
                         forLsp typeMb \t -> markdownTypeRes (printName $ disqualify name) (Just $ prettyPrintTypeSingleLine t) []
                       Just docs -> markdownRes docs,
       Server.requestHandler Message.SMethod_TextDocumentDefinition $ \req res -> do

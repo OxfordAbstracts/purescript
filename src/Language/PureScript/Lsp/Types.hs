@@ -10,7 +10,6 @@ import Data.Aeson (FromJSON, ToJSON)
 import Data.Aeson qualified as A
 import Database.SQLite.Simple (Connection)
 import Language.LSP.Protocol.Types (Range)
-import Language.PureScript.AST.Declarations qualified as P
 import Language.PureScript.DB (mkConnection)
 import Language.PureScript.Environment qualified as P
 import Language.PureScript.Externs qualified as P
@@ -29,7 +28,7 @@ mkEnv :: LspConfig -> IO LspEnvironment
 mkEnv conf = do
   createDirectoryIfMissing True $ confOutputPath conf
   connection <- mkConnection $ confOutputPath conf
-  st <- newTVarIO (LspState Nothing mempty)
+  st <- newTVarIO (LspState mempty mempty)
   pure $ LspEnvironment conf connection st
 
 data LspConfig = LspConfig
@@ -41,16 +40,15 @@ data LspConfig = LspConfig
   deriving (Show)
 
 data LspState = LspState
-  { currentFile :: Maybe CurrentFile,
+  { openFiles :: Map FilePath OpenFile,
     cancelledRequests :: Set (Either Int32 Text)
   }
   deriving (Show)
 
-data CurrentFile = CurrentFile
-  { currentModuleName :: P.ModuleName,
-    currentModule :: P.Module,
-    currentExternsFile :: P.ExternsFile,
-    currentEnv :: P.Environment
+data OpenFile = OpenFile
+  { ofModuleName :: P.ModuleName,
+    ofExternsFile :: P.ExternsFile,
+    ofEnv :: P.Environment
   }
   deriving (Show)
 

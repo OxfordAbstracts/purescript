@@ -2,23 +2,18 @@
 {-# LANGUAGE PackageImports #-}
 {-# OPTIONS_GHC -Wno-unused-matches #-}
 
-module Language.PureScript.Lsp.Rebuild where
+module Language.PureScript.Lsp.Rebuild (rebuildFile, codegenTargets) where
 
 import Control.Monad.Catch (MonadThrow)
 import Data.List qualified as List
 import Data.Map.Lazy qualified as M
-import Data.Maybe (fromJust)
 import Data.Set qualified as S
 import Data.Set qualified as Set
 import Data.Text qualified as T
-import Language.PureScript (MultipleErrors)
 import Language.PureScript.AST qualified as P
 import Language.PureScript.CST qualified as CST
 import Language.PureScript.Errors qualified as P
-import Language.PureScript.Externs (ExternsFile (efModuleName))
-import Language.PureScript.Externs qualified as P
 import Language.PureScript.Ide.Rebuild (updateCacheDb)
-import Language.PureScript.Ide.Types (ModuleMap)
 import Language.PureScript.Lsp.Cache (selectDependencies)
 import Language.PureScript.Lsp.Log (logPerfStandard)
 import Language.PureScript.Lsp.ReadFile (lspReadFile)
@@ -26,7 +21,6 @@ import Language.PureScript.Lsp.Types (LspConfig (..), LspEnvironment (lspConfig,
 import Language.PureScript.Make (ffiCodegen')
 import Language.PureScript.Make qualified as P
 import Language.PureScript.Make.Index (addAllIndexing)
-import Language.PureScript.ModuleDependencies qualified as P
 import Language.PureScript.Names qualified as P
 import Language.PureScript.Options qualified as P
 import Protolude hiding (moduleName)
@@ -48,7 +42,7 @@ rebuildFile srcPath = logPerfStandard ("Rebuild file " <> T.pack srcPath) do
       pure $ Left ([(fp, input)], CST.toMultipleErrors fp parseError)
     Right (pwarnings, m) -> do
       let moduleName = P.getModuleName m
-      !externs <- logPerfStandard "Select depenencies" $ selectDependencies m
+      externs <- logPerfStandard "Select depenencies" $ selectDependencies m
       outputDirectory <- asks (confOutputPath . lspConfig)
       let filePathMap = M.singleton moduleName (Left P.RebuildAlways)
       let pureRebuild = fp == ""
@@ -70,6 +64,7 @@ rebuildFile srcPath = logPerfStandard ("Rebuild file " <> T.pack srcPath) do
         Left errors ->
           pure (Left ([(fp, input)], errors))
         Right newExterns -> do
+          -- cacheRebuild srcPath newExterns
           pure $ Right (fp, CST.toMultipleWarnings fp pwarnings <> warnings)
 
 codegenTargets :: Set P.CodegenTarget
@@ -88,7 +83,6 @@ shushCodegen ma =
       P.ffiCodegen = \_ -> pure ()
     }
 
--- add
 
 enableForeignCheck ::
   M.Map P.ModuleName FilePath ->
@@ -100,39 +94,3 @@ enableForeignCheck foreigns codegenTargets' ma =
     { P.ffiCodegen = ffiCodegen' foreigns codegenTargets' Nothing
     }
 
--- | Returns a topologically sorted list of dependent ExternsFiles for the given
--- module. Returns an error if there is a cyclic dependency within the
--- ExternsFiles
-sortExterns ::
-  (Monad m) =>
-  P.Module ->
-  ModuleMap P.ExternsFile ->
-  m (Either MultipleErrors [P.ExternsFile])
-sortExterns m ex = do
-  sorted' <-
-    runExceptT
-      . P.sortModules P.Transitive P.moduleSignature
-      . (:) m
-      . map mkShallowModule
-      . M.elems
-      . M.delete (P.getModuleName m)
-      $ ex
-  case sorted' of
-    Left err ->
-      pure $ Left err
-    Right (sorted, graph) -> do
-      let deps = fromJust (List.lookup (P.getModuleName m) graph)
-      pure $ Right $ mapMaybe getExtern (deps `inOrderOf` map P.getModuleName sorted)
-  where
-    mkShallowModule P.ExternsFile {..} =
-      P.Module (P.internalModuleSourceSpan "<rebuild>") [] efModuleName (map mkImport efImports) Nothing
-    mkImport (P.ExternsImport mn it iq) =
-      P.ImportDeclaration (P.internalModuleSourceSpan "<rebuild>", []) mn it iq
-    getExtern mn = M.lookup mn ex
-    -- Sort a list so its elements appear in the same order as in another list.
-    inOrderOf :: (Ord a) => [a] -> [a] -> [a]
-    inOrderOf xs ys = let s = S.fromList xs in filter (`S.member` s) ys
-
--- | Removes a modules export list.
-openModuleExports :: P.Module -> P.Module
-openModuleExports (P.Module ss cs mn decls _) = P.Module ss cs mn decls Nothing

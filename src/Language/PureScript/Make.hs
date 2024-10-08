@@ -153,7 +153,7 @@ rebuildModuleWithProvidedEnv ::
   Environment ->
   Module ->
   Maybe (Int, Int) ->
-  m (ExternsFile, Environment)
+  m (ExternsFile,  Environment)
 rebuildModuleWithProvidedEnv desugar' convertDocsModule MakeActions {..} exEnv env m@(Module _ _ moduleName _ _) moduleIndex = do
   progress $ CompilingModule moduleName moduleIndex
   let withPrim = importPrim m
