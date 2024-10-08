@@ -11,8 +11,6 @@ import Language.PureScript.Lsp.Types
 import Protolude hiding (moduleName, unzip)
 import Data.Set qualified as Set
 import Language.LSP.Protocol.Types (type (|?)(..))
-import Language.PureScript.Lsp.Log (debugLsp)
--- import Language.LSP.Protocol.Types ((InL))
 
 -- | Sets rebuild cache to the given ExternsFile
 cacheRebuild :: (MonadIO m, MonadReader LspEnvironment m) => ExternsFile -> P.Module -> P.Environment -> m ()
@@ -47,8 +45,6 @@ cancelRequest requestId = do
 requestIsCancelled :: (MonadReader LspEnvironment m, MonadIO m) => Either Int32 Text -> m Bool
 requestIsCancelled requestId = do
   st <- lspStateVar <$> ask
-  cancelled <- liftIO . atomically $ do
+  liftIO . atomically $ do
     st' <- readTVar st
     pure $ requestId `Set.member` cancelledRequests st'
-  debugLsp $ "Request " <> show requestId <> " is cancelled " <> show cancelled
-  pure cancelled

@@ -33,7 +33,7 @@ import Language.PureScript.Lsp.Cache.Query (CompletionResult (crModule, crName, 
 import Language.PureScript.Lsp.Diagnostics (errorMessageDiagnostic, getFileDiagnotics, getMsgUri)
 import Language.PureScript.Lsp.Docs (readDeclarationDocsAsMarkdown, readQualifiedNameDocsAsMarkdown, readQualifiedNameDocsSourceSpan)
 import Language.PureScript.Lsp.Imports (addImportToTextEdit, getIdentModuleQualifier, getMatchingImport)
-import Language.PureScript.Lsp.Log (debugLsp, logPerfStandard)
+import Language.PureScript.Lsp.Log (logPerfStandard)
 import Language.PureScript.Lsp.Print (printName)
 import Language.PureScript.Lsp.Rebuild (codegenTargets, rebuildFile)
 import Language.PureScript.Lsp.ServerConfig (ServerConfig, setTraceValue, getMaxCompletions)
@@ -67,13 +67,11 @@ handlers =
             fileName = Types.uriToFilePath uri
         traverse_ rebuildFile fileName,
       Server.notificationHandler Message.SMethod_WorkspaceDidChangeConfiguration $ \_msg -> do
-        cfg <- getConfig
-        debugLsp $ "Config changed: " <> show cfg,
+        pure (),
       Server.notificationHandler Message.SMethod_SetTrace $ \msg -> do
         setTraceValue $ msg ^. LSP.params . LSP.value, -- probably no need to do this
       Server.notificationHandler Message.SMethod_CancelRequest $ \msg -> do
         let reqId = msg ^. LSP.params . LSP.id
-        debugLsp $ "SMethod_CancelRequest " <> show reqId
         cancelRequest reqId,
       Server.requestHandler Message.SMethod_TextDocumentDiagnostic $ \req res -> do
         (_errs, diagnostics) <- getFileDiagnotics req
@@ -196,41 +194,30 @@ handlers =
           vfMb <- Server.getVirtualFile uri
           forLsp vfMb \vf -> do
             mNameMb <- selectExternModuleNameFromFilePath filePath
-            debugLsp $ "Module name: " <> show mNameMb
-            debugLsp $ "Pos: " <> show pos
             forLsp mNameMb \mName -> do
               names <- getNamesAtPosition pos mName (VFS._file_text vf)
-              debugLsp $ "Found names: " <> show (length names)
 
               case head names of
                 Just name -> do
-                  debugLsp $ "Found name: " <> show name
                   spanMb <- readQualifiedNameDocsSourceSpan name
-                  debugLsp $ "Found docs span: " <> show spanMb
                   case spanMb of
                     _ -> do
                       case name of
                         P.Qualified (P.BySourcePos pos') _ -> do
-                          debugLsp $ "Found source pos: " <> show pos'
                           locationRes filePath (Types.Range (sourcePosToPosition pos') (sourcePosToPosition pos'))
                         P.Qualified (P.ByModuleName nameModule) ident -> do
-                          debugLsp $ "Found module name: " <> show nameModule
                           declMb <- getAstDeclarationInModule nameModule (printName ident)
-                          debugLsp $ "Found decl: " <> show (isJust declMb)
                           forLsp declMb \decl -> do
                             modFpMb <- selectExternPathFromModuleName nameModule
                             forLsp modFpMb \modFp -> do
-                              debugLsp $ "Found modFp: " <> show modFp
                               let sourceSpan = P.declSourceSpan decl
-                              debugLsp $ "Found decl sourceSpan: " <> show sourceSpan
                               locationRes modFp (spanToRange sourceSpan)
                     Just span ->
                       locationRes (P.spanName span) (spanToRange span)
                 _ -> do
                   corefnExprMb <- getCoreFnExprAt filePath pos
                   case corefnExprMb of
-                    Just (CF.Var (ss, _comments, _meta) (P.Qualified qb ident)) -> do
-                      debugLsp $ "Found Corefn Var source span: " <> show ss
+                    Just (CF.Var (_ss, _comments, _meta) (P.Qualified qb ident)) -> do
                       let name = P.runIdent ident
                       case qb of
                         P.ByModuleName coreMName -> do
@@ -243,8 +230,7 @@ handlers =
                         P.BySourcePos srcPos ->
                           locationRes filePath (Types.Range (sourcePosToPosition srcPos) (sourcePosToPosition srcPos))
                     _ -> nullRes,
-      Server.requestHandler Message.SMethod_TextDocumentCompletion $ \req res -> logPerfStandard "SMethod_TextDocumentCompletion" do
-        debugLsp "SMethod_TextDocumentCompletion"
+      Server.requestHandler Message.SMethod_TextDocumentCompletion $ \req res -> do
         let Types.CompletionParams docIdent pos _prog _prog' _completionCtx = req ^. LSP.params
             filePathMb = Types.uriToFilePath $ docIdent ^. LSP.uri
             uri :: Types.NormalizedUri
@@ -260,30 +246,25 @@ handlers =
             forLsp :: Maybe a -> (a -> HandlerM ServerConfig ()) -> HandlerM ServerConfig ()
             forLsp val f = maybe nullRes f val
 
-        debugLsp $ "filePathMb: " <> show filePathMb
         forLsp filePathMb \filePath -> do
           vfMb <- Server.getVirtualFile uri
           forLsp vfMb \vf -> do
             let (range, word) = getWordAt (VFS._file_text vf) pos
-            debugLsp $ "Word " <> show word
             if T.length word < 2
               then nullRes
               else do
                 mNameMb <- selectExternModuleNameFromFilePath filePath
-                debugLsp $ "Module name: " <> show mNameMb
                 forLsp mNameMb \mName -> do
                   let withQualifier = getIdentModuleQualifier word
                       wordWithoutQual = maybe word snd withQualifier
                   limit <- getMaxCompletions
                   matchingImport <- maybe (pure Nothing) (getMatchingImport filePath . fst) withQualifier
                   -- matchingImport =
-                  debugLsp $ "wordWithoutQual " <> show wordWithoutQual
                   decls <- case (matchingImport, withQualifier) of
                     (Just (Import importModuleName _ _), _) -> getAstDeclarationsStartingWithOnlyInModule importModuleName wordWithoutQual
                     (_, Just (wordModuleName, _)) -> getAstDeclarationsStartingWithAndSearchingModuleNames mName wordModuleName wordWithoutQual
                     _ -> logPerfStandard "getAstDeclarationsStartingWith" $ getAstDeclarationsStartingWith mName wordWithoutQual
                   -- Just
-                  debugLsp $ "Found decls: " <> show (length decls)
                   res $
                     Right $
                       Types.InR $
@@ -318,7 +299,6 @@ handlers =
                                       _data_ = Just $ A.toJSON $ Just $ CompleteItemData filePath mName (crModule cr) label word range
                                     },
       Server.requestHandler Message.SMethod_CompletionItemResolve $ \req res -> do
-        debugLsp "SMethod_CompletionItemResolve"
         let completionItem = req ^. LSP.params
             result = completionItem ^. LSP.data_ & decodeCompleteItemData
 
@@ -338,20 +318,15 @@ handlers =
                   & addDocs
           _ -> res $ Right completionItem,
       Server.requestHandler (Message.SMethod_CustomMethod $ Proxy @"delete output") $ \_req res -> do
-        debugLsp "SMethod_CustomMethod delete output"
         outDir <- asks (confOutputPath . lspConfig)
-        debugLsp $ "Deleting output directory: " <> show outDir
         liftIO $ createDirectoryIfMissing True outDir
         contents <- liftIO $ listDirectory outDir
         for_ contents \f -> do
-          debugLsp $ T.pack f
           unless (f == dbFile || dbFile `isPrefixOf` f) do
             let path = outDir </> f
-            debugLsp $ "Deleting: " <> show f
             liftIO $ removePathForcibly path
         res $ Right A.Null,
       Server.requestHandler (Message.SMethod_CustomMethod $ Proxy @"build") $ \_req res -> do
-        debugLsp "SMethod_CustomMethod build"
         config <- asks lspConfig
         conn <- asks lspDbConnection
         liftIO $ initDb conn

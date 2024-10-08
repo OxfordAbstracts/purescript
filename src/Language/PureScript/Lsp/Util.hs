@@ -26,7 +26,6 @@ import Language.PureScript.Linter qualified as P
 import Language.PureScript.Lsp.Cache.Query (getAstDeclarationsAtSrcPos)
 -- import Language.PureScript.Sugar.BindingGroups (usedTypeNames)
 
-import Language.PureScript.Lsp.Log (debugLsp)
 import Language.PureScript.Lsp.Print (printName)
 import Language.PureScript.Lsp.State (cachedRebuild)
 import Language.PureScript.Lsp.Types (CurrentFile (currentEnv), LspEnvironment)
@@ -83,9 +82,7 @@ getWordOnLine line' col =
 getNamesAtPosition :: (MonadIO m, MonadReader LspEnvironment m) => Types.Position -> P.ModuleName -> Rope -> m (Set (P.Qualified P.Name))
 getNamesAtPosition pos moduleName' src = do
   let (_, search) = getWordAt src pos
-  debugLsp $ "Looking up " <> search <> " in module " <> P.runModuleName moduleName'
   decls <- getAstDeclarationsAtSrcPos moduleName' (positionToSourcePos pos)
-  debugLsp $ "Found declarations: " <> T.pack (show $ length decls)
   pure $
     mconcat $
       decls <&> \decl -> do
@@ -145,8 +142,6 @@ getNamesAtPosition pos moduleName' src = do
 lookupTypeInEnv :: (MonadReader LspEnvironment m, MonadIO m) => P.Qualified P.Name -> m (Maybe P.SourceType)
 lookupTypeInEnv (P.Qualified qb name) = do
   envMb :: Maybe P.Environment <- fmap currentEnv <$> cachedRebuild
-  debugLsp $ "Looking up " <> show name <> " in environment"
-  -- debugLsp $ "Environment: " <> show envMb
   pure $
     envMb
       >>= ( \(P.Environment {..}) -> case name of
