@@ -1,3 +1,4 @@
+{-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE ExplicitNamespaces #-}
 {-# LANGUAGE PolyKinds #-}
 {-# OPTIONS_GHC -Wno-unticked-promoted-constructors #-}
@@ -59,8 +60,11 @@ lspOptions =
 -- LSP client, so they can be sent to the backend compiler one at a time, and a
 -- reply sent.
 
-newtype ReactorInput
-  = ReactorAction (IO ())
+data ReactorInput = ReactorAction
+  { riId :: Maybe (Either Int32 Text),
+    riMethod :: Text,
+    riAction :: IO ()
+  }
 
 -- | The single point that all events flow through, allowing management of state
 -- to stitch replies and requests together from the two asynchronous sides: lsp
@@ -68,8 +72,12 @@ newtype ReactorInput
 reactor :: TChan ReactorInput -> IO ()
 reactor inp = do
   forever $ do
-    ReactorAction act <- atomically $ readTChan inp
-    act
+    ReactorAction reqId method act <- atomically $ readTChan inp
+    withAsync act \a -> do
+      res <- waitCatch a
+      case res of
+        Left e -> putErrLn $ "Request failed. Method: " <> method <> ". id: " <> show reqId <> ". Error: " <> show e
+        Right _ -> pure ()
 
 -- | Check if we have a handler, and if we create a haskell-lsp handler to pass it as
 -- input into the reactor
@@ -82,23 +90,23 @@ lspHandlers lspEnv rin = mapHandlers goReq goNotification handlers
             LSP.IdInt i -> Left i
             LSP.IdString t -> Right t
       debugLsp $ "Request: " <> show method <> " " <> show reqId
-      writeToChannel $
+      writeToChannel (Just reqId) (show reqId) $
         ifM
           (requestIsCancelled reqId)
           (k $ Left $ LSP.TResponseError (Types.InL Types.LSPErrorCodes_RequestCancelled) "Cancelled" Nothing)
-          (writeToChannel (f msg k))
-
+          (f msg k)
 
     goNotification :: forall (a :: LSP.Method LSP.ClientToServer LSP.Notification). LSP.Server.Handler (HandlerM ()) a -> LSP.Server.Handler (HandlerM ()) a
     goNotification f msg@(LSP.TNotificationMessage _ LSP.SMethod_CancelRequest _) = do
-      f msg -- cancel requests skip the queue
-    goNotification f msg = do
-      writeToChannel (f msg)
+      f msg -- cancel requests skip the queue and are handled immediately on the main thread
+    goNotification f msg@(LSP.TNotificationMessage _ method _) = do
+      writeToChannel Nothing (show method) (f msg)
 
+    -- writeToChannel :: Either Int Text -> HandlerM () () -> IO ()
     writeToChannel = writeToChannelWith writeTChan
 
-    writeToChannelWith fn a = do
+    writeToChannelWith fn reqId method a = do
       env <- getLspEnv
-      liftIO $ atomically $ fn rin $ ReactorAction (runHandler env a)
+      liftIO $ atomically $ fn rin $ ReactorAction reqId method (runHandler env a)
 
     runHandler env a = runLspT env $ runReaderT a lspEnv
