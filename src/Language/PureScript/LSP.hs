@@ -8,27 +8,31 @@ module Language.PureScript.Lsp (main, serverDefinition) where
 
 import Control.Concurrent.STM.TChan
 import Control.Monad.IO.Unlift
+import Data.Aeson qualified as A
 import Language.LSP.Protocol.Message qualified as LSP
 import Language.LSP.Protocol.Types qualified as Types
 import Language.LSP.Server as LSP.Server
 import Language.LSP.Server qualified as Server
 import Language.PureScript.Lsp.Handlers (HandlerM, handlers)
-import Language.PureScript.Lsp.Log (debugLsp)
+import Language.PureScript.Lsp.Log (logPerfStandard)
+import Language.PureScript.Lsp.ServerConfig (ServerConfig, defaultFromEnv)
 import Language.PureScript.Lsp.State (requestIsCancelled)
 import Language.PureScript.Lsp.Types (LspEnvironment)
 import Protolude hiding (to)
+import Data.Aeson.Types qualified as A
+import Data.Text qualified as T
 
 main :: LspEnvironment -> IO Int
 main lspEnv = do
   rin <- atomically newTChan :: IO (TChan ReactorInput)
   Server.runServer $ serverDefinition lspEnv rin
 
-serverDefinition :: LspEnvironment -> TChan ReactorInput -> ServerDefinition ()
+serverDefinition :: LspEnvironment -> TChan ReactorInput -> ServerDefinition ServerConfig
 serverDefinition lspEnv rin =
   Server.ServerDefinition
-    { parseConfig = const $ const $ Right (),
+    { parseConfig = \_current json -> first T.pack $ A.parseEither A.parseJSON json,
       onConfigChange = const $ pure (),
-      defaultConfig = (),
+      defaultConfig = defaultFromEnv lspEnv,
       configSection = "oa-purescript-lsp",
       doInitialize = \env _ -> forkIO (reactor rin) >> pure (Right env),
       staticHandlers = \_caps -> lspHandlers lspEnv rin,
@@ -57,13 +61,6 @@ lspOptions =
       Server.optExecuteCommandCommands = Just ["lsp-purescript-command"]
     }
 
--- data ReactorInputs = ReactorInputs
---   { risMain :: TChan ReactorInput,
---     risCompletion :: TChan ReactorInput, 
---     risHover :: TChan ReactorInput,
---     ris
---   }
-
 -- The reactor is a process that serialises and buffers all requests from the
 -- LSP client, so they can be sent to the backend compiler one at a time, and a
 -- reply sent.
@@ -89,28 +86,27 @@ reactor inp = do
 
 -- | Check if we have a handler, and if we create a haskell-lsp handler to pass it as
 -- input into the reactor
-lspHandlers :: LspEnvironment -> TChan ReactorInput -> Handlers (HandlerM ())
+lspHandlers :: LspEnvironment -> TChan ReactorInput -> Handlers (HandlerM ServerConfig)
 lspHandlers lspEnv rin = mapHandlers goReq goNotification handlers
   where
-    goReq :: forall (a :: LSP.Method LSP.ClientToServer LSP.Request). LSP.Server.Handler (HandlerM ()) a -> LSP.Server.Handler (HandlerM ()) a
+    goReq :: forall (a :: LSP.Method LSP.ClientToServer LSP.Request). LSP.Server.Handler (HandlerM ServerConfig) a -> LSP.Server.Handler (HandlerM ServerConfig) a
     goReq f msg@(LSP.TRequestMessage _ id method _) k = do
       let reqId = case id of
             LSP.IdInt i -> Left i
             LSP.IdString t -> Right t
-      debugLsp $ "Request: " <> show method <> " " <> show reqId
       writeToChannel (Just reqId) (show reqId) $
         ifM
           (requestIsCancelled reqId)
           (k $ Left $ LSP.TResponseError (Types.InL Types.LSPErrorCodes_RequestCancelled) "Cancelled" Nothing)
-          (f msg k)
+          (logPerfStandard ("Request " <> show method) $ f msg k)
 
-    goNotification :: forall (a :: LSP.Method LSP.ClientToServer LSP.Notification). LSP.Server.Handler (HandlerM ()) a -> LSP.Server.Handler (HandlerM ()) a
+    goNotification :: forall (a :: LSP.Method LSP.ClientToServer LSP.Notification). LSP.Server.Handler (HandlerM ServerConfig) a -> LSP.Server.Handler (HandlerM ServerConfig) a
     goNotification f msg@(LSP.TNotificationMessage _ LSP.SMethod_CancelRequest _) = do
       f msg -- cancel requests skip the queue and are handled immediately on the main thread
     goNotification f msg@(LSP.TNotificationMessage _ method _) = do
       writeToChannel Nothing (show method) (f msg)
 
-    -- writeToChannel :: Either Int Text -> HandlerM () () -> IO ()
+    -- writeToChannel :: Either Int Text -> HandlerM ServerConfig () -> IO ()
     writeToChannel = writeToChannelWith writeTChan
 
     writeToChannelWith fn reqId method a = do

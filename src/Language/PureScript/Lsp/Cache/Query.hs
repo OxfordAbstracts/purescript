@@ -1,4 +1,3 @@
-{-# LANGUAGE PackageImports #-}
 {-# OPTIONS_GHC -Wno-redundant-constraints #-}
 
 module Language.PureScript.Lsp.Cache.Query where
@@ -13,6 +12,7 @@ import Data.Map qualified as Map
 import Database.SQLite.Simple (NamedParam ((:=)), fromOnly)
 import Database.SQLite.Simple qualified as SQL
 import Language.LSP.Protocol.Types qualified as LSP
+import Language.LSP.Server (MonadLsp)
 import Language.PureScript.AST qualified as P
 import Language.PureScript.AST.SourcePos (SourcePos (SourcePos))
 import Language.PureScript.CoreFn qualified as CF
@@ -20,6 +20,7 @@ import Language.PureScript.CoreFn.Expr as CF
 import Language.PureScript.CoreFn.FromJSON qualified as CF
 import Language.PureScript.Externs qualified as P
 import Language.PureScript.Lsp.DB qualified as DB
+import Language.PureScript.Lsp.ServerConfig (ServerConfig, getMaxCompletions, getMaxTypeLength)
 import Language.PureScript.Lsp.Types (LspEnvironment)
 import Language.PureScript.Names qualified as P
 import Protolude
@@ -144,80 +145,105 @@ getAstDeclarationsAtSrcPos moduleName' (SourcePos line col) = do
   pure $ deserialise . fromOnly <$> decls
 
 getAstDeclarationsStartingWith ::
-  (MonadIO m, MonadReader LspEnvironment m) =>
-  Int ->
-  Int ->
+  (MonadIO m, MonadReader LspEnvironment m, MonadLsp ServerConfig m) =>
   P.ModuleName ->
   Text ->
   m [CompletionResult]
-getAstDeclarationsStartingWith limit offset moduleName' prefix = do
+getAstDeclarationsStartingWith moduleName' prefix = do
+  limit <- getMaxCompletions
+  typeLen <- getMaxTypeLength
+  let offset = 0 :: Int
   DB.queryNamed
-    "SELECT ast_declarations.name, ast_declarations.printed_type, ast_declarations.module_name FROM ast_declarations \
-    \INNER JOIN ast_modules on ast_declarations.module_name = ast_modules.module_name \
-    \INNER JOIN available_srcs on ast_modules.path = available_srcs.path \
-    \WHERE (ast_declarations.module_name = :module_name OR ast_declarations.exported) \
-    \AND name GLOB :prefix \
-    \ORDER BY name ASC \
-    \LIMIT :limit \
-    \OFFSET :offset"
+    ( SQL.Query $
+        "SELECT ast_declarations.name, "
+          <> printedTypeTruncated typeLen
+          <> "ast_declarations.module_name FROM ast_declarations \
+             \INNER JOIN ast_modules on ast_declarations.module_name = ast_modules.module_name \
+             \INNER JOIN available_srcs on ast_modules.path = available_srcs.path \
+             \WHERE (ast_declarations.module_name = :module_name OR ast_declarations.exported) \
+             \AND (name == :prefix OR name GLOB :prefix) \
+             \ORDER BY name ASC \
+             \LIMIT :limit \
+             \OFFSET :offset"
+    )
     [ ":module_name" := P.runModuleName moduleName',
       ":prefix" := prefix <> "*",
       ":limit" := limit,
       ":offset" := offset
     ]
-    
 
 getAstDeclarationsStartingWithAndSearchingModuleNames ::
-  (MonadIO m, MonadReader LspEnvironment m) =>
-  Int ->
-  Int ->
+  (MonadIO m, MonadReader LspEnvironment m, MonadLsp ServerConfig m) =>
   P.ModuleName ->
   P.ModuleName ->
   Text ->
   m [CompletionResult]
-getAstDeclarationsStartingWithAndSearchingModuleNames limit offset moduleName' moduleNameContains prefix = do
+getAstDeclarationsStartingWithAndSearchingModuleNames moduleName' moduleNameContains prefix = do
+  limit <- getMaxCompletions
+  typeLen <- getMaxTypeLength
+  let offset = 0 :: Int
   DB.queryNamed
-    "SELECT ast_declarations.name, ast_declarations.printed_type, ast_declarations.module_name FROM ast_declarations \
-    \INNER JOIN ast_modules on ast_declarations.module_name = ast_modules.module_name \
-    \INNER JOIN available_srcs on ast_modules.path = available_srcs.path \
-    \WHERE (ast_declarations.module_name = :module_name OR ast_declarations.exported) \
-    \AND ast_declarations.module_name GLOB :module_name_contains \
-    \AND name GLOB :prefix \
-    \ORDER BY name ASC \
-    \LIMIT :limit \
-    \OFFSET :offset"
+    ( SQL.Query $
+        "SELECT ast_declarations.name, "
+          <> printedTypeTruncated typeLen
+          <> "ast_declarations.module_name FROM ast_declarations \
+             \INNER JOIN ast_modules on ast_declarations.module_name = ast_modules.module_name \
+             \INNER JOIN available_srcs on ast_modules.path = available_srcs.path \
+             \WHERE (ast_declarations.module_name = :module_name OR ast_declarations.exported) \
+             \AND ast_declarations.module_name like :module_name_contains \
+             \AND (name == :prefix OR name GLOB :prefix) \
+             \ORDER BY name ASC \
+             \LIMIT :limit \
+             \OFFSET :offset"
+    )
     [ ":module_name" := P.runModuleName moduleName',
       ":prefix" := prefix <> "*",
-      ":module_name_contains" :=  "*" <> P.runModuleName moduleNameContains <> "*",
+      ":module_name_contains" := "%" <> P.runModuleName moduleNameContains <> "%",
       ":limit" := limit,
       ":offset" := offset
     ]
-    
 
 getAstDeclarationsStartingWithOnlyInModule ::
-  (MonadIO m, MonadReader LspEnvironment m) =>
-  Int ->
-  Int ->
+  (MonadIO m, MonadReader LspEnvironment m, MonadLsp ServerConfig m) =>
   P.ModuleName ->
   Text ->
   m [CompletionResult]
-getAstDeclarationsStartingWithOnlyInModule limit offset moduleName' prefix = do
+getAstDeclarationsStartingWithOnlyInModule moduleName' prefix = do
+  limit <- getMaxCompletions
+  typeLen <- getMaxTypeLength
+  let offset = 0 :: Int
   DB.queryNamed
-    "SELECT ast_declarations.name, ast_declarations.printed_type, ast_declarations.module_name FROM ast_declarations \
-    \INNER JOIN ast_modules on ast_declarations.module_name = ast_modules.module_name \
-    \INNER JOIN available_srcs on ast_modules.path = available_srcs.path \
-    \WHERE ast_declarations.module_name = :module_name \
-    \AND name GLOB :prefix \
-    \ORDER BY name ASC \
-    \LIMIT :limit \
-    \OFFSET :offset"
+    ( SQL.Query $
+        "SELECT ast_declarations.name, "
+          <> printedTypeTruncated typeLen
+          <> "ast_declarations.module_name FROM ast_declarations \
+             \INNER JOIN ast_modules on ast_declarations.module_name = ast_modules.module_name \
+             \INNER JOIN available_srcs on ast_modules.path = available_srcs.path \
+             \WHERE ast_declarations.module_name = :module_name \
+             \AND (name == :prefix OR name GLOB :prefix)\
+             \ORDER BY name ASC \
+             \LIMIT :limit \
+             \OFFSET :offset"
+    )
     [ ":module_name" := P.runModuleName moduleName',
       ":prefix" := prefix <> "*",
       ":limit" := limit,
       ":offset" := offset
     ]
 
--- getPrintedType
+printedTypeTruncated :: Int -> Text
+printedTypeTruncated typeLen =
+  " CASE \
+  \WHEN LENGTH (ast_declarations.printed_type) > "
+    <> show typeLen
+    <> " THEN substr (ast_declarations.printed_type, 1, "
+    <> show (typeLen `div` 2)
+    <> ") || '...' "
+    <> " || substr (ast_declarations.printed_type, -"
+    <> show (typeLen `div` 2)
+    <> ") \
+       \ELSE ast_declarations.printed_type \
+       \END printed_type, "
 
 data CompletionResult = CompletionResult
   { crName :: Text,

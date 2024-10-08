@@ -29,13 +29,14 @@ import Language.PureScript.Errors qualified as Errors
 import Language.PureScript.Ide.Error (prettyPrintTypeSingleLine)
 import Language.PureScript.Ide.Imports (Import (..))
 import Language.PureScript.Lsp.Cache (selectExternModuleNameFromFilePath, selectExternPathFromModuleName, updateAvailableSrcs)
-import Language.PureScript.Lsp.Cache.Query (CompletionResult (crModule, crName, crType), getAstDeclarationInModule, getAstDeclarationsStartingWith, getAstDeclarationsStartingWithOnlyInModule, getCoreFnExprAt, getEfDeclarationInModule, getAstDeclarationsStartingWithAndSearchingModuleNames)
+import Language.PureScript.Lsp.Cache.Query (CompletionResult (crModule, crName, crType), getAstDeclarationInModule, getAstDeclarationsStartingWith, getAstDeclarationsStartingWithAndSearchingModuleNames, getAstDeclarationsStartingWithOnlyInModule, getCoreFnExprAt, getEfDeclarationInModule)
 import Language.PureScript.Lsp.Diagnostics (errorMessageDiagnostic, getFileDiagnotics, getMsgUri)
 import Language.PureScript.Lsp.Docs (readDeclarationDocsAsMarkdown, readQualifiedNameDocsAsMarkdown, readQualifiedNameDocsSourceSpan)
 import Language.PureScript.Lsp.Imports (addImportToTextEdit, getIdentModuleQualifier, getMatchingImport)
 import Language.PureScript.Lsp.Log (debugLsp, logPerfStandard)
 import Language.PureScript.Lsp.Print (printName)
 import Language.PureScript.Lsp.Rebuild (codegenTargets, rebuildFile)
+import Language.PureScript.Lsp.ServerConfig (ServerConfig, setTraceValue, getMaxCompletions)
 import Language.PureScript.Lsp.State (cancelRequest)
 import Language.PureScript.Lsp.Types (CompleteItemData (CompleteItemData), LspConfig (confOutputPath), LspEnvironment (lspConfig, lspDbConnection), decodeCompleteItemData)
 import Language.PureScript.Lsp.Util (efDeclSourceSpan, efDeclSourceType, getNamesAtPosition, getWordAt, lookupTypeInEnv, sourcePosToPosition)
@@ -48,22 +49,19 @@ import System.IO.UTF8 (readUTF8FilesT)
 
 type HandlerM config = ReaderT LspEnvironment (Server.LspT config IO)
 
-handlers :: Server.Handlers (HandlerM ())
+handlers :: Server.Handlers (HandlerM ServerConfig)
 handlers =
   mconcat
     [ Server.notificationHandler Message.SMethod_Initialized $ \_not -> do
         void updateAvailableSrcs
         sendInfoMsg "Lsp initialized",
       Server.notificationHandler Message.SMethod_TextDocumentDidOpen $ \msg -> do
-        debugLsp "TextDocumentDidOpen"
         let uri :: Uri
             uri = getMsgUri msg
             fileName = Types.uriToFilePath uri
 
         traverse_ rebuildFile fileName,
-      Server.notificationHandler Message.SMethod_TextDocumentDidChange $ \_msg -> debugLsp "SMethod_TextDocumentDidChange",
       Server.notificationHandler Message.SMethod_TextDocumentDidSave $ \msg -> do
-        debugLsp "SMethod_TextDocumentDidSave"
         let uri :: Uri
             uri = getMsgUri msg
             fileName = Types.uriToFilePath uri
@@ -71,13 +69,13 @@ handlers =
       Server.notificationHandler Message.SMethod_WorkspaceDidChangeConfiguration $ \_msg -> do
         cfg <- getConfig
         debugLsp $ "Config changed: " <> show cfg,
-      Server.notificationHandler Message.SMethod_SetTrace $ \_msg -> debugLsp "SMethod_SetTrace",
-      Server.notificationHandler Message.SMethod_CancelRequest $ \req -> do
-        let reqId = req ^. LSP.params . LSP.id
+      Server.notificationHandler Message.SMethod_SetTrace $ \msg -> do
+        setTraceValue $ msg ^. LSP.params . LSP.value, -- probably no need to do this
+      Server.notificationHandler Message.SMethod_CancelRequest $ \msg -> do
+        let reqId = msg ^. LSP.params . LSP.id
         debugLsp $ "SMethod_CancelRequest " <> show reqId
         cancelRequest reqId,
       Server.requestHandler Message.SMethod_TextDocumentDiagnostic $ \req res -> do
-        debugLsp "SMethod_TextDocumentDiagnostic"
         (_errs, diagnostics) <- getFileDiagnotics req
         res $
           Right $
@@ -112,7 +110,6 @@ handlers =
                         Nothing
                         Nothing,
       Server.requestHandler Message.SMethod_TextDocumentHover $ \req res -> do
-        debugLsp "SMethod_TextDocumentHover"
         let Types.HoverParams docIdent pos _workDone = req ^. LSP.params
             filePathMb = Types.uriToFilePath $ docIdent ^. LSP.uri
             docUri =
@@ -121,10 +118,10 @@ handlers =
                   . to Types.toNormalizedUri
             nullRes = res $ Right $ Types.InR Types.Null
 
-            markdownRes :: Text -> HandlerM () ()
+            markdownRes :: Text -> HandlerM ServerConfig ()
             markdownRes md = res $ Right $ Types.InL $ Types.Hover (Types.InL $ Types.MarkupContent Types.MarkupKind_Markdown md) Nothing
 
-            markdownTypeRes :: Text -> Maybe Text -> [P.Comment] -> HandlerM () ()
+            markdownTypeRes :: Text -> Maybe Text -> [P.Comment] -> HandlerM ServerConfig ()
             markdownTypeRes word type' comments =
               markdownRes $ pursTypeStr word type' comments
 
@@ -140,7 +137,7 @@ handlers =
                   Just t -> " :: " <> t
                   Nothing -> ""
 
-            forLsp :: Maybe a -> (a -> HandlerM () ()) -> HandlerM () ()
+            forLsp :: Maybe a -> (a -> HandlerM ServerConfig ()) -> HandlerM ServerConfig ()
             forLsp val f = maybe nullRes f val
 
         forLsp filePathMb \filePath -> do
@@ -179,7 +176,6 @@ handlers =
                         forLsp typeMb \t -> markdownTypeRes (printName $ disqualify name) (Just $ prettyPrintTypeSingleLine t) []
                       Just docs -> markdownRes docs,
       Server.requestHandler Message.SMethod_TextDocumentDefinition $ \req res -> do
-        debugLsp "SMethod_TextDocumentDefinition"
         let Types.DefinitionParams docIdent pos _prog _prog' = req ^. LSP.params
             filePathMb = Types.uriToFilePath $ docIdent ^. LSP.uri
             uri :: Types.NormalizedUri
@@ -194,9 +190,8 @@ handlers =
 
             locationRes fp range = res $ Right $ Types.InL $ Types.Definition $ Types.InL $ Types.Location (Types.filePathToUri fp) range
 
-            forLsp :: Maybe a -> (a -> HandlerM () ()) -> HandlerM () ()
+            forLsp :: Maybe a -> (a -> HandlerM ServerConfig ()) -> HandlerM ServerConfig ()
             forLsp val f = maybe nullRes f val
-        debugLsp $ "filePathMb: " <> show filePathMb
         forLsp filePathMb \filePath -> do
           vfMb <- Server.getVirtualFile uri
           forLsp vfMb \vf -> do
@@ -262,7 +257,7 @@ handlers =
 
             nullRes = res $ Right $ Types.InR $ Types.InR Types.Null
 
-            forLsp :: Maybe a -> (a -> HandlerM () ()) -> HandlerM () ()
+            forLsp :: Maybe a -> (a -> HandlerM ServerConfig ()) -> HandlerM ServerConfig ()
             forLsp val f = maybe nullRes f val
 
         debugLsp $ "filePathMb: " <> show filePathMb
@@ -277,16 +272,16 @@ handlers =
                 mNameMb <- selectExternModuleNameFromFilePath filePath
                 debugLsp $ "Module name: " <> show mNameMb
                 forLsp mNameMb \mName -> do
-                  let limit = 50
-                      withQualifier = getIdentModuleQualifier word
+                  let withQualifier = getIdentModuleQualifier word
                       wordWithoutQual = maybe word snd withQualifier
+                  limit <- getMaxCompletions
                   matchingImport <- maybe (pure Nothing) (getMatchingImport filePath . fst) withQualifier
                   -- matchingImport =
                   debugLsp $ "wordWithoutQual " <> show wordWithoutQual
                   decls <- case (matchingImport, withQualifier) of
-                    (Just (Import importModuleName _ _), _) -> getAstDeclarationsStartingWithOnlyInModule limit 0 importModuleName wordWithoutQual
-                    (_, Just (wordModuleName, _)) -> getAstDeclarationsStartingWithAndSearchingModuleNames limit 0 mName wordModuleName wordWithoutQual
-                    _ -> logPerfStandard "getAstDeclarationsStartingWith" $ getAstDeclarationsStartingWith limit 0 mName wordWithoutQual
+                    (Just (Import importModuleName _ _), _) -> getAstDeclarationsStartingWithOnlyInModule importModuleName wordWithoutQual
+                    (_, Just (wordModuleName, _)) -> getAstDeclarationsStartingWithAndSearchingModuleNames mName wordModuleName wordWithoutQual
+                    _ -> logPerfStandard "getAstDeclarationsStartingWith" $ getAstDeclarationsStartingWith mName wordWithoutQual
                   -- Just
                   debugLsp $ "Found decls: " <> show (length decls)
                   res $

@@ -354,6 +354,7 @@ library
     Language.PureScript.Lsp.Print
     Language.PureScript.Lsp.ReadFile
     Language.PureScript.Lsp.Rebuild
+    Language.PureScript.Lsp.ServerConfig
     Language.PureScript.Lsp.State
     Language.PureScript.Lsp.Types
     Language.PureScript.Lsp.Util
