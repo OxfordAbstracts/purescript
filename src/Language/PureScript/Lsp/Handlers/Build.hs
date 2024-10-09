@@ -12,13 +12,12 @@ import Language.PureScript.Lsp.Cache (updateAvailableSrcs)
 import Language.PureScript.Lsp.Diagnostics (errorMessageDiagnostic)
 import Language.PureScript.Lsp.Monad (HandlerM)
 import Language.PureScript.Lsp.Rebuild (codegenTargets)
-import Language.PureScript.Lsp.ServerConfig (ServerConfig)
 import Language.PureScript.Lsp.Types (LspConfig (confOutputPath), LspEnvironment (lspConfig, lspDbConnection))
 import Language.PureScript.Make.Index (initDb)
 import Protolude hiding (to)
 import System.IO.UTF8 (readUTF8FilesT)
 
-buildHandler :: Server.Handlers (HandlerM ServerConfig)
+buildHandler :: Server.Handlers HandlerM
 buildHandler =
   Server.requestHandler (Message.SMethod_CustomMethod $ Proxy @"build") $ \_req res -> do
     config <- asks lspConfig

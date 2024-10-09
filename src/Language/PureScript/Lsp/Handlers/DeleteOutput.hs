@@ -8,13 +8,12 @@ import Language.LSP.Protocol.Message qualified as Message
 import Language.LSP.Server qualified as Server
 import Language.PureScript.DB (dbFile)
 import Language.PureScript.Lsp.Monad (HandlerM)
-import Language.PureScript.Lsp.ServerConfig (ServerConfig)
 import Language.PureScript.Lsp.Types (LspConfig (confOutputPath), LspEnvironment (lspConfig))
 import Protolude hiding (to)
 import System.Directory (createDirectoryIfMissing, listDirectory, removePathForcibly)
 import System.FilePath ((</>))
 
-deleteOutputHandler :: Server.Handlers (HandlerM ServerConfig)
+deleteOutputHandler :: Server.Handlers HandlerM
 deleteOutputHandler =
   Server.requestHandler (Message.SMethod_CustomMethod $ Proxy @"delete output") $ \_req res -> do
     outDir <- asks (confOutputPath . lspConfig)

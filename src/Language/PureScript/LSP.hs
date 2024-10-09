@@ -105,10 +105,10 @@ reactor inp = do
 
 -- | Check if we have a handler, and if we create a haskell-lsp handler to pass it as
 -- input into the reactor
-lspHandlers :: LspEnvironment -> TChan ReactorInput -> Handlers (HandlerM ServerConfig)
+lspHandlers :: LspEnvironment -> TChan ReactorInput -> Handlers HandlerM
 lspHandlers lspEnv rin = mapHandlers goReq goNotification handlers
   where
-    goReq :: forall (a :: LSP.Method LSP.ClientToServer LSP.Request). LSP.Server.Handler (HandlerM ServerConfig) a -> LSP.Server.Handler (HandlerM ServerConfig) a
+    goReq :: forall (a :: LSP.Method LSP.ClientToServer LSP.Request). LSP.Server.Handler HandlerM a -> LSP.Server.Handler HandlerM a
     goReq f msg@(LSP.TRequestMessage _ id method _) k = do
       let reqId = case id of
             LSP.IdInt i -> Left i
@@ -120,7 +120,7 @@ lspHandlers lspEnv rin = mapHandlers goReq goNotification handlers
           (k $ Left $ LSP.TResponseError (Types.InL Types.LSPErrorCodes_RequestCancelled) "Cancelled" Nothing)
           (logPerfStandard ("Request " <> show method) $ f msg k)
 
-    goNotification :: forall (a :: LSP.Method LSP.ClientToServer LSP.Notification). LSP.Server.Handler (HandlerM ServerConfig) a -> LSP.Server.Handler (HandlerM ServerConfig) a
+    goNotification :: forall (a :: LSP.Method LSP.ClientToServer LSP.Notification). LSP.Server.Handler HandlerM a -> LSP.Server.Handler HandlerM a
     goNotification f msg@(LSP.TNotificationMessage _ LSP.SMethod_CancelRequest _) = do
       f msg -- cancel requests skip the queue and are handled immediately on the main thread
     goNotification f msg@(LSP.TNotificationMessage _ method _) = do

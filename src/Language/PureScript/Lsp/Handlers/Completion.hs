@@ -21,12 +21,12 @@ import Language.PureScript.Lsp.Docs (readDeclarationDocsAsMarkdown)
 import Language.PureScript.Lsp.Imports (addImportToTextEdit, getIdentModuleQualifier, getMatchingImport)
 import Language.PureScript.Lsp.Log (logPerfStandard)
 import Language.PureScript.Lsp.Monad (HandlerM)
-import Language.PureScript.Lsp.ServerConfig (ServerConfig, getMaxCompletions)
+import Language.PureScript.Lsp.ServerConfig (getMaxCompletions)
 import Language.PureScript.Lsp.Types (CompleteItemData (CompleteItemData), decodeCompleteItemData)
 import Language.PureScript.Lsp.Util (getWordAt)
 import Protolude hiding (to)
 
-completionAndResolveHandlers :: Server.Handlers (HandlerM ServerConfig)
+completionAndResolveHandlers :: Server.Handlers HandlerM
 completionAndResolveHandlers =
   mconcat
     [ Server.requestHandler Message.SMethod_TextDocumentCompletion $ \req res -> do
@@ -42,7 +42,7 @@ completionAndResolveHandlers =
 
             nullRes = res $ Right $ Types.InR $ Types.InR Types.Null
 
-            forLsp :: Maybe a -> (a -> HandlerM ServerConfig ()) -> HandlerM ServerConfig ()
+            forLsp :: Maybe a -> (a -> HandlerM ()) -> HandlerM ()
             forLsp val f = maybe nullRes f val
 
         forLsp filePathMb \filePath -> do

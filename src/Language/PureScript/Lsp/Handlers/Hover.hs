@@ -21,12 +21,11 @@ import Language.PureScript.Lsp.Cache.Query (getCoreFnExprAt, getEfDeclarationInM
 import Language.PureScript.Lsp.Docs (readDeclarationDocsAsMarkdown, readQualifiedNameDocsAsMarkdown)
 import Language.PureScript.Lsp.Monad (HandlerM)
 import Language.PureScript.Lsp.Print (printName)
-import Language.PureScript.Lsp.ServerConfig (ServerConfig)
 import Language.PureScript.Lsp.Util (efDeclSourceType, getNamesAtPosition, lookupTypeInEnv)
 import Language.PureScript.Names (disqualify, runIdent)
 import Protolude hiding (to)
 
-hoverHandler :: Server.Handlers (HandlerM ServerConfig)
+hoverHandler :: Server.Handlers HandlerM
 hoverHandler =
   Server.requestHandler Message.SMethod_TextDocumentHover $ \req res -> do
     let Types.HoverParams docIdent pos _workDone = req ^. LSP.params
@@ -37,10 +36,10 @@ hoverHandler =
               . to Types.toNormalizedUri
         nullRes = res $ Right $ Types.InR Types.Null
 
-        markdownRes :: Text -> HandlerM ServerConfig ()
+        markdownRes :: Text -> HandlerM ()
         markdownRes md = res $ Right $ Types.InL $ Types.Hover (Types.InL $ Types.MarkupContent Types.MarkupKind_Markdown md) Nothing
 
-        markdownTypeRes :: Text -> Maybe Text -> [P.Comment] -> HandlerM ServerConfig ()
+        markdownTypeRes :: Text -> Maybe Text -> [P.Comment] -> HandlerM ()
         markdownTypeRes word type' comments =
           markdownRes $ pursTypeStr word type' comments
 
@@ -56,7 +55,7 @@ hoverHandler =
               Just t -> " :: " <> t
               Nothing -> ""
 
-        forLsp :: Maybe a -> (a -> HandlerM ServerConfig ()) -> HandlerM ServerConfig ()
+        forLsp :: Maybe a -> (a -> HandlerM ()) -> HandlerM ()
         forLsp val f = maybe nullRes f val
 
     forLsp filePathMb \filePath -> do

@@ -9,10 +9,9 @@ import Language.LSP.Protocol.Types qualified as Types
 import Language.LSP.Server qualified as Server
 import Language.PureScript.Lsp.Diagnostics (getFileDiagnotics, getMsgUri)
 import Language.PureScript.Lsp.Monad (HandlerM)
-import Language.PureScript.Lsp.ServerConfig (ServerConfig)
 import Protolude hiding (to)
 
-diagnosticAndCodeActionHandlers :: Server.Handlers (HandlerM ServerConfig)
+diagnosticAndCodeActionHandlers :: Server.Handlers HandlerM
 diagnosticAndCodeActionHandlers =
   mconcat
     [ Server.requestHandler Message.SMethod_TextDocumentDiagnostic $ \req res -> do

@@ -18,11 +18,10 @@ import Language.PureScript.Lsp.Cache.Query (getAstDeclarationInModule, getCoreFn
 import Language.PureScript.Lsp.Docs (readQualifiedNameDocsSourceSpan)
 import Language.PureScript.Lsp.Monad (HandlerM)
 import Language.PureScript.Lsp.Print (printName)
-import Language.PureScript.Lsp.ServerConfig (ServerConfig)
 import Language.PureScript.Lsp.Util (efDeclSourceSpan, getNamesAtPosition, sourcePosToPosition)
 import Protolude hiding (to)
 
-definitionHandler :: Server.Handlers (HandlerM ServerConfig)
+definitionHandler :: Server.Handlers HandlerM
 definitionHandler = Server.requestHandler Message.SMethod_TextDocumentDefinition $ \req res -> do
   let Types.DefinitionParams docIdent pos _prog _prog' = req ^. LSP.params
       filePathMb = Types.uriToFilePath $ docIdent ^. LSP.uri
@@ -38,7 +37,7 @@ definitionHandler = Server.requestHandler Message.SMethod_TextDocumentDefinition
 
       locationRes fp range = res $ Right $ Types.InL $ Types.Definition $ Types.InL $ Types.Location (Types.filePathToUri fp) range
 
-      forLsp :: Maybe a -> (a -> HandlerM ServerConfig ()) -> HandlerM ServerConfig ()
+      forLsp :: Maybe a -> (a -> HandlerM ()) -> HandlerM ()
       forLsp val f = maybe nullRes f val
   forLsp filePathMb \filePath -> do
     vfMb <- Server.getVirtualFile uri

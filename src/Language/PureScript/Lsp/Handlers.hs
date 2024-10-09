@@ -21,11 +21,11 @@ import Language.PureScript.Lsp.Handlers.DeleteOutput (deleteOutputHandler)
 import Language.PureScript.Lsp.Handlers.Diagnostic (diagnosticAndCodeActionHandlers)
 import Language.PureScript.Lsp.Handlers.Hover (hoverHandler)
 import Language.PureScript.Lsp.Monad (HandlerM)
-import Language.PureScript.Lsp.ServerConfig (ServerConfig, setTraceValue)
+import Language.PureScript.Lsp.ServerConfig (setTraceValue)
 import Language.PureScript.Lsp.State (cancelRequest, removedCachedRebuild)
 import Protolude hiding (to)
 
-handlers :: Server.Handlers (HandlerM ServerConfig)
+handlers :: Server.Handlers HandlerM
 handlers =
   mconcat
     [ simpleHandlers,
