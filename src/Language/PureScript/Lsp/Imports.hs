@@ -5,6 +5,7 @@ import Control.Monad.Catch (MonadThrow)
 import Data.List (init, last)
 import Data.Maybe as Maybe
 import Data.Text qualified as T
+import Data.Text.Utf16.Rope.Mixed qualified as Rope
 import Language.LSP.Protocol.Lens qualified as LSP
 import Language.LSP.Protocol.Types as LSP
 import Language.PureScript.AST.Declarations qualified as P
@@ -12,29 +13,32 @@ import Language.PureScript.AST.SourcePos (nullSourceSpan)
 import Language.PureScript.Ide.Imports (Import (Import), prettyPrintImportSection, sliceImportSection)
 import Language.PureScript.Lsp.Cache.Query (getAstDeclarationInModule)
 import Language.PureScript.Lsp.Log (errorLsp)
-import Language.PureScript.Lsp.ReadFile (lspReadFile)
+import Language.PureScript.Lsp.ReadFile (lspReadFileRope)
 import Language.PureScript.Lsp.Types (CompleteItemData (..), LspEnvironment)
 import Language.PureScript.Names qualified as P
 import Protolude
+import Language.PureScript.Lsp.Util (filePathToNormalizedUri)
+import Language.LSP.Server (MonadLsp)
+import Language.PureScript.Lsp.ServerConfig (ServerConfig)
 
-getMatchingImport :: (MonadIO m, MonadReader LspEnvironment m, MonadThrow m) => FilePath -> P.ModuleName -> m (Maybe Import)
+getMatchingImport :: (MonadLsp ServerConfig m, MonadReader LspEnvironment m, MonadThrow m) => NormalizedUri -> P.ModuleName -> m (Maybe Import)
 getMatchingImport path moduleName' = do
   parseRes <- parseImportsFromFile path
   case parseRes of
     Left err -> do
-      errorLsp $ "In " <> T.pack path <> " failed to parse imports from file: " <> err
+      errorLsp $ "In " <> show path <> " failed to parse imports from file: " <> err
       pure Nothing
     Right (_mn, _before, imports, _after) -> do
       pure $ find (\(Import _ _ mn) -> Just moduleName' == mn) imports
 
-addImportToTextEdit :: (MonadIO m, MonadReader LspEnvironment m, MonadThrow m) => CompletionItem -> CompleteItemData -> m CompletionItem
+addImportToTextEdit :: (MonadLsp ServerConfig m, MonadReader LspEnvironment m, MonadThrow m) => CompletionItem -> CompleteItemData -> m CompletionItem
 addImportToTextEdit completionItem completeItemData = do
   importEdits <- getImportEdits completeItemData
   pure $ set LSP.additionalTextEdits importEdits completionItem
 
-getImportEdits :: (MonadIO m, MonadReader LspEnvironment m, MonadThrow m) => CompleteItemData -> m (Maybe [TextEdit])
+getImportEdits :: (MonadLsp ServerConfig m, MonadReader LspEnvironment m, MonadThrow m) => CompleteItemData -> m (Maybe [TextEdit])
 getImportEdits (CompleteItemData path moduleName' importedModuleName name word (Range wordStart _)) = do
-  parseRes <- parseImportsFromFile path
+  parseRes <- parseImportsFromFile (filePathToNormalizedUri path)
   case parseRes of
     Left err -> do
       errorLsp $ "In " <> T.pack path <> " failed to parse imports from file: " <> err
@@ -128,9 +132,9 @@ importsToTextEdit before imports =
 -- | Reads a file and returns the (lines before the imports, the imports, the
 -- lines after the imports)
 parseImportsFromFile ::
-  (MonadIO m, MonadThrow m) =>
-  FilePath ->
+  (MonadThrow m, MonadLsp ServerConfig m) =>
+  NormalizedUri ->
   m (Either Text (P.ModuleName, [Text], [Import], [Text]))
 parseImportsFromFile fp = do
-  (_, file) <- lspReadFile fp
-  pure $ sliceImportSection (T.lines file)
+  rope <- lspReadFileRope fp
+  pure $ sliceImportSection (Rope.lines rope)

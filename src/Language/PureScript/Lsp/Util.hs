@@ -220,3 +220,7 @@ declToCompletionItemKind = \case
   P.RoleDeclaration {} -> Nothing
   P.ExternDeclaration {} -> Just Types.CompletionItemKind_Value
   _ -> Nothing
+
+
+filePathToNormalizedUri :: FilePath -> Types.NormalizedUri
+filePathToNormalizedUri = Types.toNormalizedUri . Types.filePathToUri

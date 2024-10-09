@@ -56,7 +56,7 @@ syncOptions =
   Types.TextDocumentSyncOptions
     { Types._openClose = Just True,
       Types._change = Just Types.TextDocumentSyncKind_Incremental,
-      Types._willSave = Just False,
+      Types._willSave = Just True,
       Types._willSaveWaitUntil = Just False,
       Types._save = Just $ Types.InL True
     }

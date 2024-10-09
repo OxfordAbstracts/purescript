@@ -57,7 +57,7 @@ completionAndResolveHandlers =
                   let withQualifier = getIdentModuleQualifier word
                       wordWithoutQual = maybe word snd withQualifier
                   limit <- getMaxCompletions
-                  matchingImport <- maybe (pure Nothing) (getMatchingImport filePath . fst) withQualifier
+                  matchingImport <- maybe (pure Nothing) (getMatchingImport uri . fst) withQualifier
                   -- matchingImport =
                   decls <- case (matchingImport, withQualifier) of
                     (Just (Import importModuleName _ _), _) -> getAstDeclarationsStartingWithOnlyInModule importModuleName wordWithoutQual

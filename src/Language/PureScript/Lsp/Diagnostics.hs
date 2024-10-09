@@ -13,7 +13,7 @@ import Language.PureScript.Errors (ErrorMessage (ErrorMessage), MultipleErrors (
 import Language.PureScript.Errors qualified as Errors
 import Language.PureScript.Errors.JSON (toSuggestion)
 import Language.PureScript.Errors.JSON qualified as JsonErrors
-import Language.PureScript.Lsp.Rebuild (rebuildFile)
+import Language.PureScript.Lsp.Rebuild (rebuildFile, RebuildResult (RebuildError, RebuildWarning))
 import Language.PureScript.Lsp.Types (LspEnvironment)
 import Protolude hiding (to)
 import Text.PrettyPrint.Boxes (render)
@@ -29,33 +29,26 @@ getFileDiagnotics ::
     MonadReader LspEnvironment m
   ) =>
   s ->
-  m ([ErrorMessage], [Diagnostic])
+  m [Diagnostic]
 getFileDiagnotics msg = do
-  let uri :: Uri
-      uri = getMsgUri msg
-      fileName = Types.uriToFilePath uri
-  case fileName of
-    Just file -> do
-      res <- rebuildFile file
-      pure $ getResultDiagnostics res
-    Nothing -> pure ([], [])
+  let uri :: Types.NormalizedUri
+      uri = getMsgUri msg & Types.toNormalizedUri
+  res <- rebuildFile uri
+  pure $ getResultDiagnostics res
 
 getMsgUri :: (LSP.HasParams s a1, LSP.HasTextDocument a1 a2, LSP.HasUri a2 a3) => s -> a3
 getMsgUri msg = msg ^. LSP.params . LSP.textDocument . LSP.uri
 
 getResultDiagnostics ::
-  Either ([(FilePath, Text)], P.MultipleErrors) (FilePath, P.MultipleErrors) ->
-  ([ErrorMessage], [Types.Diagnostic])
+  RebuildResult ->
+  [Types.Diagnostic]
 getResultDiagnostics res = case res of
-  Left (_, errs) -> do
-    let errors = runMultipleErrors errs
-        diags = errorMessageDiagnostic Types.DiagnosticSeverity_Error <$> errors
-    (errors, diags)
-  Right (_, errs) | Errors.nonEmpty errs -> do
-    let errors = runMultipleErrors errs
-        diags = errorMessageDiagnostic Types.DiagnosticSeverity_Warning <$> errors
-    (errors, diags)
-  _ -> ([], [])
+  RebuildError errors -> errorsToDiagnostics Types.DiagnosticSeverity_Error errors
+  RebuildWarning errors -> errorsToDiagnostics Types.DiagnosticSeverity_Warning errors
+
+errorsToDiagnostics :: Types.DiagnosticSeverity ->  P.MultipleErrors -> [Types.Diagnostic]
+errorsToDiagnostics severity errs =
+  errorMessageDiagnostic severity <$> runMultipleErrors errs
 
 errorMessageDiagnostic :: Types.DiagnosticSeverity -> ErrorMessage -> Types.Diagnostic
 errorMessageDiagnostic severity msg@((ErrorMessage _hints _)) =

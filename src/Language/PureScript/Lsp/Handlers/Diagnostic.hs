@@ -15,7 +15,7 @@ diagnosticAndCodeActionHandlers :: Server.Handlers HandlerM
 diagnosticAndCodeActionHandlers =
   mconcat
     [ Server.requestHandler Message.SMethod_TextDocumentDiagnostic $ \req res -> do
-        (_errs, diagnostics) <- getFileDiagnotics req
+        diagnostics <- getFileDiagnotics req
         res $
           Right $
             Types.DocumentDiagnosticReport $
