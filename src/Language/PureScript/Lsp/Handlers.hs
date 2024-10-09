@@ -45,9 +45,9 @@ handlers =
             sendInfoMsg "Lsp initialized",
           Server.notificationHandler Message.SMethod_TextDocumentDidOpen $ \_msg -> do
             pure (),
-          Server.notificationHandler Message.SMethod_TextDocumentDidSave $ \_msg -> do
-            pure (),
           Server.notificationHandler Message.SMethod_TextDocumentDidChange $ \_msg -> do
+            pure (),
+          Server.notificationHandler Message.SMethod_TextDocumentDidSave $ \_msg -> do
             pure (),
           Server.notificationHandler Message.SMethod_TextDocumentDidClose $ \msg -> do
             let uri :: Uri
