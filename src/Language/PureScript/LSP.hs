@@ -16,8 +16,9 @@ import Language.LSP.Protocol.Message qualified as LSP
 import Language.LSP.Protocol.Types qualified as Types
 import Language.LSP.Server as LSP.Server
 import Language.LSP.Server qualified as Server
-import Language.PureScript.Lsp.Handlers (HandlerM, handlers)
+import Language.PureScript.Lsp.Handlers (handlers)
 import Language.PureScript.Lsp.Log (logPerfStandard)
+import Language.PureScript.Lsp.Monad (HandlerM)
 import Language.PureScript.Lsp.ServerConfig (ServerConfig, defaultFromEnv)
 import Language.PureScript.Lsp.State (requestIsCancelled)
 import Language.PureScript.Lsp.Types (LspEnvironment)
@@ -29,20 +30,27 @@ main lspEnv = do
   Server.runServer $ serverDefinition lspEnv rin
 
 serverDefinition :: LspEnvironment -> TChan ReactorInput -> ServerDefinition ServerConfig
-serverDefinition lspEnv rin =
+serverDefinition lspEnv _rin =
   Server.ServerDefinition
     { parseConfig = \_current json -> first T.pack $ A.parseEither A.parseJSON json,
       onConfigChange = const $ pure (),
       defaultConfig = defaultFromEnv lspEnv,
       configSection = "oa-purescript-lsp",
-      doInitialize = \env _ -> forkIO (reactor rin) >> pure (Right env),
-      staticHandlers = \_caps -> lspHandlers lspEnv rin,
+      doInitialize = \env _ -> pure (Right env),
+      staticHandlers = const handlers,
       interpretHandler = \serverEnv ->
         Server.Iso
           ( Server.runLspT serverEnv . flip runReaderT lspEnv
           )
           liftIO,
       options = lspOptions
+    }
+
+lspOptions :: Server.Options
+lspOptions =
+  Server.defaultOptions
+    { Server.optTextDocumentSync = Just syncOptions,
+      Server.optExecuteCommandCommands = Just ["lsp-purescript-command"]
     }
 
 syncOptions :: Types.TextDocumentSyncOptions
@@ -55,21 +63,22 @@ syncOptions =
       Types._save = Just $ Types.InL True
     }
 
-lspOptions :: Server.Options
-lspOptions =
-  Server.defaultOptions
-    { Server.optTextDocumentSync = Just syncOptions,
-      Server.optExecuteCommandCommands = Just ["lsp-purescript-command"]
-    }
-
 -- The reactor is a process that serialises and buffers all requests from the
 -- LSP client, so they can be sent to the backend compiler one at a time, and a
 -- reply sent.
-
 data ReactorInput = ReactorAction
   { riId :: Maybe (Either Int32 Text),
     riMethod :: Text,
     riAction :: IO ()
+  }
+
+-- | We have 3 channels for the 3 different types of requests we can receive
+-- | As diagnostics and custom commands are often slow, we want to keep them
+-- | separate from the standard requests
+data Reactors = Reactors
+  { standard :: ReactorInput,
+    diagnostics :: ReactorInput,
+    customCommands :: ReactorInput
   }
 
 -- | The single point that all events flow through, allowing management of state

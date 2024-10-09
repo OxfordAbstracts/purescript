@@ -349,7 +349,14 @@ library
     Language.PureScript.Lsp.Cache.Query
     Language.PureScript.Lsp.Diagnostics
     Language.PureScript.Lsp.Handlers
+    Language.PureScript.Lsp.Handlers.Build
+    Language.PureScript.Lsp.Handlers.Completion
+    Language.PureScript.Lsp.Handlers.Definition
+    Language.PureScript.Lsp.Handlers.DeleteOutput
+    Language.PureScript.Lsp.Handlers.Diagnostic
+    Language.PureScript.Lsp.Handlers.Hover
     Language.PureScript.Lsp.Log
+    Language.PureScript.Lsp.Monad
     Language.PureScript.Lsp.Prim
     Language.PureScript.Lsp.Print
     Language.PureScript.Lsp.ReadFile
