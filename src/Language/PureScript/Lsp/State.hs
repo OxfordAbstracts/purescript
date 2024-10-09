@@ -10,7 +10,7 @@ module Language.PureScript.Lsp.State
     getExportEnv,
     cancelRequest,
     addRunningRequest,
-    removeRunningRequest,
+    removeRunningRequest
   )
 where
 
