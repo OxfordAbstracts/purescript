@@ -30,7 +30,7 @@ mkEnv :: LspConfig -> IO LspEnvironment
 mkEnv conf = do
   createDirectoryIfMissing True $ confOutputPath conf
   connection <- mkConnection $ confOutputPath conf
-  st <- newTVarIO (LspState mempty P.primEnv mempty mempty)
+  st <- newTVarIO (LspState mempty P.primEnv mempty)
   pure $ LspEnvironment conf connection st
 
 data LspConfig = LspConfig
@@ -44,8 +44,7 @@ data LspConfig = LspConfig
 data LspState = LspState
   { openFiles :: [(FilePath, OpenFile)],
     exportEnv :: Env,
-    runningRequests :: Map (Either Int32 Text) (Async ()),
-    cancelledRequests :: Set (Either Int32 Text)
+    runningRequests :: Map (Either Int32 Text) (Async ())
   }
 
 data OpenFile = OpenFile

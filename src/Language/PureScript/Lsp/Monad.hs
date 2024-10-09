@@ -5,6 +5,4 @@ import Language.PureScript.Lsp.Types
 import Protolude
 import Language.PureScript.Lsp.ServerConfig (ServerConfig)
 
-type HandlerM = HandlerMWithConfig ServerConfig
-
-type HandlerMWithConfig config = ReaderT LspEnvironment (LspT config IO)
+type HandlerM = ReaderT LspEnvironment (LspT ServerConfig IO) 

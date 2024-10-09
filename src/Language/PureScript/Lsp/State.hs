@@ -8,8 +8,9 @@ module Language.PureScript.Lsp.State
     buildExportEnvCache,
     addExternToExportEnv,
     getExportEnv,
-    requestIsCancelled,
     cancelRequest,
+    addRunningRequest,
+    removeRunningRequest,
   )
 where
 
@@ -18,7 +19,6 @@ import Control.Monad.Catch (MonadThrow (throwM))
 import Control.Monad.Trans.Writer (WriterT (runWriterT))
 import Data.List qualified as List
 import Data.Map qualified as Map
-import Data.Set qualified as Set
 import Data.Text qualified as T
 import Language.LSP.Protocol.Types (type (|?) (..))
 import Language.LSP.Server (MonadLsp)
@@ -78,7 +78,7 @@ buildExportEnvCache module' externs = do
         case result of
           Left err -> pure $ Left err
           Right newEnv -> do
-            writeTVar st $ st' {exportEnv = newEnv }
+            writeTVar st $ st' {exportEnv = newEnv}
             pure $ Right newEnv
 
   case result of
@@ -116,14 +116,22 @@ addExternToExportEnv ef = do
 getExportEnv :: (MonadReader LspEnvironment m, MonadIO m) => m P.Env
 getExportEnv = exportEnv <$> (liftIO . readTVarIO =<< lspStateVar <$> ask)
 
+addRunningRequest :: (MonadIO m) => LspEnvironment -> Either Int32 Text -> Async () -> m ()
+addRunningRequest env requestId req = liftIO . atomically $ modifyTVar (lspStateVar env) $ \x ->
+  x
+    { runningRequests = Map.insert requestId req (runningRequests x)
+    }
+
+removeRunningRequest :: (MonadIO m) => LspEnvironment -> Either Int32 Text -> m ()
+removeRunningRequest env requestId = liftIO . atomically $ modifyTVar (lspStateVar env) $ \x ->
+  x
+    { runningRequests = Map.delete requestId (runningRequests x)
+    }
+
 cancelRequest :: (MonadReader LspEnvironment m, MonadIO m) => (Int32 |? Text) -> m ()
 cancelRequest requestId = do
   st <- lspStateVar <$> ask
-  reqMb <- liftIO . atomically $ do 
-    modifyTVar st $ \x ->
-      x
-        { cancelledRequests = Set.insert eitherId (cancelledRequests x)
-        }
+  reqMb <- liftIO . atomically $ do
     Map.lookup eitherId . runningRequests <$> readTVar st
 
   for_ reqMb $ \req -> liftIO $ cancel req
@@ -131,10 +139,3 @@ cancelRequest requestId = do
     eitherId = case requestId of
       InL i -> Left i
       InR t -> Right t
-
-requestIsCancelled :: (MonadReader LspEnvironment m, MonadIO m) => Either Int32 Text -> m Bool
-requestIsCancelled requestId = do
-  st <- lspStateVar <$> ask
-  liftIO . atomically $ do
-    st' <- readTVar st
-    pure $ requestId `Set.member` cancelledRequests st'
