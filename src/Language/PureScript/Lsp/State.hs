@@ -119,10 +119,14 @@ getExportEnv = exportEnv <$> (liftIO . readTVarIO =<< lspStateVar <$> ask)
 cancelRequest :: (MonadReader LspEnvironment m, MonadIO m) => (Int32 |? Text) -> m ()
 cancelRequest requestId = do
   st <- lspStateVar <$> ask
-  liftIO . atomically . modifyTVar st $ \x ->
-    x
-      { cancelledRequests = Set.insert eitherId (cancelledRequests x)
-      }
+  reqMb <- liftIO . atomically $ do 
+    modifyTVar st $ \x ->
+      x
+        { cancelledRequests = Set.insert eitherId (cancelledRequests x)
+        }
+    Map.lookup eitherId . runningRequests <$> readTVar st
+
+  for_ reqMb $ \req -> liftIO $ cancel req
   where
     eitherId = case requestId of
       InL i -> Left i
