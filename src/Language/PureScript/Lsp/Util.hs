@@ -110,6 +110,26 @@ getNamesAtPosition pos moduleName' src = do
                         <> Set.singleton (flip P.mkQualified modName $ P.TyName name)
                     _ -> mempty
 
+            getExprNames :: P.ModuleName -> P.Expr -> (P.ModuleName, Set (P.Qualified P.Name))
+            getExprNames modName expr = (modName,) case expr of
+              P.Var _ (P.Qualified qb ident) | True -> Set.singleton $ P.Qualified qb $ P.IdentName ident
+              P.Constructor _ (P.Qualified qb ident) -> Set.singleton $ P.Qualified qb $ P.DctorName ident
+              P.TypeClassDictionary (P.Constraint _ (P.Qualified qb ident) _ _ _) _ _ -> Set.singleton $ P.Qualified qb $ P.TyClassName ident
+              P.DeferredDictionary (P.Qualified qb ident) _ -> Set.singleton $ P.Qualified qb $ P.TyClassName ident
+              P.DerivedInstancePlaceholder (P.Qualified qb ident) _ -> Set.singleton $ P.Qualified qb $ P.TyClassName ident
+              P.TypedValue _ _ tipe -> Set.fromList (getTypeNames tipe)
+              _ -> mempty
+
+            getTypeNames :: P.SourceType -> [P.Qualified P.Name]
+            getTypeNames = P.everythingOnTypes (<>) goType
+              where
+                goType :: P.SourceType -> [P.Qualified P.Name]
+                goType = \case
+                  P.TypeConstructor _ ctr -> [fmap P.TyName ctr]
+                  P.ConstrainedType _ (P.Constraint {..}) _ -> [fmap P.TyClassName constraintClass]
+                  -- P.TypeClassDictionary (P.Constraint {..}) _ _ -> [_ constraintClass]
+                  _ -> []
+
             goBinder :: P.ModuleName -> P.Binder -> (P.ModuleName, Set (P.Qualified P.Name))
             goBinder modName b = (modName,) case b of
               P.ConstructorBinder _ (P.Qualified qb ident) _ -> Set.singleton $ P.Qualified qb $ P.DctorName ident
@@ -117,30 +137,10 @@ getNamesAtPosition pos moduleName' src = do
               P.TypedBinder st _ -> Set.fromList $ getTypeNames st
               _ -> mempty
 
-            exprNames = P.everythingWithContextOnValues moduleName' Set.empty (<>) getDeclName getExprName goBinder goDef goDef ^. _1 $ decl
+            exprNames = P.everythingWithContextOnValues moduleName' Set.empty (<>) getDeclName getExprNames goBinder goDef goDef ^. _1 $ decl
         -- typeNames = Set.fromList $ usedTypeNames moduleName' decl
 
         Set.filter ((==) search . printName . P.disqualify) exprNames
-
-getExprName :: P.ModuleName -> P.Expr -> (P.ModuleName, Set (P.Qualified P.Name))
-getExprName modName expr = (modName,) case expr of
-  P.Var _ (P.Qualified qb ident) | True -> Set.singleton $ P.Qualified qb $ P.IdentName ident
-  P.Constructor _ (P.Qualified qb ident) -> Set.singleton $ P.Qualified qb $ P.DctorName ident
-  P.TypeClassDictionary (P.Constraint _ (P.Qualified qb ident) _ _ _) _ _ -> Set.singleton $ P.Qualified qb $ P.TyClassName ident
-  P.DeferredDictionary (P.Qualified qb ident) _ -> Set.singleton $ P.Qualified qb $ P.TyClassName ident
-  P.DerivedInstancePlaceholder (P.Qualified qb ident) _ -> Set.singleton $ P.Qualified qb $ P.TyClassName ident
-  P.TypedValue _ _ tipe -> Set.fromList (getTypeNames tipe)
-  _ -> mempty
-
-getTypeNames :: P.SourceType -> [P.Qualified P.Name]
-getTypeNames = P.everythingOnTypes (<>) goType
-  where
-    goType :: P.SourceType -> [P.Qualified P.Name]
-    goType = \case
-      P.TypeConstructor _ ctr -> [fmap P.TyName ctr]
-      P.ConstrainedType _ (P.Constraint {..}) _ -> [fmap P.TyClassName constraintClass]
-      -- P.TypeClassDictionary (P.Constraint {..}) _ _ -> [_ constraintClass]
-      _ -> []
 
 lookupTypeInEnv :: (MonadReader LspEnvironment m, MonadIO m) => FilePath -> P.Qualified P.Name -> m (Maybe P.SourceType)
 lookupTypeInEnv fp (P.Qualified qb name) = do
@@ -157,7 +157,8 @@ lookupTypeInEnv fp (P.Qualified qb name) = do
               P.DctorName dctorName -> view _3 <$> Map.lookup (P.Qualified qb dctorName) dataConstructors
               P.TyClassName tyClassName ->
                 view _1 <$> Map.lookup (P.Qualified qb $ P.coerceProperName tyClassName) types
-              _ -> Nothing
+              P.ModName _ -> Nothing
+              -- _ -> Nothing
               -- P.Qualified (P.ByModuleName mn) n -> P.lookupType n mn env
               -- P.Qualified (P.BySourcePos _) n -> P.lookupType n (P.moduleName env) env
           )
@@ -236,9 +237,9 @@ declSourceSpanWithExpr d = maybe span (widenSourceSpan span) exprSpan
     exprSpan = case d of
       P.ValueDeclaration (P.ValueDeclarationData {..}) ->
         let go acc (P.GuardedExpr _ e) =
-              case acc of
-                Nothing -> findExprSourceSpan e
-                Just acc' -> widenSourceSpan acc' <$> findExprSourceSpan e
+             case acc of 
+               Nothing -> findExprSourceSpan e
+               Just acc' -> widenSourceSpan acc' <$> findExprSourceSpan e
          in foldl' go Nothing valdeclExpression
       _ -> Nothing
 

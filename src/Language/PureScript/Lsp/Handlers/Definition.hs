@@ -7,7 +7,6 @@ module Language.PureScript.Lsp.Handlers.Definition where
 import Control.Lens (Field1 (_1), Field3 (_3), view, (^.))
 import Control.Lens.Getter (to)
 import Data.Map qualified as Map
-import Data.Text qualified as T
 import Language.LSP.Protocol.Lens qualified as LSP
 import Language.LSP.Protocol.Message qualified as Message
 import Language.LSP.Protocol.Types qualified as Types
@@ -25,9 +24,10 @@ import Language.PureScript.Lsp.Monad (HandlerM)
 import Language.PureScript.Lsp.Print (printName)
 import Language.PureScript.Lsp.State (cachedRebuild)
 import Language.PureScript.Lsp.Types (OpenFile (..))
-import Language.PureScript.Lsp.Util (declSourceSpanWithExpr, efDeclSourceSpan, getExprName, getNamesAtPosition, lookupTypeInEnv, posInSpan, posInSpanLines, sourcePosToPosition)
+import Language.PureScript.Lsp.Util (declSourceSpanWithExpr, efDeclSourceSpan, getNamesAtPosition, posInSpan, posInSpanLines, sourcePosToPosition)
 import Language.PureScript.Types (getAnnForType)
 import Protolude hiding (to)
+import Language.PureScript.Environment qualified as E
 
 definitionHandler :: Server.Handlers HandlerM
 definitionHandler = Server.requestHandler Message.SMethod_TextDocumentDefinition $ \req res -> do
@@ -39,6 +39,8 @@ definitionHandler = Server.requestHandler Message.SMethod_TextDocumentDefinition
       locationRes fp range = res $ Right $ Types.InL $ Types.Definition $ Types.InL $ Types.Location (Types.filePathToUri fp) range
 
       posRes fp srcPos = locationRes fp $ Types.Range (sourcePosToPosition srcPos) (sourcePosToPosition srcPos)
+
+      sourceTypeLocRes st = locationRes (AST.spanName $ fst $ getAnnForType st) $ spanToRange $ fst $ getAnnForType st
 
       forLsp :: Maybe a -> (a -> HandlerM ()) -> HandlerM ()
       forLsp val f = maybe nullRes f val
@@ -59,29 +61,28 @@ definitionHandler = Server.requestHandler Message.SMethod_TextDocumentDefinition
 
           exprs = getExprsAtPos pos =<< decls
 
-      debugLsp $ "pos: " <> show pos
-
-      debugLsp $ "declsAtPos: " <> show (length declsAtPos)
-
       case head exprs of
         Nothing -> nullRes
         Just expr -> do
           debugLsp $ "expr: " <> show expr
           case expr of
             P.Var _ (P.Qualified (P.BySourcePos srcPos) _) -> posRes filePath srcPos
+            P.Var _ ident | Just (st, _ , _) <- Map.lookup ident (E.names ofFinalEnv) -> sourceTypeLocRes st
             P.Op _ (P.Qualified (P.BySourcePos srcPos) _) -> posRes filePath srcPos
             P.Constructor _ (P.Qualified (P.BySourcePos srcPos) _) -> posRes filePath srcPos
-            P.VisibleTypeApp _ st -> locationRes (AST.spanName $ fst $ getAnnForType st) $ spanToRange $ fst $ getAnnForType st
-            P.TypedValue _ _ st -> locationRes (AST.spanName $ fst $ getAnnForType st) $ spanToRange $ fst $ getAnnForType st
-            _ -> do
-              moduleNameMb <- selectExternModuleNameFromFilePath filePath
-              forLsp moduleNameMb \moduleName -> do
-                nameMb <- getExprName moduleName expr
-                forLsp nameMb \name -> do
-                  spanMb <- readQualifiedNameDocsSourceSpan name
-                  case spanMb of
-                    Just span -> locationRes (P.spanName span) (spanToRange span)
-                    _ -> nullRes
+            P.Constructor _ ident | Just (_, _, st, _) <-  Map.lookup ident (E.dataConstructors ofFinalEnv) -> sourceTypeLocRes st
+            P.VisibleTypeApp _ st -> sourceTypeLocRes st
+            P.TypedValue _ _ st -> sourceTypeLocRes st
+            _ -> nullRes
+              -- do
+              -- moduleNameMb <- selectExternModuleNameFromFilePath filePath
+              -- forLsp moduleNameMb \moduleName' -> do
+              --   nameMb <- getExprName moduleName expr
+              --   forLsp nameMb \name -> do
+              --     spanMb <- readQualifiedNameDocsSourceSpan name
+              --     case spanMb of
+              --       Just span -> locationRes (P.spanName span) (spanToRange span)
+              --       _ -> nullRes
               -- forLsp (liftA2 (,) moduleNameMb (getExprName expr)) \(modName, name) -> do
               --   spanMb <- readQualifiedNameDocsSourceSpan name
               --   case spanMb of

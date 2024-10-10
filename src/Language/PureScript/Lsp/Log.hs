@@ -1,11 +1,11 @@
 module Language.PureScript.Lsp.Log where
 
 import Data.Text qualified as T
-import Data.Time (UTCTime (utctDayTime), defaultTimeLocale, formatTime, getCurrentTime)
+import Data.Time (defaultTimeLocale, formatTime, getCurrentTime)
+import Language.PureScript.Ide.Logging (displayTimeSpec)
 import Language.PureScript.Lsp.Types (LspConfig (confLogLevel), LspEnvironment (lspConfig), LspLogLevel (..))
 import Protolude
-import System.Clock (TimeSpec, getTime, Clock (Monotonic), diffTimeSpec)
-import Language.PureScript.Ide.Logging (displayTimeSpec)
+import System.Clock (Clock (Monotonic), TimeSpec, diffTimeSpec, getTime)
 
 infoLsp :: (MonadIO m, MonadReader LspEnvironment m) => Text -> m ()
 infoLsp = logLsp LogMsgInfo
@@ -29,11 +29,14 @@ logLsp msgLogLevel msg = do
     now <- liftIO getCurrentTime
     liftIO $
       putErrLn -- Use stderr for logging as LSP messages should be on stdout
-        ( printLogMsgSeverity msgLogLevel
-            <> "\n:\n"
+        ( "[ "
+            <> printLogMsgSeverity msgLogLevel
+            <> " ]"
+            <> " "
             <> T.pack (formatTime defaultTimeLocale "%T" now)
-            <> "\n:\n"
+            <> "\n"
             <> msg
+            <> "\n\n"
         )
 
 logPerfStandard :: (MonadIO m, MonadReader LspEnvironment m) => Text -> m t -> m t
@@ -47,7 +50,7 @@ logPerf format f = do
   perfLsp (format (diffTimeSpec start end))
   pure result
 
-getPerfTime :: MonadIO m => m TimeSpec
+getPerfTime :: (MonadIO m) => m TimeSpec
 getPerfTime = liftIO (getTime Monotonic)
 
 labelTimespec :: Text -> TimeSpec -> Text
