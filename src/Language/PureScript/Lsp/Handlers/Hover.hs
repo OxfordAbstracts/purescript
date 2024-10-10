@@ -2,11 +2,13 @@
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# OPTIONS_GHC -Wno-overlapping-patterns #-}
+{-# OPTIONS_GHC -Wno-unused-imports #-}
 
 module Language.PureScript.Lsp.Handlers.Hover where
 
 import Control.Lens ((^.))
 import Control.Lens.Getter (to)
+import Data.Set qualified as Set
 import Language.LSP.Protocol.Lens qualified as LSP
 import Language.LSP.Protocol.Message qualified as Message
 import Language.LSP.Protocol.Types qualified as Types
@@ -22,8 +24,12 @@ import Language.PureScript.Lsp.Docs (readDeclarationDocsAsMarkdown, readQualifie
 import Language.PureScript.Lsp.Monad (HandlerM)
 import Language.PureScript.Lsp.Print (printName)
 import Language.PureScript.Lsp.Util (efDeclSourceType, getNamesAtPosition, lookupTypeInEnv)
-import Language.PureScript.Names (disqualify, runIdent)
+import Language.PureScript.Names (disqualify, runIdent, Qualified (..))
 import Protolude hiding (to)
+import Language.PureScript.Lsp.State (cacheRebuild, cachedRebuild)
+import Language.PureScript.AST.Traversals (everythingWithContextOnValues)
+import Language.PureScript.Lsp.Types (OpenFile(..))
+import Language.PureScript.AST.Declarations (Expr(..))
 
 hoverHandler :: Server.Handlers HandlerM
 hoverHandler =
@@ -59,37 +65,57 @@ hoverHandler =
         forLsp val f = maybe nullRes f val
 
     forLsp filePathMb \filePath -> do
-      corefnExprMb <- getCoreFnExprAt filePath pos
-      case corefnExprMb of
-        Just (CF.Literal _ _) -> nullRes
-        Just (CF.Constructor (ss, comments, _meta) tName cMame _) -> do
-          docsMb <- do
-            mNameMb <- selectExternModuleNameFromFilePath (P.spanName ss)
-            maybe (pure Nothing) (`readDeclarationDocsAsMarkdown` P.runProperName tName) mNameMb
-          case docsMb of
-            Nothing -> markdownTypeRes (P.runProperName cMame) (Just $ P.runProperName tName) comments
-            Just docs -> markdownRes docs
-        Just (CF.Var (_ss, comments, _meta) (P.Qualified qb ident)) -> do
-          case qb of
-            P.ByModuleName mName -> do
-              docsMb <- readDeclarationDocsAsMarkdown mName (P.runIdent ident)
-              case docsMb of
-                Just docs -> markdownRes docs
-                _ -> do
-                  declMb <- getEfDeclarationInModule mName (runIdent ident)
-                  markdownTypeRes (P.runIdent ident) (prettyPrintTypeSingleLine . efDeclSourceType <$> declMb) comments
-            P.BySourcePos _pos' ->
-              markdownTypeRes (P.runIdent ident) Nothing []
-        _ -> do
-          vfMb <- Server.getVirtualFile docUri
-          forLsp vfMb \vf -> do
-            mNameMb <- selectExternModuleNameFromFilePath filePath
-            forLsp mNameMb \mName -> do
-              names <- getNamesAtPosition pos mName (VFS._file_text vf)
-              forLsp (head names) \name -> do
-                docsMb <- readQualifiedNameDocsAsMarkdown name
+      openFileMb <- cachedRebuild  filePath
+      forLsp openFileMb \_ -> do
+        corefnExprMb <- getCoreFnExprAt filePath pos
+        case corefnExprMb of
+          Just (CF.Literal _ _) -> nullRes
+          Just (CF.Constructor (ss, comments, _meta) tName cMame _) -> do
+            docsMb <- do
+              mNameMb <- selectExternModuleNameFromFilePath (P.spanName ss)
+              maybe (pure Nothing) (`readDeclarationDocsAsMarkdown` P.runProperName tName) mNameMb
+            case docsMb of
+              Nothing -> markdownTypeRes (P.runProperName cMame) (Just $ P.runProperName tName) comments
+              Just docs -> markdownRes docs
+          Just (CF.Var (_ss, comments, _meta) (P.Qualified qb ident)) -> do
+            case qb of
+              P.ByModuleName mName -> do
+                docsMb <- readDeclarationDocsAsMarkdown mName (P.runIdent ident)
                 case docsMb of
-                  Nothing -> do
-                    typeMb <- lookupTypeInEnv filePath name
-                    forLsp typeMb \t -> markdownTypeRes (printName $ disqualify name) (Just $ prettyPrintTypeSingleLine t) []
                   Just docs -> markdownRes docs
+                  _ -> do
+                    declMb <- getEfDeclarationInModule mName (runIdent ident)
+                    markdownTypeRes (P.runIdent ident) (prettyPrintTypeSingleLine . efDeclSourceType <$> declMb) comments
+              P.BySourcePos _pos' ->
+                markdownTypeRes (P.runIdent ident) Nothing []
+          _ -> do
+            vfMb <- Server.getVirtualFile docUri
+            forLsp vfMb \vf -> do
+              mNameMb <- selectExternModuleNameFromFilePath filePath
+              forLsp mNameMb \mName -> do
+                names <- getNamesAtPosition pos mName (VFS._file_text vf)
+                forLsp (head names) \name -> do
+                  docsMb <- readQualifiedNameDocsAsMarkdown name
+                  case docsMb of
+                    Nothing -> do
+                      typeMb <- lookupTypeInEnv filePath name
+                      forLsp typeMb \t -> markdownTypeRes (printName $ disqualify name) (Just $ prettyPrintTypeSingleLine t) []
+                    Just docs -> markdownRes docs
+
+
+-- getExprsAtPosition :: Types.Position -> Text -> P.Declaration -> [(P.SourcePos, P.Expr)]
+-- getExprsAtPosition pos word decl = []
+
+-- usedIdents :: P.ModuleName ->  P.Expr -> [P.Ident]
+-- usedIdents moduleName = ordNub . usedIdents' Set.empty 
+--   where
+--   def _ _ = []
+
+--   (_, usedIdents', _, _, _) = P.everythingWithScope def usedNamesE def def def
+
+--   usedNamesE :: Set.Set ScopedIdent -> Expr -> [Ident]
+--   usedNamesE scope (Var _ (Qualified (BySourcePos _) name))
+--     | LocalIdent name `S.notMember` scope = [name]
+--   usedNamesE scope (Var _ (Qualified (ByModuleName moduleName') name))
+--     | moduleName == moduleName' && ToplevelIdent name `S.notMember` scope = [name]
+--   usedNamesE _ _ = []

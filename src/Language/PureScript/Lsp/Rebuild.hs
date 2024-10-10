@@ -55,7 +55,7 @@ rebuildFile uri = logPerfStandard "Rebuild file " do
               & addRebuildCaching stVar maxCache externs
       debugLsp $ "Cache found: " <> show (isJust cachedBuild)
       case cachedBuild of
-        Just (OpenFile _ _ externs env _) -> do
+        Just (OpenFile _ _ externs env _ _) -> do
           foreigns <- P.inferForeignModules (M.singleton moduleName (Right fp))
           exportEnv <- logPerfStandard "build export cache" $ buildExportEnvCache m externs
           res <- logPerfStandard "Rebuild Module with provided env" $ liftIO $ do
@@ -101,5 +101,5 @@ shushProgress ma =
 addRebuildCaching :: TVar LspState -> Int -> [ExternsFile] -> P.MakeActions P.Make -> P.MakeActions P.Make
 addRebuildCaching stVar maxCache deps ma =
   ma
-    { P.codegen = \prevEnv env astM m docs ext -> lift (liftIO $ cacheRebuild' stVar maxCache ext deps prevEnv env) <* P.codegen ma prevEnv env astM m docs ext
+    { P.codegen = \prevEnv env astM m docs ext -> lift (liftIO $ cacheRebuild' stVar maxCache ext deps prevEnv env astM) <* P.codegen ma prevEnv env astM m docs ext
     }

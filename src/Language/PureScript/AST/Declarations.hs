@@ -34,6 +34,7 @@ import Protolude (ConvertText (toS), readMaybe)
 import Protolude.Exceptions (hush)
 import Prelude
 import Data.ByteString.Lazy qualified as Lazy
+import Language.PureScript.Types qualified as P
 
 -- | A map of locally-bound names in scope.
 type Context = [(Ident, SourceType)]
@@ -798,12 +799,18 @@ exprSourceSpan (TypedValue _ _ _) = Nothing
 exprSourceSpan (Let _ _ _) = Nothing
 exprSourceSpan (Do _ _) = Nothing
 exprSourceSpan (Ado _ _ _) = Nothing
-exprSourceSpan (TypeClassDictionary _ _ _) = Nothing
+exprSourceSpan (TypeClassDictionary sa _ _) = Just $ fst $ P.constraintAnn sa
 exprSourceSpan (DeferredDictionary _ _) = Nothing
 exprSourceSpan (DerivedInstancePlaceholder _ _) = Nothing
 exprSourceSpan AnonymousArgument = Nothing
 exprSourceSpan (Hole _) = Nothing
 exprSourceSpan (PositionedValue ss _ _) = Just ss
+
+
+-- findExprSourceSpan :: Expr -> Maybe SourceSpan
+-- findExprSourceSpan = goExpr 
+--   where 
+--     ( ) = P.everythingOnValues
 
 
 -- |

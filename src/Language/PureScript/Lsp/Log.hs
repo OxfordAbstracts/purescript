@@ -26,15 +26,14 @@ logLsp :: (MonadIO m, MonadReader LspEnvironment m) => LogMsgSeverity -> Text ->
 logLsp msgLogLevel msg = do
   logLevel <- confLogLevel . lspConfig <$> ask
   when (shouldLog msgLogLevel logLevel) $ do
-    now <- liftIO $ utctDayTime <$> getCurrentTime
+    now <- liftIO getCurrentTime
     liftIO $
       putErrLn -- Use stderr for logging as LSP messages should be on stdout
         ( printLogMsgSeverity msgLogLevel
-            <> ": "
+            <> "\n:\n"
             <> T.pack (formatTime defaultTimeLocale "%T" now)
-            <> " "
-            <> ": "
-            <> show msg
+            <> "\n:\n"
+            <> msg
         )
 
 logPerfStandard :: (MonadIO m, MonadReader LspEnvironment m) => Text -> m t -> m t

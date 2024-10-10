@@ -19,6 +19,7 @@ import Language.PureScript.Sugar.Names (Env)
 import Language.PureScript.Sugar.Names qualified as P
 import Protolude
 import System.Directory (createDirectoryIfMissing)
+import Language.PureScript.AST qualified as P
 
 data LspEnvironment = LspEnvironment
   { lspConfig :: LspConfig,
@@ -52,7 +53,8 @@ data OpenFile = OpenFile
     ofExternsFile :: P.ExternsFile,
     ofDependencies :: [P.ExternsFile],
     ofStartingEnv :: P.Environment,
-    ofFinalEnv :: P.Environment
+    ofFinalEnv :: P.Environment, 
+    ofModule ::  P.Module
   }
   deriving (Show)
 

@@ -154,7 +154,6 @@ binderNamesWithSpans = go []
   lit ns (ArrayLiteral bs) = foldl go ns bs
   lit ns _ = ns
 
-
 isIrrefutable :: Binder -> Bool
 isIrrefutable NullBinder = True
 isIrrefutable (VarBinder _ _) = True

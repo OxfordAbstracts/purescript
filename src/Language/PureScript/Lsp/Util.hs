@@ -16,16 +16,17 @@ import Data.Text.Utf16.Rope.Mixed as Rope
 import Database.SQLite.Simple.ToField (ToField (toField))
 import Language.LSP.Protocol.Types (UInt)
 import Language.LSP.Protocol.Types qualified as Types
+import Language.PureScript.AST qualified as AST
 import Language.PureScript.AST qualified as P
 import Language.PureScript.AST.Declarations (declSourceAnn)
+-- import Language.PureScript.Sugar.BindingGroups (usedTypeNames)
+
+import Language.PureScript.AST.SourcePos (widenSourceSpan)
 import Language.PureScript.Comments qualified as P
 import Language.PureScript.Environment qualified as P
-import Language.PureScript.Errors qualified as Errors
 import Language.PureScript.Externs qualified as P
 import Language.PureScript.Linter qualified as P
 import Language.PureScript.Lsp.Cache.Query (getAstDeclarationsAtSrcPos)
--- import Language.PureScript.Sugar.BindingGroups (usedTypeNames)
-
 import Language.PureScript.Lsp.Print (printName)
 import Language.PureScript.Lsp.State (cachedRebuild)
 import Language.PureScript.Lsp.Types (LspEnvironment, OpenFile (ofFinalEnv))
@@ -33,12 +34,17 @@ import Language.PureScript.Names qualified as P
 import Language.PureScript.Types qualified as P
 import Protolude hiding (to)
 
-posInSpan :: Types.Position -> Errors.SourceSpan -> Bool
-posInSpan (Types.Position line col) (Errors.SourceSpan _ (Errors.SourcePos startLine startCol) (Errors.SourcePos endLine endCol)) =
+posInSpan :: Types.Position -> AST.SourceSpan -> Bool
+posInSpan (Types.Position line col) (AST.SourceSpan _ (AST.SourcePos startLine startCol) (AST.SourcePos endLine endCol)) =
   startLine <= fromIntegral (line + 1)
     && endLine >= fromIntegral (line + 1)
     && startCol <= fromIntegral (col + 1)
     && endCol >= fromIntegral (col + 1)
+
+posInSpanLines :: Types.Position -> AST.SourceSpan -> Bool
+posInSpanLines (Types.Position line _) (AST.SourceSpan _ (AST.SourcePos startLine _) (AST.SourcePos endLine _)) =
+  startLine <= fromIntegral (line + 1)
+    && endLine >= fromIntegral (line + 1)
 
 getDeclarationAtPos :: Types.Position -> [P.Declaration] -> Maybe P.Declaration
 getDeclarationAtPos pos = find (posInSpan pos . fst . declSourceAnn)
@@ -53,7 +59,6 @@ getWordAt file pos@(Types.Position {..}) =
           line' = Rope.toText ropeLine
           (wordStartCol, wordEndCol, _word) = getWordOnLine line' _character
        in (Types.Range (Types.Position _line $ fromIntegral wordStartCol) (Types.Position _line $ fromIntegral wordEndCol), _word)
-
 
 getWordOnLine :: Text -> UInt -> (Int, Int, Text)
 getWordOnLine line' col =
@@ -105,26 +110,6 @@ getNamesAtPosition pos moduleName' src = do
                         <> Set.singleton (flip P.mkQualified modName $ P.TyName name)
                     _ -> mempty
 
-            getExprName :: P.ModuleName -> P.Expr -> (P.ModuleName, Set (P.Qualified P.Name))
-            getExprName modName expr = (modName,) case expr of
-              P.Var _ (P.Qualified qb ident) | True -> Set.singleton $ P.Qualified qb $ P.IdentName ident
-              P.Constructor _ (P.Qualified qb ident) -> Set.singleton $ P.Qualified qb $ P.DctorName ident
-              P.TypeClassDictionary (P.Constraint _ (P.Qualified qb ident) _ _ _) _ _ -> Set.singleton $ P.Qualified qb $ P.TyClassName ident
-              P.DeferredDictionary (P.Qualified qb ident) _ -> Set.singleton $ P.Qualified qb $ P.TyClassName ident
-              P.DerivedInstancePlaceholder (P.Qualified qb ident) _ -> Set.singleton $ P.Qualified qb $ P.TyClassName ident
-              P.TypedValue _ _ tipe -> Set.fromList (getTypeNames tipe)
-              _ -> mempty
-
-            getTypeNames :: P.SourceType -> [P.Qualified P.Name]
-            getTypeNames = P.everythingOnTypes (<>) goType
-              where
-                goType :: P.SourceType -> [P.Qualified P.Name]
-                goType = \case
-                  P.TypeConstructor _ ctr -> [fmap P.TyName ctr]
-                  P.ConstrainedType _ (P.Constraint {..}) _ -> [fmap P.TyClassName constraintClass]
-                  -- P.TypeClassDictionary (P.Constraint {..}) _ _ -> [_ constraintClass]
-                  _ -> []
-
             goBinder :: P.ModuleName -> P.Binder -> (P.ModuleName, Set (P.Qualified P.Name))
             goBinder modName b = (modName,) case b of
               P.ConstructorBinder _ (P.Qualified qb ident) _ -> Set.singleton $ P.Qualified qb $ P.DctorName ident
@@ -136,6 +121,26 @@ getNamesAtPosition pos moduleName' src = do
         -- typeNames = Set.fromList $ usedTypeNames moduleName' decl
 
         Set.filter ((==) search . printName . P.disqualify) exprNames
+
+getExprName :: P.ModuleName -> P.Expr -> (P.ModuleName, Set (P.Qualified P.Name))
+getExprName modName expr = (modName,) case expr of
+  P.Var _ (P.Qualified qb ident) | True -> Set.singleton $ P.Qualified qb $ P.IdentName ident
+  P.Constructor _ (P.Qualified qb ident) -> Set.singleton $ P.Qualified qb $ P.DctorName ident
+  P.TypeClassDictionary (P.Constraint _ (P.Qualified qb ident) _ _ _) _ _ -> Set.singleton $ P.Qualified qb $ P.TyClassName ident
+  P.DeferredDictionary (P.Qualified qb ident) _ -> Set.singleton $ P.Qualified qb $ P.TyClassName ident
+  P.DerivedInstancePlaceholder (P.Qualified qb ident) _ -> Set.singleton $ P.Qualified qb $ P.TyClassName ident
+  P.TypedValue _ _ tipe -> Set.fromList (getTypeNames tipe)
+  _ -> mempty
+
+getTypeNames :: P.SourceType -> [P.Qualified P.Name]
+getTypeNames = P.everythingOnTypes (<>) goType
+  where
+    goType :: P.SourceType -> [P.Qualified P.Name]
+    goType = \case
+      P.TypeConstructor _ ctr -> [fmap P.TyName ctr]
+      P.ConstrainedType _ (P.Constraint {..}) _ -> [fmap P.TyClassName constraintClass]
+      -- P.TypeClassDictionary (P.Constraint {..}) _ _ -> [_ constraintClass]
+      _ -> []
 
 lookupTypeInEnv :: (MonadReader LspEnvironment m, MonadIO m) => FilePath -> P.Qualified P.Name -> m (Maybe P.SourceType)
 lookupTypeInEnv fp (P.Qualified qb name) = do
@@ -197,16 +202,16 @@ efDeclSourceSpan = \case
 efDeclComments :: P.ExternsDeclaration -> [P.Comment]
 efDeclComments = foldr getComments [] . efDeclSourceType
   where
-    getComments :: Errors.SourceAnn -> [P.Comment] -> [P.Comment]
+    getComments :: AST.SourceAnn -> [P.Comment] -> [P.Comment]
     getComments (_, cs) acc = cs ++ acc
 
-sourcePosToPosition :: Errors.SourcePos -> Types.Position
-sourcePosToPosition (Errors.SourcePos line col) =
+sourcePosToPosition :: AST.SourcePos -> Types.Position
+sourcePosToPosition (AST.SourcePos line col) =
   Types.Position (fromIntegral $ line - 1) (fromIntegral $ col - 1)
 
-positionToSourcePos :: Types.Position -> Errors.SourcePos
+positionToSourcePos :: Types.Position -> AST.SourcePos
 positionToSourcePos (Types.Position line col) =
-  Errors.SourcePos (fromIntegral $ line + 1) (fromIntegral $ col + 1)
+  AST.SourcePos (fromIntegral $ line + 1) (fromIntegral $ col + 1)
 
 declToCompletionItemKind :: P.Declaration -> Maybe Types.CompletionItemKind
 declToCompletionItemKind = \case
@@ -221,6 +226,32 @@ declToCompletionItemKind = \case
   P.ExternDeclaration {} -> Just Types.CompletionItemKind_Value
   _ -> Nothing
 
-
 filePathToNormalizedUri :: FilePath -> Types.NormalizedUri
 filePathToNormalizedUri = Types.toNormalizedUri . Types.filePathToUri
+
+declSourceSpanWithExpr :: P.Declaration -> AST.SourceSpan
+declSourceSpanWithExpr d = maybe span (widenSourceSpan span) exprSpan
+  where
+    span = P.declSourceSpan d
+    exprSpan = case d of
+      P.ValueDeclaration (P.ValueDeclarationData {..}) ->
+        let go acc (P.GuardedExpr _ e) =
+              case acc of
+                Nothing -> findExprSourceSpan e
+                Just acc' -> widenSourceSpan acc' <$> findExprSourceSpan e
+         in foldl' go Nothing valdeclExpression
+      _ -> Nothing
+
+findExprSourceSpan :: P.Expr -> Maybe AST.SourceSpan
+findExprSourceSpan = goExpr
+  where
+    combine (Just a) _ = Just a
+    combine _ b = b
+    (_, goExpr, _, _, _) =
+      P.everythingOnValues
+        combine
+        (Just . P.declSourceSpan)
+        P.exprSourceSpan
+        (const Nothing)
+        (const Nothing)
+        (const Nothing)
