@@ -9,30 +9,100 @@ module Language.PureScript.Lsp.Handlers.Hover where
 import Control.Lens ((^.))
 import Control.Lens.Getter (to)
 import Data.Set qualified as Set
+import Data.Text qualified as T
 import Language.LSP.Protocol.Lens qualified as LSP
 import Language.LSP.Protocol.Message qualified as Message
 import Language.LSP.Protocol.Types qualified as Types
 import Language.LSP.Server qualified as Server
 import Language.LSP.VFS qualified as VFS
 import Language.PureScript qualified as P
+import Language.PureScript.AST.Declarations (Expr (..))
+import Language.PureScript.AST.Traversals (everythingWithContextOnValues)
 import Language.PureScript.CoreFn.Expr qualified as CF
+import Language.PureScript.CoreFn.Module (Module (moduleComments))
 import Language.PureScript.Docs.Convert.Single (convertComments)
+import Language.PureScript.Docs.Types qualified as Docs
 import Language.PureScript.Ide.Error (prettyPrintTypeSingleLine)
 import Language.PureScript.Lsp.Cache (selectExternModuleNameFromFilePath)
-import Language.PureScript.Lsp.Cache.Query (getCoreFnExprAt, getEfDeclarationInModule)
-import Language.PureScript.Lsp.Docs (readDeclarationDocsAsMarkdown, readQualifiedNameDocsAsMarkdown)
+import Language.PureScript.Lsp.Cache.Query (getAstDeclarationLocationInModule, getAstDeclarationTypeInModule, getCoreFnExprAt, getEfDeclarationInModule)
+import Language.PureScript.Lsp.Docs (readDeclarationDocsAsMarkdown, readModuleDocs, readQualifiedNameDocsAsMarkdown, readDeclarationDocsWithNameType)
+import Language.PureScript.Lsp.Handlers.Definition (findDeclRefAtPos, getImportRefNameType, isPrimImport, spanToRange)
+import Language.PureScript.Lsp.Log (debugLsp)
 import Language.PureScript.Lsp.Monad (HandlerM)
+import Language.PureScript.Lsp.NameType (LspNameType (..))
 import Language.PureScript.Lsp.Print (printName)
-import Language.PureScript.Lsp.Util (efDeclSourceType, getNamesAtPosition, lookupTypeInEnv)
-import Language.PureScript.Names (disqualify, runIdent, Qualified (..))
-import Protolude hiding (to)
 import Language.PureScript.Lsp.State (cacheRebuild, cachedRebuild)
-import Language.PureScript.AST.Traversals (everythingWithContextOnValues)
-import Language.PureScript.Lsp.Types (OpenFile(..))
-import Language.PureScript.AST.Declarations (Expr(..))
+import Language.PureScript.Lsp.Types (OpenFile (..))
+import Language.PureScript.Lsp.Util (declAtLine, efDeclSourceType, getNamesAtPosition, lookupTypeInEnv)
+import Language.PureScript.Names (Qualified (..), disqualify, runIdent)
+import Protolude hiding (to)
 
 hoverHandler :: Server.Handlers HandlerM
-hoverHandler =
+hoverHandler = Server.requestHandler Message.SMethod_TextDocumentHover $ \req res -> do
+  let Types.HoverParams docIdent pos@(Types.Position {..}) _prog = req ^. LSP.params
+      filePathMb = Types.uriToFilePath $ docIdent ^. LSP.uri
+
+      nullRes = res $ Right $ Types.InR Types.Null
+
+      markdownRes md range = res $ Right $ Types.InL $ Types.Hover (Types.InL $ Types.MarkupContent Types.MarkupKind_Markdown md) range
+
+      forLsp :: Maybe a -> (a -> HandlerM ()) -> HandlerM ()
+      forLsp val f = maybe nullRes f val
+
+      respondWithDeclInOtherModule :: P.SourceSpan -> LspNameType -> P.ModuleName -> Text -> HandlerM ()
+      respondWithDeclInOtherModule ss nameType modName ident = do
+        declDocMb <- readDeclarationDocsWithNameType modName nameType ident -- TODO include nametype
+        case declDocMb of
+          Just docs -> markdownRes docs (Just $ spanToRange ss)
+          _ -> do
+            tipes <- getAstDeclarationTypeInModule (Just nameType) modName ident
+            forLsp (head tipes) \tipe ->
+              markdownRes tipe (Just $ spanToRange ss)
+
+      respondWithModule :: P.SourceSpan -> P.ModuleName -> HandlerM ()
+      respondWithModule ss modName = do
+        docsMb <- readModuleDocs modName
+        case docsMb of
+          Just docs | Just comments <- Docs.modComments docs -> markdownRes comments (Just $ spanToRange ss)
+          _ -> nullRes
+
+      respondWithImports ss importedModuleName imports = do
+        case findDeclRefAtPos pos imports of
+          Just import' -> do
+            let name = P.declRefName import'
+                nameType = getImportRefNameType import'
+            forLsp nameType \nameType' -> do
+              respondWithDeclInOtherModule ss nameType' importedModuleName (printName name)
+          _ -> respondWithModule ss importedModuleName
+
+  debugLsp $ "Position: " <> show pos
+
+  forLsp filePathMb \filePath -> do
+    cacheOpenMb <- cachedRebuild filePath
+    forLsp cacheOpenMb \OpenFile {..} -> do
+      let withoutPrim =
+            ofModule
+              & P.getModuleDeclarations
+              & filter (not . isPrimImport)
+
+          srcPosLine = fromIntegral _line + 1
+
+          declAtPos =
+            withoutPrim
+              & declAtLine srcPosLine
+      forLsp declAtPos $ \decl -> do
+        case decl of
+          P.ImportDeclaration (ss, _) importedModuleName importType _ -> do
+            -- debugLsp $ "found import at pos: " <> show importedModuleName
+            case importType of
+              P.Implicit -> respondWithModule ss importedModuleName
+              P.Explicit imports -> respondWithImports ss importedModuleName imports
+              P.Hiding imports -> respondWithImports ss importedModuleName imports
+          _ ->
+            nullRes
+
+hoverHandlerV1 :: Server.Handlers HandlerM
+hoverHandlerV1 =
   Server.requestHandler Message.SMethod_TextDocumentHover $ \req res -> do
     let Types.HoverParams docIdent pos _workDone = req ^. LSP.params
         filePathMb = Types.uriToFilePath $ docIdent ^. LSP.uri
@@ -49,23 +119,11 @@ hoverHandler =
         markdownTypeRes word type' comments =
           markdownRes $ pursTypeStr word type' comments
 
-        pursTypeStr word type' comments =
-          "```purescript\n"
-            <> word
-            <> annotation
-            <> "\n"
-            <> fold (convertComments comments)
-            <> "\n```"
-          where
-            annotation = case type' of
-              Just t -> " :: " <> t
-              Nothing -> ""
-
         forLsp :: Maybe a -> (a -> HandlerM ()) -> HandlerM ()
         forLsp val f = maybe nullRes f val
 
     forLsp filePathMb \filePath -> do
-      openFileMb <- cachedRebuild  filePath
+      openFileMb <- cachedRebuild filePath
       forLsp openFileMb \_ -> do
         corefnExprMb <- getCoreFnExprAt filePath pos
         case corefnExprMb of
@@ -102,20 +160,18 @@ hoverHandler =
                       forLsp typeMb \t -> markdownTypeRes (printName $ disqualify name) (Just $ prettyPrintTypeSingleLine t) []
                     Just docs -> markdownRes docs
 
+pursTypeStr :: Text -> Maybe Text -> [P.Comment] -> Text
+pursTypeStr word type' comments =
+  "```purescript\n"
+    <> word
+    <> annotation
+    <> "\n"
+    <> fold (convertComments comments)
+    <> "\n```"
+  where
+    annotation = case type' of
+      Just t -> " :: " <> t
+      Nothing -> ""
 
--- getExprsAtPosition :: Types.Position -> Text -> P.Declaration -> [(P.SourcePos, P.Expr)]
--- getExprsAtPosition pos word decl = []
-
--- usedIdents :: P.ModuleName ->  P.Expr -> [P.Ident]
--- usedIdents moduleName = ordNub . usedIdents' Set.empty 
---   where
---   def _ _ = []
-
---   (_, usedIdents', _, _, _) = P.everythingWithScope def usedNamesE def def def
-
---   usedNamesE :: Set.Set ScopedIdent -> Expr -> [Ident]
---   usedNamesE scope (Var _ (Qualified (BySourcePos _) name))
---     | LocalIdent name `S.notMember` scope = [name]
---   usedNamesE scope (Var _ (Qualified (ByModuleName moduleName') name))
---     | moduleName == moduleName' && ToplevelIdent name `S.notMember` scope = [name]
---   usedNamesE _ _ = []
+pursMd :: Text -> Text
+pursMd t = "```purescript\n" <> t <> "\n```"

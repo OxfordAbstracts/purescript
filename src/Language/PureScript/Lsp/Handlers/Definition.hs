@@ -5,27 +5,22 @@
 module Language.PureScript.Lsp.Handlers.Definition where
 
 import Control.Lens (Field1 (_1), view, (^.))
-import Control.Lens.Getter (to)
 import Language.LSP.Protocol.Lens qualified as LSP
 import Language.LSP.Protocol.Message qualified as Message
 import Language.LSP.Protocol.Types qualified as Types
 import Language.LSP.Server qualified as Server
-import Language.LSP.VFS qualified as VFS
 import Language.PureScript (declName)
 import Language.PureScript qualified as P
-import Language.PureScript.AST qualified as AST
 import Language.PureScript.AST.SourcePos (nullSourceSpan)
-import Language.PureScript.CoreFn.Expr qualified as CF
-import Language.PureScript.Lsp.Cache (selectExternModuleNameFromFilePath, selectExternPathFromModuleName)
-import Language.PureScript.Lsp.Cache.Query (getAstDeclarationInModule, getAstDeclarationLocationInModule, getCoreFnExprAt, getEfDeclarationInModule)
-import Language.PureScript.Lsp.Docs (readQualifiedNameDocsSourceSpan)
+import Language.PureScript.Lsp.Cache (selectExternPathFromModuleName)
+import Language.PureScript.Lsp.Cache.Query (getAstDeclarationLocationInModule)
 import Language.PureScript.Lsp.Log (debugLsp)
 import Language.PureScript.Lsp.Monad (HandlerM)
 import Language.PureScript.Lsp.NameType (LspNameType (..))
 import Language.PureScript.Lsp.Print (printName)
 import Language.PureScript.Lsp.State (cachedRebuild)
 import Language.PureScript.Lsp.Types (OpenFile (..))
-import Language.PureScript.Lsp.Util (declAtLine, efDeclSourceSpan, getNamesAtPosition, posInSpan, sourcePosToPosition)
+import Language.PureScript.Lsp.Util (declAtLine, posInSpan, sourcePosToPosition)
 import Language.PureScript.Types (getAnnForType)
 import Protolude hiding (to)
 
@@ -47,7 +42,7 @@ definitionHandler = Server.requestHandler Message.SMethod_TextDocumentDefinition
       respondWithDeclInOtherModule nameType modName ident = do
         declSpans <- getAstDeclarationLocationInModule nameType modName ident
         forLsp (head declSpans) $ \sourceSpan ->
-          locationRes (AST.spanName sourceSpan) (spanToRange sourceSpan)
+          locationRes (P.spanName sourceSpan) (spanToRange sourceSpan)
 
       respondWithModule :: P.SourceSpan -> P.ModuleName -> HandlerM ()
       respondWithModule ss modName =
@@ -59,16 +54,11 @@ definitionHandler = Server.requestHandler Message.SMethod_TextDocumentDefinition
           else nullRes
 
       respondWithImports ss importedModuleName imports = do
-        case find (posInSpan pos . P.declRefSourceSpan) imports of
+        case findDeclRefAtPos pos imports of
           Just import' -> do
             let name = P.declRefName import'
-                nameType = case import' of
-                  P.TypeClassRef _ _ -> Just TyClassNameType
-                  P.TypeRef _ _ _ -> Just TyNameType
-                  P.TypeOpRef _ _ -> Just TyOpNameType
-                  P.ValueRef _ _ -> Just IdentNameType
-                  P.ValueOpRef _ _ -> Just ValOpNameType
-                  _ -> Nothing
+                nameType = getImportRefNameType import'
+            
             respondWithDeclInOtherModule nameType importedModuleName (printName name)
           _ -> respondWithModule ss importedModuleName
 
@@ -165,7 +155,7 @@ fromPrim st = case st of
 
 isPrimImport :: P.Declaration -> Bool
 isPrimImport (P.ImportDeclaration _ (P.ModuleName "Prim") _ _) = True
-isPrimImport (P.ImportDeclaration ss _ _ _) | ss == AST.nullSourceAnn = True
+isPrimImport (P.ImportDeclaration ss _ _ _) | ss == P.nullSourceAnn = True
 isPrimImport _ = False
 
 findForallSpan :: Text -> [P.SourceType] -> Maybe P.SourceSpan
@@ -174,8 +164,8 @@ findForallSpan var (P.ForAll ss _ fa _ _ _ : rest) =
   if fa == var then Just (fst ss) else findForallSpan var rest
 findForallSpan var (_ : rest) = findForallSpan var rest
 
-spanToRange :: AST.SourceSpan -> Types.Range
-spanToRange (AST.SourceSpan _ start end) =
+spanToRange :: P.SourceSpan -> Types.Range
+spanToRange (P.SourceSpan _ start end) =
   Types.Range
     (sourcePosToPosition start)
     (sourcePosToPosition end)
@@ -188,7 +178,7 @@ getExprsAtPos pos declaration = execState (goDecl declaration) []
 
     (onDecl, _, _) = P.everywhereOnValuesTopDownM pure handleExpr pure
 
-    handleExpr :: AST.Expr -> StateT [P.Expr] Identity AST.Expr
+    handleExpr :: P.Expr -> StateT [P.Expr] Identity P.Expr
     handleExpr expr = do
       when (maybe False (posInSpan pos) (P.exprSourceSpan expr)) do
         modify (expr :)
@@ -200,61 +190,16 @@ getTypesAtPos pos decl = P.everythingOnTypes (<>) getAtPos =<< (view _1 $ P.accu
     getAtPos :: P.SourceType -> [P.SourceType]
     getAtPos st = [st | posInSpan pos (fst $ getAnnForType st)]
 
-definitionHandlerV1 :: Server.Handlers HandlerM
-definitionHandlerV1 = Server.requestHandler Message.SMethod_TextDocumentDefinition $ \req res -> do
-  let Types.DefinitionParams docIdent pos _prog _prog' = req ^. LSP.params
-      filePathMb = Types.uriToFilePath $ docIdent ^. LSP.uri
-      uri :: Types.NormalizedUri
-      uri =
-        req
-          ^. LSP.params
-            . LSP.textDocument
-            . LSP.uri
-            . to Types.toNormalizedUri
+findDeclRefAtPos :: Foldable t => Types.Position -> t P.DeclarationRef -> Maybe P.DeclarationRef
+findDeclRefAtPos pos imports = find (posInSpan pos . P.declRefSourceSpan) imports
 
-      nullRes = res $ Right $ Types.InR $ Types.InR Types.Null
-
-      locationRes fp range = res $ Right $ Types.InL $ Types.Definition $ Types.InL $ Types.Location (Types.filePathToUri fp) range
-
-      forLsp :: Maybe a -> (a -> HandlerM ()) -> HandlerM ()
-      forLsp val f = maybe nullRes f val
-  forLsp filePathMb \filePath -> do
-    vfMb <- Server.getVirtualFile uri
-    forLsp vfMb \vf -> do
-      mNameMb <- selectExternModuleNameFromFilePath filePath
-      forLsp mNameMb \mName -> do
-        names <- getNamesAtPosition pos mName (VFS._file_text vf)
-
-        case head names of
-          Just name -> do
-            spanMb <- readQualifiedNameDocsSourceSpan name
-            case spanMb of
-              _ -> do
-                case name of
-                  P.Qualified (P.BySourcePos pos') _ -> do
-                    locationRes filePath (Types.Range (sourcePosToPosition pos') (sourcePosToPosition pos'))
-                  P.Qualified (P.ByModuleName nameModule) ident -> do
-                    declMb <- getAstDeclarationInModule nameModule (printName ident)
-                    forLsp declMb \decl -> do
-                      modFpMb <- selectExternPathFromModuleName nameModule
-                      forLsp modFpMb \modFp -> do
-                        let sourceSpan = P.declSourceSpan decl
-                        locationRes modFp (spanToRange sourceSpan)
-              Just span ->
-                locationRes (P.spanName span) (spanToRange span)
-          _ -> do
-            corefnExprMb <- getCoreFnExprAt filePath pos
-            case corefnExprMb of
-              Just (CF.Var (_ss, _comments, _meta) (P.Qualified qb ident)) -> do
-                let name = P.runIdent ident
-                case qb of
-                  P.ByModuleName coreMName -> do
-                    declMb <- getEfDeclarationInModule coreMName name
-                    forLsp declMb \decl -> do
-                      modFpMb <- selectExternPathFromModuleName coreMName
-                      forLsp modFpMb \modFp -> do
-                        let sourceSpan = efDeclSourceSpan decl
-                        locationRes modFp (spanToRange sourceSpan)
-                  P.BySourcePos srcPos ->
-                    locationRes filePath (Types.Range (sourcePosToPosition srcPos) (sourcePosToPosition srcPos))
-              _ -> nullRes
+getImportRefNameType :: P.DeclarationRef -> Maybe LspNameType
+getImportRefNameType = \case
+  P.TypeClassRef _ _ -> Just TyClassNameType
+  P.TypeRef _ _ _ -> Just TyNameType
+  P.TypeOpRef _ _ -> Just TyOpNameType
+  P.ValueRef _ _ -> Just IdentNameType
+  P.ValueOpRef _ _ -> Just ValOpNameType
+  P.ModuleRef _ _ -> Just ModNameType
+  P.ReExportRef _ _ _ -> Just ModNameType
+  _ -> Nothing

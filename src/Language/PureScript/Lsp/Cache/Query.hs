@@ -146,6 +146,22 @@ getAstDeclarationLocationInModule lspNameType moduleName' name = do
       ]
   pure $ decls <&> \(spanName, sl, sc, el, ec) -> P.SourceSpan spanName (SourcePos sl sc) (SourcePos el ec)
 
+getAstDeclarationTypeInModule :: (MonadIO m, MonadReader LspEnvironment m) => Maybe LspNameType -> P.ModuleName -> Text -> m [Text]
+getAstDeclarationTypeInModule lspNameType moduleName' name = do
+  decls :: [SQL.Only Text] <-
+    DB.queryNamed
+      "SELECT printed_type \
+      \FROM ast_declarations \
+      \INNER JOIN ast_modules on ast_declarations.module_name = ast_modules.module_name \
+      \WHERE ast_declarations.module_name = :module_name \
+      \AND name = :name \
+      \AND name_type IS :name_type"
+      [ ":module_name" := P.runModuleName moduleName',
+        ":name" := name,
+        ":name_type" := (map show lspNameType :: Maybe Text)
+      ]
+  pure $ decls <&> fromOnly
+
 -- pure $ deserialise . fromOnly <$> listToMaybe decls
 
 getAstDeclarationsAtSrcPos :: (MonadIO m, MonadReader LspEnvironment m) => P.ModuleName -> SourcePos -> m [P.Declaration]
