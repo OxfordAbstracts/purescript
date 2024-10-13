@@ -11,6 +11,7 @@ import Language.LSP.Protocol.Message qualified as Message
 import Language.LSP.Protocol.Types qualified as Types
 import Language.LSP.Server qualified as Server
 import Language.LSP.VFS qualified as VFS
+import Language.PureScript (declName)
 import Language.PureScript qualified as P
 import Language.PureScript.AST qualified as AST
 import Language.PureScript.AST.SourcePos (nullSourceSpan)
@@ -24,10 +25,9 @@ import Language.PureScript.Lsp.NameType (LspNameType (..))
 import Language.PureScript.Lsp.Print (printName)
 import Language.PureScript.Lsp.State (cachedRebuild)
 import Language.PureScript.Lsp.Types (OpenFile (..))
-import Language.PureScript.Lsp.Util (declAtLine, efDeclSourceSpan, getNamesAtPosition, posInSpan, posInSpanLines, sourcePosToPosition, declStartLine)
+import Language.PureScript.Lsp.Util (declAtLine, efDeclSourceSpan, getNamesAtPosition, posInSpan, sourcePosToPosition)
 import Language.PureScript.Types (getAnnForType)
 import Protolude hiding (to)
-import Language.PureScript (declName)
 
 definitionHandler :: Server.Handlers HandlerM
 definitionHandler = Server.requestHandler Message.SMethod_TextDocumentDefinition $ \req res -> do
@@ -40,7 +40,7 @@ definitionHandler = Server.requestHandler Message.SMethod_TextDocumentDefinition
 
       posRes fp srcPos = locationRes fp $ Types.Range (sourcePosToPosition srcPos) (sourcePosToPosition srcPos)
 
-      sourceTypeLocRes st = locationRes (AST.spanName $ fst $ getAnnForType st) $ spanToRange $ fst $ getAnnForType st
+      -- sourceTypeLocRes st = locationRes (AST.spanName $ fst $ getAnnForType st) $ spanToRange $ fst $ getAnnForType st
 
       forLsp :: Maybe a -> (a -> HandlerM ()) -> HandlerM ()
       forLsp val f = maybe nullRes f val
@@ -71,38 +71,62 @@ definitionHandler = Server.requestHandler Message.SMethod_TextDocumentDefinition
 
       debugLsp $ "srcPosLine: " <> show srcPosLine
 
-      debugLsp $ "all decls: " <> show (declNameAndLine <$> sortBy (comparing declStartLine) withoutPrim)
-
-
       debugLsp $ "found decl at pos: " <> maybe "Nothing" (show . declNameAndLine) declAtPos
 
       forLsp declAtPos $ \decl -> do
-        let respondWithTypeLocation =
-              forLsp (find (not . isNullSourceTypeSpan) $ getTypesAtPos pos decl) sourceTypeLocRes
+        let respondWithTypeLocation = do
+              let tipes =
+                    filter isSingleLine $
+                      filter (not . fromPrim) $
+                      filter (not . isNullSourceTypeSpan) $
+                        getTypesAtPos pos decl
+              debugLsp $ "types at pos: " <> show tipes
+              case tipes of
+                [] -> nullRes
+                _ -> do
+                  let smallest = minimumBy (comparing getTypeColumns) tipes
+                  debugLsp $ "smallest: " <> show smallest
+                  case smallest of
+                    P.TypeConstructor _ (P.Qualified (P.BySourcePos srcPos) _) | srcPos /= P.SourcePos 0 0 -> posRes filePath srcPos
+                    P.TypeConstructor _ (P.Qualified (P.ByModuleName modName) ident) -> do
+                      respondWithDeclInOtherModule (Just TyNameType) modName $ P.runProperName ident
+                    _ -> nullRes
+
+            -- forLsp (find (not . isNullSourceTypeSpan) $ getTypesAtPos pos decl) sourceTypeLocRes
 
             exprsAtPos = getExprsAtPos pos decl
 
         debugLsp $ "exprs at pos: " <> show (length exprsAtPos)
         case head exprsAtPos of
-              Just expr -> do
-                case expr of
-                  P.Var _ (P.Qualified (P.BySourcePos srcPos) _) | srcPos /= P.SourcePos 0 0 -> do
-                    debugLsp $ "Var in source pos: " <> show srcPos
-                    posRes filePath srcPos
-                  P.Var _ (P.Qualified (P.ByModuleName modName) ident) -> do
-                    debugLsp $ "Var in module: " <> show modName <> " " <> show ident
-                    respondWithDeclInOtherModule (Just IdentNameType) modName $ P.runIdent ident
-                  P.Op _ (P.Qualified (P.BySourcePos srcPos) _) | srcPos /= P.SourcePos 0 0 -> posRes filePath srcPos
-                  P.Op _ (P.Qualified (P.ByModuleName srcPos) ident) -> do
-                    respondWithDeclInOtherModule (Just ValOpNameType) srcPos $ P.runOpName ident
-                  P.Constructor _ (P.Qualified (P.BySourcePos srcPos) _) | srcPos /= P.SourcePos 0 0 -> posRes filePath srcPos
-                  P.Constructor _ (P.Qualified (P.ByModuleName srcPos) ident) -> do
-                    respondWithDeclInOtherModule (Just DctorNameType) srcPos $ P.runProperName ident
-                  _ -> respondWithTypeLocation
+          Just expr -> do
+            case expr of
+              P.Var _ (P.Qualified (P.BySourcePos srcPos) _) | srcPos /= P.SourcePos 0 0 -> do
+                posRes filePath srcPos
+              P.Var _ (P.Qualified (P.ByModuleName modName) ident) -> do
+                respondWithDeclInOtherModule (Just IdentNameType) modName $ P.runIdent ident
+              P.Op _ (P.Qualified (P.BySourcePos srcPos) _) | srcPos /= P.SourcePos 0 0 -> posRes filePath srcPos
+              P.Op _ (P.Qualified (P.ByModuleName srcPos) ident) -> do
+                respondWithDeclInOtherModule (Just ValOpNameType) srcPos $ P.runOpName ident
+              P.Constructor _ (P.Qualified (P.BySourcePos srcPos) _) | srcPos /= P.SourcePos 0 0 -> posRes filePath srcPos
+              P.Constructor _ (P.Qualified (P.ByModuleName srcPos) ident) -> do
+                respondWithDeclInOtherModule (Just DctorNameType) srcPos $ P.runProperName ident
               _ -> respondWithTypeLocation
+          _ -> respondWithTypeLocation
 
 isNullSourceTypeSpan :: P.SourceType -> Bool
 isNullSourceTypeSpan st = getAnnForType st == (nullSourceSpan, [])
+
+isSingleLine :: P.SourceType -> Bool
+isSingleLine st = P.sourcePosLine (P.spanStart (fst (getAnnForType st))) == P.sourcePosLine (P.spanEnd (fst (getAnnForType st)))
+
+getTypeColumns :: P.SourceType -> Int
+getTypeColumns st = P.sourcePosColumn (P.spanEnd (fst (getAnnForType st))) - P.sourcePosColumn (P.spanStart (fst (getAnnForType st)))
+
+fromPrim :: P.SourceType -> Bool
+fromPrim st = case st of
+  P.TypeConstructor _ (P.Qualified (P.ByModuleName (P.ModuleName "Prim")) _) -> True
+  P.TypeOp _ (P.Qualified (P.ByModuleName (P.ModuleName "Prim")) _) -> True
+  _ -> False
 
 isPrimImport :: P.Declaration -> Bool
 isPrimImport (P.ImportDeclaration _ (P.ModuleName "Prim") _ _) = True
@@ -130,10 +154,10 @@ getExprsAtPos pos declaration = execState (goDecl declaration) []
       pure expr
 
 getTypesAtPos :: Types.Position -> P.Declaration -> [P.SourceType]
-getTypesAtPos pos decl = (view _1 $ P.accumTypes getAtPos) decl
+getTypesAtPos pos decl = P.everythingOnTypes (<>) getAtPos =<< (view _1 $ P.accumTypes getAtPos) decl
   where
     getAtPos :: P.SourceType -> [P.SourceType]
-    getAtPos st = [st | posInSpanLines pos (fst $ getAnnForType st)]
+    getAtPos st = [st | posInSpan pos (fst $ getAnnForType st)]
 
 definitionHandlerV1 :: Server.Handlers HandlerM
 definitionHandlerV1 = Server.requestHandler Message.SMethod_TextDocumentDefinition $ \req res -> do
@@ -198,76 +222,497 @@ definitionHandlerV1 = Server.requestHandler Message.SMethod_TextDocumentDefiniti
 --   , spanEnd = SourcePos {sourcePosLine = 107, sourcePosColumn = 82}},[]) (ModuleName "Prim") Implicit (Just (ModuleName "Prim")),ImportDeclaration (SourceSpan { spanStart = SourcePos {sourcePosLine = 1, sourcePosColumn = 1}, spanEnd = SourcePos {sourcePosLine = 107, sourcePosColumn = 82}},[]) (ModuleName "Prim") Implicit Nothing,ValueDeclaration (ValueDeclarationData {valdeclSourceAnn = (SourceSpan { spanStart = SourcePos {sourcePosLine = 75, sourcePosColumn = 1}, spanEnd = SourcePos {sourcePosLine = 77, sourcePosColumn = 8}},[]), valdeclIdent = Ident "v", valdeclName = Public, valdeclBinders = [], valdeclExpression = [GuardedExpr [] (TypedValue True (PositionedValue (SourceSpan { spanStart = SourcePos {sourcePosLine = 75, sourcePosColumn = 5}, spanEnd = SourcePos {sourcePosLine = 75, sourcePosColumn = 6}}) [] (Let FromWhere [ValueDeclaration (ValueDeclarationData {valdeclSourceAnn = (SourceSpan { spanStart = SourcePos {sourcePosLine = 77, sourcePosColumn = 3}, spanEnd = SourcePos {sourcePosLine = 77, sourcePosColumn = 8}},[]), valdeclIdent = Ident "a", valdeclName = Public, valdeclBinders = [], valdeclExpression = [GuardedExpr [] (PositionedValue (SourceSpan { spanStart = SourcePos {sourcePosLine = 77, sourcePosColumn = 7}, spanEnd = SourcePos {sourcePosLine = 77, sourcePosColumn = 8}}) [] (Literal (SourceSpan { spanStart = SourcePos {sourcePosLine = 77, sourcePosColumn = 7}, spanEnd = SourcePos {sourcePosLine = 77, sourcePosColumn = 8}}) (NumericLiteral (Left 1))))]})] (TypedValue True (PositionedValue (SourceSpan { spanStart = SourcePos {sourcePosLine = 75, sourcePosColumn = 5}, spanEnd = SourcePos {sourcePosLine = 75, sourcePosColumn = 6}}) [] (Var (SourceSpan { spanStart = SourcePos {sourcePosLine = 75, sourcePosColumn = 5}, spanEnd = SourcePos {sourcePosLine = 75, sourcePosColumn = 6}}) (Qualified (BySourcePos (SourcePos {sourcePosLine = 77, sourcePosColumn = 3})) (Ident "a")))) (TypeConstructor (SourceSpan {spanName = "", spanStart = SourcePos {sourcePosLine = 0, sourcePosColumn = 0}, spanEnd = SourcePos {sourcePosLine = 0, sourcePosColumn = 0}},[]) (Qualified (ByModuleName (ModuleName "Prim")) (ProperName {runProperName = "Int"})))))) (TypeConstructor (SourceSpan {spanName = "", spanStart = SourcePos {sourcePosLine = 0, sourcePosColumn = 0}, spanEnd = SourcePos {sourcePosLine = 0, sourcePosColumn = 0}},[]) (Qualified (ByModuleName (ModuleName "Prim")) (ProperName {runProperName = "Int"}))))]})]
 
 -- x =
---   [ ValueDeclaration
---       ( ValueDeclarationData
---           { valdeclSourceAnn =
+--   [ ForAll
+--       ( SourceSpan
+--           { spanStart = SourcePos {sourcePosLine = 20, sourcePosColumn = 6},
+--             spanEnd = SourcePos {sourcePosLine = 20, sourcePosColumn = 29}
+--           },
+--         []
+--       )
+--       TypeVarInvisible
+--       "a"
+--       (Just (TypeConstructor (SourceSpan {spanStart = SourcePos {sourcePosLine = 20, sourcePosColumn = 16}, spanEnd = SourcePos {sourcePosLine = 20, sourcePosColumn = 22}}, []) (Qualified (ByModuleName (ModuleName "Prim")) (ProperName {runProperName = "Type"}))))
+--       (TypeApp (SourceSpan {spanStart = SourcePos {sourcePosLine = 20, sourcePosColumn = 16}, spanEnd = SourcePos {sourcePosLine = 20, sourcePosColumn = 29}}, []) (TypeApp (SourceSpan {spanStart = SourcePos {sourcePosLine = 20, sourcePosColumn = 16}, spanEnd = SourcePos {sourcePosLine = 20, sourcePosColumn = 29}}, []) (TypeConstructor (SourceSpan {spanStart = SourcePos {sourcePosLine = 20, sourcePosColumn = 25}, spanEnd = SourcePos {sourcePosLine = 20, sourcePosColumn = 27}}, []) (Qualified (ByModuleName (ModuleName "Prim")) (ProperName {runProperName = "Function"}))) (TypeApp (SourceSpan {spanStart = SourcePos {sourcePosLine = 20, sourcePosColumn = 16}, spanEnd = SourcePos {sourcePosLine = 20, sourcePosColumn = 24}}, []) (TypeConstructor (SourceSpan {spanStart = SourcePos {sourcePosLine = 20, sourcePosColumn = 16}, spanEnd = SourcePos {sourcePosLine = 20, sourcePosColumn = 22}}, []) (Qualified (ByModuleName (ModuleName "Effect")) (ProperName {runProperName = "Effect"}))) (TypeVar (SourceSpan {spanStart = SourcePos {sourcePosLine = 20, sourcePosColumn = 23}, spanEnd = SourcePos {sourcePosLine = 20, sourcePosColumn = 24}}, []) "a"))) (TypeVar (SourceSpan {spanStart = SourcePos {sourcePosLine = 20, sourcePosColumn = 28}, spanEnd = SourcePos {sourcePosLine = 20, sourcePosColumn = 29}}, []) "a"))
+--       (Just (SkolemScope {runSkolemScope = 1})),
+--     TypeApp
+--       ( SourceSpan
+--           { spanStart = SourcePos {sourcePosLine = 20, sourcePosColumn = 16},
+--             spanEnd = SourcePos {sourcePosLine = 20, sourcePosColumn = 29}
+--           },
+--         []
+--       )
+--       ( TypeApp
+--           ( SourceSpan
+--               { spanStart = SourcePos {sourcePosLine = 20, sourcePosColumn = 16},
+--                 spanEnd = SourcePos {sourcePosLine = 20, sourcePosColumn = 29}
+--               },
+--             []
+--           )
+--           (TypeConstructor (SourceSpan {spanStart = SourcePos {sourcePosLine = 20, sourcePosColumn = 25}, spanEnd = SourcePos {sourcePosLine = 20, sourcePosColumn = 27}}, []) (Qualified (ByModuleName (ModuleName "Prim")) (ProperName {runProperName = "Function"})))
+--           ( TypeApp
 --               ( SourceSpan
---                   { spanStart = SourcePos {sourcePosLine = 75, sourcePosColumn = 1},
---                     spanEnd = SourcePos {sourcePosLine = 77, sourcePosColumn = 8}
+--                   { spanStart = SourcePos {sourcePosLine = 20, sourcePosColumn = 16},
+--                     spanEnd =
+--                       SourcePos
+--                         { sourcePosLine = 20,
+--                           sourcePosColumn = 24
+--                         }
 --                   },
 --                 []
---               ),
---             valdeclIdent = Ident "v",
---             valdeclName = Public,
---             valdeclBinders = [],
---             valdeclExpression =
---               [ GuardedExpr
---                   []
---                   ( TypedValue
---                       True
---                       ( PositionedValue
---                           ( SourceSpan {spanStart = SourcePos {sourcePosLine = 75, sourcePosColumn = 5}, spanEnd = SourcePos {sourcePosLine = 75, sourcePosColumn = 6}}
---                           )
---                           []
---                           ( Let
---                               FromWhere
---                               [ ValueDeclaration
---                                   ( ValueDeclarationData
---                                       { valdeclSourceAnn = (SourceSpan {spanStart = SourcePos {sourcePosLine = 77, sourcePosColumn = 3}, spanEnd = SourcePos {sourcePosLine = 77, sourcePosColumn = 8}}, []),
---                                         valdeclIdent = Ident "a",
---                                         valdeclName = Public,
---                                         valdeclBinders = [],
---                                         valdeclExpression =
---                                           [ GuardedExpr
---                                               []
---                                               ( PositionedValue
---                                                   ( SourceSpan
---                                                       { spanStart = SourcePos {sourcePosLine = 77, sourcePosColumn = 7},
---                                                         spanEnd = SourcePos {sourcePosLine = 77, sourcePosColumn = 8}
---                                                       }
---                                                   )
---                                                   []
---                                                   ( Literal
---                                                       ( SourceSpan
---                                                           { spanStart = SourcePos {sourcePosLine = 77, sourcePosColumn = 7},
---                                                             spanEnd = SourcePos {sourcePosLine = 77, sourcePosColumn = 8}
---                                                           }
---                                                       )
---                                                       (NumericLiteral (Left 1))
---                                                   )
---                                               )
---                                           ]
---                                       }
---                                   )
---                               ]
---                               ( TypedValue
---                                   True
---                                   ( PositionedValue
---                                       ( SourceSpan
---                                           { spanStart = SourcePos {sourcePosLine = 75, sourcePosColumn = 5},
---                                             spanEnd = SourcePos {sourcePosLine = 75, sourcePosColumn = 6}
---                                           }
---                                       )
---                                       []
---                                       (Var (SourceSpan {spanStart = SourcePos {sourcePosLine = 75, sourcePosColumn = 5}, spanEnd = SourcePos {sourcePosLine = 75, sourcePosColumn = 6}}) (Qualified (BySourcePos (SourcePos {sourcePosLine = 77, sourcePosColumn = 3})) (Ident "a")))
---                                   )
---                                   (TypeConstructor (SourceSpan {spanName = "", spanStart = SourcePos {sourcePosLine = 0, sourcePosColumn = 0}, spanEnd = SourcePos {sourcePosLine = 0, sourcePosColumn = 0}}, []) (Qualified (ByModuleName (ModuleName "Prim")) (ProperName {runProperName = "Int"})))
---                               )
---                           )
---                       )
---                       (TypeConstructor (SourceSpan {spanName = "", spanStart = SourcePos {sourcePosLine = 0, sourcePosColumn = 0}, spanEnd = SourcePos {sourcePosLine = 0, sourcePosColumn = 0}}, []) (Qualified (ByModuleName (ModuleName "Prim")) (ProperName {runProperName = "Int"})))
+--               )
+--               (TypeConstructor (SourceSpan {spanStart = SourcePos {sourcePosLine = 20, sourcePosColumn = 16}, spanEnd = SourcePos {sourcePosLine = 20, sourcePosColumn = 22}}, []) (Qualified (ByModuleName (ModuleName "Effect")) (ProperName {runProperName = "Effect"})))
+--               ( Skolem
+--                   ( SourceSpan
+--                       { spanStart = SourcePos {sourcePosLine = 21, sourcePosColumn = 5},
+--                         spanEnd = SourcePos {sourcePosLine = 21, sourcePosColumn = 24}
+--                       },
+--                     []
 --                   )
---               ]
---           }
+--                   "a"
+--                   (Just (TypeConstructor (SourceSpan {spanStart = SourcePos {sourcePosLine = 20, sourcePosColumn = 16}, spanEnd = SourcePos {sourcePosLine = 20, sourcePosColumn = 22}}, []) (Qualified (ByModuleName (ModuleName "Prim")) (ProperName {runProperName = "Type"}))))
+--                   0
+--                   (SkolemScope {runSkolemScope = 1})
+--               )
+--           )
 --       )
+--       ( Skolem
+--           ( SourceSpan
+--               { spanStart = SourcePos {sourcePosLine = 21, sourcePosColumn = 5},
+--                 spanEnd = SourcePos {sourcePosLine = 21, sourcePosColumn = 24}
+--               },
+--             []
+--           )
+--           "a"
+--           (Just (TypeConstructor (SourceSpan {spanStart = SourcePos {sourcePosLine = 20, sourcePosColumn = 16}, spanEnd = SourcePos {sourcePosLine = 20, sourcePosColumn = 22}}, []) (Qualified (ByModuleName (ModuleName "Prim")) (ProperName {runProperName = "Type"}))))
+--           0
+--           (SkolemScope {runSkolemScope = 1})
+--       )
+--   ]
+
+-- x =
+--   [ ForAll
+--       ( SourceSpan
+--           { spanStart = SourcePos {sourcePosLine = 20, sourcePosColumn = 6},
+--             spanEnd = SourcePos {sourcePosLine = 20, sourcePosColumn = 29}
+--           },
+--         []
+--       )
+--       TypeVarInvisible
+--       "a"
+--       ( Just
+--           ( TypeConstructor
+--               ( SourceSpan
+--                   { spanStart = SourcePos {sourcePosLine = 20, sourcePosColumn = 16},
+--                     spanEnd = SourcePos {sourcePosLine = 20, sourcePosColumn = 22}
+--                   },
+--                 []
+--               )
+--               (Qualified (ByModuleName (ModuleName "Prim")) (ProperName {runProperName = "Type"}))
+--           )
+--       )
+--       ( TypeApp
+--           ( SourceSpan
+--               { spanStart = SourcePos {sourcePosLine = 20, sourcePosColumn = 16},
+--                 spanEnd = SourcePos {sourcePosLine = 20, sourcePosColumn = 29}
+--               },
+--             []
+--           )
+--           ( TypeApp
+--               ( SourceSpan
+--                   { spanStart = SourcePos {sourcePosLine = 20, sourcePosColumn = 16},
+--                     spanEnd = SourcePos {sourcePosLine = 20, sourcePosColumn = 29}
+--                   },
+--                 []
+--               )
+--               ( TypeConstructor
+--                   ( SourceSpan
+--                       { spanStart = SourcePos {sourcePosLine = 20, sourcePosColumn = 25},
+--                         spanEnd = SourcePos {sourcePosLine = 20, sourcePosColumn = 27}
+--                       },
+--                     []
+--                   )
+--                   (Qualified (ByModuleName (ModuleName "Prim")) (ProperName {runProperName = "Function"}))
+--               )
+--               ( TypeApp
+--                   ( SourceSpan
+--                       { spanStart = SourcePos {sourcePosLine = 20, sourcePosColumn = 16},
+--                         spanEnd = SourcePos {sourcePosLine = 20, sourcePosColumn = 24}
+--                       },
+--                     []
+--                   )
+--                   ( TypeConstructor
+--                       ( SourceSpan
+--                           { spanStart = SourcePos {sourcePosLine = 20, sourcePosColumn = 16},
+--                             spanEnd = SourcePos {sourcePosLine = 20, sourcePosColumn = 22}
+--                           },
+--                         []
+--                       )
+--                       (Qualified (ByModuleName (ModuleName "Effect")) (ProperName {runProperName = "Effect"}))
+--                   )
+--                   ( TypeVar
+--                       ( SourceSpan
+--                           { spanStart = SourcePos {sourcePosLine = 20, sourcePosColumn = 23},
+--                             spanEnd = SourcePos {sourcePosLine = 20, sourcePosColumn = 24}
+--                           },
+--                         []
+--                       )
+--                       "a"
+--                   )
+--               )
+--           )
+--           ( TypeVar
+--               ( SourceSpan
+--                   { spanStart = SourcePos {sourcePosLine = 20, sourcePosColumn = 28},
+--                     spanEnd = SourcePos {sourcePosLine = 20, sourcePosColumn = 29}
+--                   },
+--                 []
+--               )
+--               "a"
+--           )
+--       )
+--       (Just (SkolemScope {runSkolemScope = 1})),
+--     TypeConstructor
+--       ( SourceSpan
+--           { spanStart = SourcePos {sourcePosLine = 20, sourcePosColumn = 16},
+--             spanEnd = SourcePos {sourcePosLine = 20, sourcePosColumn = 22}
+--           },
+--         []
+--       )
+--       (Qualified (ByModuleName (ModuleName "Prim")) (ProperName {runProperName = "Type"})),
+--     TypeApp
+--       ( SourceSpan
+--           { spanStart = SourcePos {sourcePosLine = 20, sourcePosColumn = 16},
+--             spanEnd = SourcePos {sourcePosLine = 20, sourcePosColumn = 29}
+--           },
+--         []
+--       )
+--       ( TypeApp
+--           ( SourceSpan
+--               { spanStart = SourcePos {sourcePosLine = 20, sourcePosColumn = 16},
+--                 spanEnd = SourcePos {sourcePosLine = 20, sourcePosColumn = 29}
+--               },
+--             []
+--           )
+--           ( TypeConstructor
+--               ( SourceSpan
+--                   { spanStart = SourcePos {sourcePosLine = 20, sourcePosColumn = 25},
+--                     spanEnd = SourcePos {sourcePosLine = 20, sourcePosColumn = 27}
+--                   },
+--                 []
+--               )
+--               (Qualified (ByModuleName (ModuleName "Prim")) (ProperName {runProperName = "Function"}))
+--           )
+--           ( TypeApp
+--               ( SourceSpan
+--                   { spanStart = SourcePos {sourcePosLine = 20, sourcePosColumn = 16},
+--                     spanEnd = SourcePos {sourcePosLine = 20, sourcePosColumn = 24}
+--                   },
+--                 []
+--               )
+--               ( TypeConstructor
+--                   ( SourceSpan
+--                       { spanStart = SourcePos {sourcePosLine = 20, sourcePosColumn = 16},
+--                         spanEnd = SourcePos {sourcePosLine = 20, sourcePosColumn = 22}
+--                       },
+--                     []
+--                   )
+--                   (Qualified (ByModuleName (ModuleName "Effect")) (ProperName {runProperName = "Effect"}))
+--               )
+--               ( TypeVar
+--                   ( SourceSpan
+--                       { spanStart = SourcePos {sourcePosLine = 20, sourcePosColumn = 23},
+--                         spanEnd = SourcePos {sourcePosLine = 20, sourcePosColumn = 24}
+--                       },
+--                     []
+--                   )
+--                   "a"
+--               )
+--           )
+--       )
+--       ( TypeVar
+--           ( SourceSpan
+--               { spanStart = SourcePos {sourcePosLine = 20, sourcePosColumn = 28},
+--                 spanEnd = SourcePos {sourcePosLine = 20, sourcePosColumn = 29}
+--               },
+--             []
+--           )
+--           "a"
+--       ),
+--     TypeApp
+--       ( SourceSpan
+--           { spanStart = SourcePos {sourcePosLine = 20, sourcePosColumn = 16},
+--             spanEnd = SourcePos {sourcePosLine = 20, sourcePosColumn = 29}
+--           },
+--         []
+--       )
+--       ( TypeConstructor
+--           ( SourceSpan
+--               { spanStart = SourcePos {sourcePosLine = 20, sourcePosColumn = 25},
+--                 spanEnd = SourcePos {sourcePosLine = 20, sourcePosColumn = 27}
+--               },
+--             []
+--           )
+--           (Qualified (ByModuleName (ModuleName "Prim")) (ProperName {runProperName = "Function"}))
+--       )
+--       ( TypeApp
+--           ( SourceSpan
+--               { spanStart = SourcePos {sourcePosLine = 20, sourcePosColumn = 16},
+--                 spanEnd = SourcePos {sourcePosLine = 20, sourcePosColumn = 24}
+--               },
+--             []
+--           )
+--           ( TypeConstructor
+--               ( SourceSpan
+--                   { spanStart = SourcePos {sourcePosLine = 20, sourcePosColumn = 16},
+--                     spanEnd = SourcePos {sourcePosLine = 20, sourcePosColumn = 22}
+--                   },
+--                 []
+--               )
+--               (Qualified (ByModuleName (ModuleName "Effect")) (ProperName {runProperName = "Effect"}))
+--           )
+--           ( TypeVar
+--               ( SourceSpan
+--                   { spanStart = SourcePos {sourcePosLine = 20, sourcePosColumn = 23},
+--                     spanEnd = SourcePos {sourcePosLine = 20, sourcePosColumn = 24}
+--                   },
+--                 []
+--               )
+--               "a"
+--           )
+--       ),
+--     TypeApp
+--       ( SourceSpan
+--           { spanStart = SourcePos {sourcePosLine = 20, sourcePosColumn = 16},
+--             spanEnd = SourcePos {sourcePosLine = 20, sourcePosColumn = 24}
+--           },
+--         []
+--       )
+--       ( TypeConstructor
+--           ( SourceSpan
+--               { spanStart = SourcePos {sourcePosLine = 20, sourcePosColumn = 16},
+--                 spanEnd = SourcePos {sourcePosLine = 20, sourcePosColumn = 22}
+--               },
+--             []
+--           )
+--           (Qualified (ByModuleName (ModuleName "Effect")) (ProperName {runProperName = "Effect"}))
+--       )
+--       ( TypeVar
+--           ( SourceSpan
+--               { spanStart = SourcePos {sourcePosLine = 20, sourcePosColumn = 23},
+--                 spanEnd = SourcePos {sourcePosLine = 20, sourcePosColumn = 24}
+--               },
+--             []
+--           )
+--           "a"
+--       ),
+--     TypeConstructor
+--       ( SourceSpan
+--           { spanStart = SourcePos {sourcePosLine = 20, sourcePosColumn = 16},
+--             spanEnd = SourcePos {sourcePosLine = 20, sourcePosColumn = 22}
+--           },
+--         []
+--       )
+--       (Qualified (ByModuleName (ModuleName "Effect")) (ProperName {runProperName = "Effect"})),
+--     TypeApp
+--       ( SourceSpan
+--           { spanStart = SourcePos {sourcePosLine = 20, sourcePosColumn = 16},
+--             spanEnd = SourcePos {sourcePosLine = 20, sourcePosColumn = 29}
+--           },
+--         []
+--       )
+--       ( TypeApp
+--           ( SourceSpan
+--               { spanStart = SourcePos {sourcePosLine = 20, sourcePosColumn = 16},
+--                 spanEnd = SourcePos {sourcePosLine = 20, sourcePosColumn = 29}
+--               },
+--             []
+--           )
+--           ( TypeConstructor
+--               ( SourceSpan
+--                   { spanStart = SourcePos {sourcePosLine = 20, sourcePosColumn = 25},
+--                     spanEnd = SourcePos {sourcePosLine = 20, sourcePosColumn = 27}
+--                   },
+--                 []
+--               )
+--               (Qualified (ByModuleName (ModuleName "Prim")) (ProperName {runProperName = "Function"}))
+--           )
+--           ( TypeApp
+--               ( SourceSpan
+--                   { spanStart = SourcePos {sourcePosLine = 20, sourcePosColumn = 16},
+--                     spanEnd = SourcePos {sourcePosLine = 20, sourcePosColumn = 24}
+--                   },
+--                 []
+--               )
+--               ( TypeConstructor
+--                   ( SourceSpan
+--                       { spanStart = SourcePos {sourcePosLine = 20, sourcePosColumn = 16},
+--                         spanEnd = SourcePos {sourcePosLine = 20, sourcePosColumn = 22}
+--                       },
+--                     []
+--                   )
+--                   (Qualified (ByModuleName (ModuleName "Effect")) (ProperName {runProperName = "Effect"}))
+--               )
+--               ( Skolem
+--                   ( SourceSpan
+--                       { spanStart = SourcePos {sourcePosLine = 21, sourcePosColumn = 5},
+--                         spanEnd = SourcePos {sourcePosLine = 21, sourcePosColumn = 24}
+--                       },
+--                     []
+--                   )
+--                   "a"
+--                   ( Just
+--                       ( TypeConstructor
+--                           ( SourceSpan
+--                               { spanStart = SourcePos {sourcePosLine = 20, sourcePosColumn = 16},
+--                                 spanEnd = SourcePos {sourcePosLine = 20, sourcePosColumn = 22}
+--                               },
+--                             []
+--                           )
+--                           (Qualified (ByModuleName (ModuleName "Prim")) (ProperName {runProperName = "Type"}))
+--                       )
+--                   )
+--                   0
+--                   (SkolemScope {runSkolemScope = 1})
+--               )
+--           )
+--       )
+--       ( Skolem
+--           ( SourceSpan
+--               { spanStart = SourcePos {sourcePosLine = 21, sourcePosColumn = 5},
+--                 spanEnd = SourcePos {sourcePosLine = 21, sourcePosColumn = 24}
+--               },
+--             []
+--           )
+--           "a"
+--           ( Just
+--               ( TypeConstructor
+--                   ( SourceSpan
+--                       { spanStart = SourcePos {sourcePosLine = 20, sourcePosColumn = 16},
+--                         spanEnd = SourcePos {sourcePosLine = 20, sourcePosColumn = 22}
+--                       },
+--                     []
+--                   )
+--                   (Qualified (ByModuleName (ModuleName "Prim")) (ProperName {runProperName = "Type"}))
+--               )
+--           )
+--           0
+--           (SkolemScope {runSkolemScope = 1})
+--       ),
+--     TypeApp
+--       ( SourceSpan
+--           { spanStart = SourcePos {sourcePosLine = 20, sourcePosColumn = 16},
+--             spanEnd = SourcePos {sourcePosLine = 20, sourcePosColumn = 29}
+--           },
+--         []
+--       )
+--       ( TypeConstructor
+--           ( SourceSpan
+--               { spanStart = SourcePos {sourcePosLine = 20, sourcePosColumn = 25},
+--                 spanEnd = SourcePos {sourcePosLine = 20, sourcePosColumn = 27}
+--               },
+--             []
+--           )
+--           (Qualified (ByModuleName (ModuleName "Prim")) (ProperName {runProperName = "Function"}))
+--       )
+--       ( TypeApp
+--           ( SourceSpan
+--               { spanStart = SourcePos {sourcePosLine = 20, sourcePosColumn = 16},
+--                 spanEnd = SourcePos {sourcePosLine = 20, sourcePosColumn = 24}
+--               },
+--             []
+--           )
+--           ( TypeConstructor
+--               ( SourceSpan
+--                   { spanStart = SourcePos {sourcePosLine = 20, sourcePosColumn = 16},
+--                     spanEnd = SourcePos {sourcePosLine = 20, sourcePosColumn = 22}
+--                   },
+--                 []
+--               )
+--               (Qualified (ByModuleName (ModuleName "Effect")) (ProperName {runProperName = "Effect"}))
+--           )
+--           ( Skolem
+--               ( SourceSpan
+--                   { spanStart = SourcePos {sourcePosLine = 21, sourcePosColumn = 5},
+--                     spanEnd = SourcePos {sourcePosLine = 21, sourcePosColumn = 24}
+--                   },
+--                 []
+--               )
+--               "a"
+--               ( Just
+--                   ( TypeConstructor
+--                       ( SourceSpan
+--                           { spanStart = SourcePos {sourcePosLine = 20, sourcePosColumn = 16},
+--                             spanEnd = SourcePos {sourcePosLine = 20, sourcePosColumn = 22}
+--                           },
+--                         []
+--                       )
+--                       (Qualified (ByModuleName (ModuleName "Prim")) (ProperName {runProperName = "Type"}))
+--                   )
+--               )
+--               0
+--               (SkolemScope {runSkolemScope = 1})
+--           )
+--       ),
+--     TypeApp
+--       ( SourceSpan
+--           { spanStart = SourcePos {sourcePosLine = 20, sourcePosColumn = 16},
+--             spanEnd = SourcePos {sourcePosLine = 20, sourcePosColumn = 24}
+--           },
+--         []
+--       )
+--       ( TypeConstructor
+--           ( SourceSpan
+--               { spanStart = SourcePos {sourcePosLine = 20, sourcePosColumn = 16},
+--                 spanEnd = SourcePos {sourcePosLine = 20, sourcePosColumn = 22}
+--               },
+--             []
+--           )
+--           (Qualified (ByModuleName (ModuleName "Effect")) (ProperName {runProperName = "Effect"}))
+--       )
+--       ( Skolem
+--           ( SourceSpan
+--               { spanStart = SourcePos {sourcePosLine = 21, sourcePosColumn = 5},
+--                 spanEnd = SourcePos {sourcePosLine = 21, sourcePosColumn = 24}
+--               },
+--             []
+--           )
+--           "a"
+--           ( Just
+--               ( TypeConstructor
+--                   ( SourceSpan
+--                       { spanStart = SourcePos {sourcePosLine = 20, sourcePosColumn = 16},
+--                         spanEnd = SourcePos {sourcePosLine = 20, sourcePosColumn = 22}
+--                       },
+--                     []
+--                   )
+--                   (Qualified (ByModuleName (ModuleName "Prim")) (ProperName {runProperName = "Type"}))
+--               )
+--           )
+--           0
+--           (SkolemScope {runSkolemScope = 1})
+--       ),
+--     TypeConstructor
+--       ( SourceSpan
+--           { spanStart = SourcePos {sourcePosLine = 20, sourcePosColumn = 16},
+--             spanEnd = SourcePos {sourcePosLine = 20, sourcePosColumn = 22}
+--           },
+--         []
+--       )
+--       (Qualified (ByModuleName (ModuleName "Effect")) (ProperName {runProperName = "Effect"})),
+--     TypeConstructor
+--       ( SourceSpan
+--           { spanStart = SourcePos {sourcePosLine = 20, sourcePosColumn = 16},
+--             spanEnd = SourcePos {sourcePosLine = 20, sourcePosColumn = 22}
+--           },
+--         []
+--       )
+--       (Qualified (ByModuleName (ModuleName "Prim")) (ProperName {runProperName = "Type"})),
+--     TypeConstructor
+--       ( SourceSpan
+--           { spanStart = SourcePos {sourcePosLine = 20, sourcePosColumn = 16},
+--             spanEnd = SourcePos {sourcePosLine = 20, sourcePosColumn = 22}
+--           },
+--         []
+--       )
+--       (Qualified (ByModuleName (ModuleName "Prim")) (ProperName {runProperName = "Type"}))
 --   ]
