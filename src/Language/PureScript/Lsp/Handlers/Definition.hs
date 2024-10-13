@@ -40,8 +40,6 @@ definitionHandler = Server.requestHandler Message.SMethod_TextDocumentDefinition
 
       posRes fp srcPos = locationRes fp $ Types.Range (sourcePosToPosition srcPos) (sourcePosToPosition srcPos)
 
-      -- spanRes fp srcSpan = locationRes fp $ spanToRange srcSpan
-
       forLsp :: Maybe a -> (a -> HandlerM ()) -> HandlerM ()
       forLsp val f = maybe nullRes f val
 
@@ -50,6 +48,29 @@ definitionHandler = Server.requestHandler Message.SMethod_TextDocumentDefinition
         declSpans <- getAstDeclarationLocationInModule nameType modName ident
         forLsp (head declSpans) $ \sourceSpan ->
           locationRes (AST.spanName sourceSpan) (spanToRange sourceSpan)
+
+      respondWithModule :: P.SourceSpan -> P.ModuleName -> HandlerM ()
+      respondWithModule ss modName =
+        if posInSpan pos ss
+          then do
+            modFpMb <- selectExternPathFromModuleName modName
+            forLsp modFpMb \modFp -> do
+              posRes modFp $ P.SourcePos 1 1
+          else nullRes
+
+      respondWithImports ss importedModuleName imports = do
+        case find (posInSpan pos . P.declRefSourceSpan) imports of
+          Just import' -> do
+            let name = P.declRefName import'
+                nameType = case import' of
+                  P.TypeClassRef _ _ -> Just TyClassNameType
+                  P.TypeRef _ _ _ -> Just TyNameType
+                  P.TypeOpRef _ _ -> Just TyOpNameType
+                  P.ValueRef _ _ -> Just IdentNameType
+                  P.ValueOpRef _ _ -> Just ValOpNameType
+                  _ -> Nothing
+            respondWithDeclInOtherModule nameType importedModuleName (printName name)
+          _ -> respondWithModule ss importedModuleName
 
   debugLsp $ "Position: " <> show pos
 
@@ -74,53 +95,58 @@ definitionHandler = Server.requestHandler Message.SMethod_TextDocumentDefinition
       debugLsp $ "found decl at pos: " <> maybe "Nothing" (show . declNameAndLine) declAtPos
 
       forLsp declAtPos $ \decl -> do
-        let respondWithTypeLocation = do
-              let tipes =
-                    filter (not . fromPrim) $
-                      filter (not . isNullSourceTypeSpan) $
-                        getTypesAtPos pos decl
+        case decl of
+          P.ImportDeclaration (ss, _) importedModuleName importType _ -> do 
+            debugLsp $ "found import at pos: " <> show importedModuleName
+            case importType of
+              P.Implicit -> respondWithModule ss importedModuleName
+              P.Explicit imports -> respondWithImports ss importedModuleName imports
+              P.Hiding imports -> respondWithImports ss importedModuleName imports
+          _ -> do
+            let respondWithTypeLocation = do
+                  let tipes =
+                        filter (not . fromPrim) $
+                          filter (not . isNullSourceTypeSpan) $
+                            getTypesAtPos pos decl
 
-                  onOneLine = filter isSingleLine tipes
-              debugLsp $ "types at pos: " <> show tipes
-              case onOneLine of
-                [] -> nullRes
-                _ -> do
-                  let smallest = minimumBy (comparing getTypeColumns) onOneLine
-                  debugLsp $ "smallest: " <> show smallest
-                  case smallest of
-                    P.TypeConstructor _ (P.Qualified (P.BySourcePos srcPos) _) | srcPos /= P.SourcePos 0 0 -> posRes filePath srcPos
-                    P.TypeConstructor _ (P.Qualified (P.ByModuleName modName) ident) -> do
-                      respondWithDeclInOtherModule (Just TyNameType) modName $ P.runProperName ident
-                    P.TypeOp _ (P.Qualified (P.BySourcePos srcPos) _) | srcPos /= P.SourcePos 0 0 -> posRes filePath srcPos
-                    P.TypeOp _ (P.Qualified (P.ByModuleName modName) ident) -> do
-                      respondWithDeclInOtherModule (Just TyOpNameType) modName $ P.runOpName ident
-                    P.ConstrainedType _ c _ -> case P.constraintClass c of
-                      (P.Qualified (P.BySourcePos srcPos) _) -> posRes filePath srcPos
-                      (P.Qualified (P.ByModuleName modName) ident) -> do
-                        respondWithDeclInOtherModule (Just TyClassNameType) modName $ P.runProperName ident
-                    P.TypeVar _ name -> case findForallSpan name tipes of
-                      Just srcSpan -> posRes filePath (P.spanStart srcSpan)
-                      _ -> nullRes
-                    _ -> nullRes
+                      onOneLine = filter isSingleLine tipes
+                  case onOneLine of
+                    [] -> nullRes
+                    _ -> do
+                      let smallest = minimumBy (comparing getTypeColumns) onOneLine
+                      case smallest of
+                        P.TypeConstructor _ (P.Qualified (P.BySourcePos srcPos) _) | srcPos /= P.SourcePos 0 0 -> posRes filePath srcPos
+                        P.TypeConstructor _ (P.Qualified (P.ByModuleName modName) ident) -> do
+                          respondWithDeclInOtherModule (Just TyNameType) modName $ P.runProperName ident
+                        P.TypeOp _ (P.Qualified (P.BySourcePos srcPos) _) | srcPos /= P.SourcePos 0 0 -> posRes filePath srcPos
+                        P.TypeOp _ (P.Qualified (P.ByModuleName modName) ident) -> do
+                          respondWithDeclInOtherModule (Just TyOpNameType) modName $ P.runOpName ident
+                        P.ConstrainedType _ c _ -> case P.constraintClass c of
+                          (P.Qualified (P.BySourcePos srcPos) _) -> posRes filePath srcPos
+                          (P.Qualified (P.ByModuleName modName) ident) -> do
+                            respondWithDeclInOtherModule (Just TyClassNameType) modName $ P.runProperName ident
+                        P.TypeVar _ name -> case findForallSpan name tipes of
+                          Just srcSpan -> posRes filePath (P.spanStart srcSpan)
+                          _ -> nullRes
+                        _ -> nullRes
 
-            exprsAtPos = getExprsAtPos pos decl
+                exprsAtPos = getExprsAtPos pos decl
 
-        debugLsp $ "exprs at pos: " <> show (length exprsAtPos)
-        case head exprsAtPos of
-          Just expr -> do
-            case expr of
-              P.Var _ (P.Qualified (P.BySourcePos srcPos) _) | srcPos /= P.SourcePos 0 0 -> do
-                posRes filePath srcPos
-              P.Var _ (P.Qualified (P.ByModuleName modName) ident) -> do
-                respondWithDeclInOtherModule (Just IdentNameType) modName $ P.runIdent ident
-              P.Op _ (P.Qualified (P.BySourcePos srcPos) _) | srcPos /= P.SourcePos 0 0 -> posRes filePath srcPos
-              P.Op _ (P.Qualified (P.ByModuleName srcPos) ident) -> do
-                respondWithDeclInOtherModule (Just ValOpNameType) srcPos $ P.runOpName ident
-              P.Constructor _ (P.Qualified (P.BySourcePos srcPos) _) | srcPos /= P.SourcePos 0 0 -> posRes filePath srcPos
-              P.Constructor _ (P.Qualified (P.ByModuleName srcPos) ident) -> do
-                respondWithDeclInOtherModule (Just DctorNameType) srcPos $ P.runProperName ident
+            case head exprsAtPos of
+              Just expr -> do
+                case expr of
+                  P.Var _ (P.Qualified (P.BySourcePos srcPos) _) | srcPos /= P.SourcePos 0 0 -> do
+                    posRes filePath srcPos
+                  P.Var _ (P.Qualified (P.ByModuleName modName) ident) -> do
+                    respondWithDeclInOtherModule (Just IdentNameType) modName $ P.runIdent ident
+                  P.Op _ (P.Qualified (P.BySourcePos srcPos) _) | srcPos /= P.SourcePos 0 0 -> posRes filePath srcPos
+                  P.Op _ (P.Qualified (P.ByModuleName srcPos) ident) -> do
+                    respondWithDeclInOtherModule (Just ValOpNameType) srcPos $ P.runOpName ident
+                  P.Constructor _ (P.Qualified (P.BySourcePos srcPos) _) | srcPos /= P.SourcePos 0 0 -> posRes filePath srcPos
+                  P.Constructor _ (P.Qualified (P.ByModuleName srcPos) ident) -> do
+                    respondWithDeclInOtherModule (Just DctorNameType) srcPos $ P.runProperName ident
+                  _ -> respondWithTypeLocation
               _ -> respondWithTypeLocation
-          _ -> respondWithTypeLocation
 
 isNullSourceTypeSpan :: P.SourceType -> Bool
 isNullSourceTypeSpan st = getAnnForType st == (nullSourceSpan, [])
