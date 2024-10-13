@@ -158,9 +158,6 @@ lookupTypeInEnv fp (P.Qualified qb name) = do
               P.TyClassName tyClassName ->
                 view _1 <$> Map.lookup (P.Qualified qb $ P.coerceProperName tyClassName) types
               P.ModName _ -> Nothing
-              -- _ -> Nothing
-              -- P.Qualified (P.ByModuleName mn) n -> P.lookupType n mn env
-              -- P.Qualified (P.BySourcePos _) n -> P.lookupType n (P.moduleName env) env
           )
 
 data ExternsDeclarationCategory
@@ -242,6 +239,18 @@ declSourceSpanWithExpr d = maybe span (widenSourceSpan span) exprSpan
                Just acc' -> widenSourceSpan acc' <$> findExprSourceSpan e
          in foldl' go Nothing valdeclExpression
       _ -> Nothing
+
+
+declAtLine :: Int -> [P.Declaration] -> Maybe P.Declaration
+declAtLine l (d:d':ds) 
+  | declStartLine d >= l && declStartLine d' < l = Just d
+  | otherwise = declAtLine l (d':ds)
+declAtLine l [d] | declStartLine d >= l = Just d
+declAtLine _ _ = Nothing 
+
+declStartLine :: P.Declaration -> Int
+declStartLine = P.sourcePosLine . AST.spanStart . P.declSourceSpan
+
 
 findExprSourceSpan :: P.Expr -> Maybe AST.SourceSpan
 findExprSourceSpan = goExpr

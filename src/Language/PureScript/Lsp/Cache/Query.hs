@@ -24,6 +24,7 @@ import Language.PureScript.Lsp.ServerConfig (ServerConfig, getMaxCompletions, ge
 import Language.PureScript.Lsp.Types (LspEnvironment)
 import Language.PureScript.Names qualified as P
 import Protolude
+import Language.PureScript.Lsp.NameType (LspNameType)
 
 getCoreFnExprAt :: (MonadIO m, MonadReader LspEnvironment m) => FilePath -> LSP.Position -> m (Maybe (CF.Expr CF.Ann))
 getCoreFnExprAt path (LSP.Position line col) = do
@@ -129,6 +130,24 @@ getAstDeclarationInModule moduleName' name = do
       ]
   pure $ deserialise . fromOnly <$> listToMaybe decls
 
+getAstDeclarationLocationInModule :: (MonadIO m, MonadReader LspEnvironment m) => Maybe LspNameType -> P.ModuleName -> Text -> m [P.SourceSpan]
+getAstDeclarationLocationInModule lspNameType moduleName' name = do
+  decls :: [([Char], Int, Int, Int, Int)] <-
+    DB.queryNamed
+      "SELECT path, start_line, start_col, end_line, end_col \
+      \FROM ast_declarations \
+      \INNER JOIN ast_modules on ast_declarations.module_name = ast_modules.module_name \
+      \WHERE module_name = :module_name \
+      \AND name = :name \
+      \AND name_type IS :name_type"
+      [ ":module_name" := P.runModuleName moduleName',
+        ":name" := name,
+        ":name_type" := (map show lspNameType :: Maybe Text)
+      ]
+  pure $ decls <&> \(spanName, sl, sc, el, ec) -> P.SourceSpan spanName (SourcePos sl sc) (SourcePos el ec)
+
+-- pure $ deserialise . fromOnly <$> listToMaybe decls
+
 getAstDeclarationsAtSrcPos :: (MonadIO m, MonadReader LspEnvironment m) => P.ModuleName -> SourcePos -> m [P.Declaration]
 getAstDeclarationsAtSrcPos moduleName' (SourcePos line col) = do
   decls <-
@@ -161,13 +180,13 @@ getAstDeclarationsStartingWith moduleName' prefix = do
              \INNER JOIN ast_modules on ast_declarations.module_name = ast_modules.module_name \
              \INNER JOIN available_srcs on ast_modules.path = available_srcs.path \
              \WHERE (ast_declarations.module_name = :module_name OR ast_declarations.exported) \
-             \AND (name == :prefix OR name GLOB :prefix) \
+             \AND instr(name, :prefix) == 1 \
              \ORDER BY name ASC \
              \LIMIT :limit \
              \OFFSET :offset"
     )
     [ ":module_name" := P.runModuleName moduleName',
-      ":prefix" := prefix <> "*",
+      ":prefix" := prefix,
       ":limit" := limit,
       ":offset" := offset
     ]
@@ -190,15 +209,15 @@ getAstDeclarationsStartingWithAndSearchingModuleNames moduleName' moduleNameCont
              \INNER JOIN ast_modules on ast_declarations.module_name = ast_modules.module_name \
              \INNER JOIN available_srcs on ast_modules.path = available_srcs.path \
              \WHERE (ast_declarations.module_name = :module_name OR ast_declarations.exported) \
-             \AND ast_declarations.module_name like :module_name_contains \
-             \AND (name == :prefix OR name GLOB :prefix) \
+             \AND instr(ast_declarations.module_name, :module_name_contains) <> 0 \
+             \AND instr(name, :prefix) == 1 \
              \ORDER BY name ASC \
              \LIMIT :limit \
              \OFFSET :offset"
     )
     [ ":module_name" := P.runModuleName moduleName',
-      ":prefix" := prefix <> "*",
-      ":module_name_contains" := "%" <> P.runModuleName moduleNameContains <> "%",
+      ":prefix" := prefix,
+      ":module_name_contains" := P.runModuleName moduleNameContains,
       ":limit" := limit,
       ":offset" := offset
     ]
@@ -220,13 +239,13 @@ getAstDeclarationsStartingWithOnlyInModule moduleName' prefix = do
              \INNER JOIN ast_modules on ast_declarations.module_name = ast_modules.module_name \
              \INNER JOIN available_srcs on ast_modules.path = available_srcs.path \
              \WHERE ast_declarations.module_name = :module_name \
-             \AND (name == :prefix OR name GLOB :prefix)\
+             \AND instr(name, :prefix) == 1 \
              \ORDER BY name ASC \
              \LIMIT :limit \
              \OFFSET :offset"
     )
     [ ":module_name" := P.runModuleName moduleName',
-      ":prefix" := prefix <> "*",
+      ":prefix" := prefix,
       ":limit" := limit,
       ":offset" := offset
     ]

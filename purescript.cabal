@@ -357,6 +357,7 @@ library
     Language.PureScript.Lsp.Handlers.Hover
     Language.PureScript.Lsp.Log
     Language.PureScript.Lsp.Monad
+    Language.PureScript.Lsp.NameType
     Language.PureScript.Lsp.Prim
     Language.PureScript.Lsp.Print
     Language.PureScript.Lsp.ReadFile

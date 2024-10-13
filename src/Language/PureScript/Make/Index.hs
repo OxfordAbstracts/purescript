@@ -50,13 +50,12 @@ import Language.PureScript.Types (everywhereOnTypesM)
 import Paths_purescript qualified as Paths
 import Protolude hiding (moduleName)
 import "monad-logger" Control.Monad.Logger (MonadLogger, logDebugN)
+import Language.PureScript.Lsp.NameType (lspNameType)
 
 addAllIndexing :: (MonadIO m) => Connection -> P.MakeActions m -> P.MakeActions m
 addAllIndexing conn ma =
   addAstModuleIndexing conn $
-    -- addEnvIndexing conn $
-    addCoreFnIndexing conn $
-      addExternIndexing conn ma
+    addExternIndexing conn ma
 
 addAstModuleIndexing :: (MonadIO m) => Connection -> P.MakeActions m -> P.MakeActions m
 addAstModuleIndexing conn ma =
@@ -65,30 +64,33 @@ addAstModuleIndexing conn ma =
     }
 
 indexAstModule :: (MonadIO m) => Connection -> P.Module -> ExternsFile -> m ()
-indexAstModule conn m@(P.Module _ss _comments name decls exportRefs) extern = liftIO do
+indexAstModule conn m@(P.Module _ss _comments moduleName' decls exportRefs) extern = liftIO do
   path <- makeAbsolute externPath
   SQL.executeNamed
     conn
     (SQL.Query "INSERT OR REPLACE INTO ast_modules (module_name, path) VALUES (:module_name, :path)")
-    [ ":module_name" := P.runModuleName name,
+    [ ":module_name" := P.runModuleName moduleName',
       ":path" := path
     ]
-  SQL.execute conn "DELETE FROM ast_declarations WHERE module_name = ?" (SQL.Only $ P.runModuleName name)
-  SQL.execute conn "DELETE FROM ast_expressions WHERE module_name = ?" (SQL.Only $ P.runModuleName name)
+  SQL.execute conn "DELETE FROM ast_declarations WHERE module_name = ?" (SQL.Only $ P.runModuleName moduleName')
+  SQL.execute conn "DELETE FROM ast_expressions WHERE module_name = ?" (SQL.Only $ P.runModuleName moduleName')
 
   let exports = Set.fromList $ P.exportedDeclarations m
 
   forM_ decls \decl -> do
     let (ss, _) = P.declSourceAnn decl
-    let start = P.spanStart ss
+        start = P.spanStart ss
         end = P.spanEnd ss
+        name = P.declName decl
+        nameType =  name <&> lspNameType
     SQL.executeNamed
       conn
-      (SQL.Query "INSERT INTO ast_declarations (module_name, name, value, printed_type, start_line, end_line, start_col, end_col, lines, cols, exported) VALUES (:module_name, :name, :value, :printed_type, :start_line, :end_line, :start_col, :end_col, :lines, :cols, :exported)")
-      [ ":module_name" := P.runModuleName name,
-        ":name" := printName <$> P.declName decl,
+      (SQL.Query "INSERT INTO ast_declarations (module_name, name, value, printed_type, name_type, start_line, end_line, start_col, end_col, lines, cols, exported) VALUES (:module_name, :name, :value, :printed_type, :start_line, :end_line, :start_col, :end_col, :lines, :cols, :exported)")
+      [ ":module_name" := P.runModuleName moduleName',
+        ":name" := printName <$> name,
         ":value" := serialise decl,
         ":printed_type" := printDeclarationType decl,
+        ":name_type" := (show <$> nameType :: Maybe Text),
         ":start_line" := P.sourcePosLine start,
         ":end_line" := P.sourcePosLine end,
         ":start_col" := P.sourcePosColumn start,
@@ -319,7 +321,7 @@ initDb conn = do
   SQL.execute_ conn "pragma journal_mode=wal;"
   SQL.execute_ conn "pragma foreign_keys = ON;"
   SQL.execute_ conn "CREATE TABLE IF NOT EXISTS ast_modules (module_name TEXT, path TEXT, UNIQUE(module_name) on conflict replace, UNIQUE(path) on conflict replace)"
-  SQL.execute_ conn "CREATE TABLE IF NOT EXISTS ast_declarations (module_name TEXT, name TEXT, value TEXT, printed_type TEXT, start_line INTEGER, end_line INTEGER, start_col INTEGER, end_col INTEGER, lines INTEGER, cols INTEGER, exported BOOLEAN)"
+  SQL.execute_ conn "CREATE TABLE IF NOT EXISTS ast_declarations (module_name TEXT, name TEXT, name_type TEXT, value TEXT, printed_type TEXT, start_line INTEGER, end_line INTEGER, start_col INTEGER, end_col INTEGER, lines INTEGER, cols INTEGER, exported BOOLEAN)"
   SQL.execute_ conn "CREATE TABLE IF NOT EXISTS ast_expressions (module_name TEXT, value TEXT, shown TEXT, start_line INTEGER, end_line INTEGER, start_col INTEGER, end_col INTEGER, length INTEGER)"
   SQL.execute_ conn "CREATE TABLE IF NOT EXISTS envs (module_name TEXT PRIMARY KEY, value TEXT)"
   SQL.execute_ conn "CREATE TABLE IF NOT EXISTS corefn_modules (name TEXT PRIMARY KEY, path TEXT, value TEXT, UNIQUE(name) on conflict replace, UNIQUE(path) on conflict replace)"
