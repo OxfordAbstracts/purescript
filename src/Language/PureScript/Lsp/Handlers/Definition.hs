@@ -24,9 +24,10 @@ import Language.PureScript.Lsp.NameType (LspNameType (..))
 import Language.PureScript.Lsp.Print (printName)
 import Language.PureScript.Lsp.State (cachedRebuild)
 import Language.PureScript.Lsp.Types (OpenFile (..))
-import Language.PureScript.Lsp.Util (declAtLine, efDeclSourceSpan, getNamesAtPosition, posInSpan, posInSpanLines, sourcePosToPosition)
+import Language.PureScript.Lsp.Util (declAtLine, efDeclSourceSpan, getNamesAtPosition, posInSpan, posInSpanLines, sourcePosToPosition, declStartLine)
 import Language.PureScript.Types (getAnnForType)
 import Protolude hiding (to)
+import Language.PureScript (declName)
 
 definitionHandler :: Server.Handlers HandlerM
 definitionHandler = Server.requestHandler Message.SMethod_TextDocumentDefinition $ \req res -> do
@@ -47,9 +48,10 @@ definitionHandler = Server.requestHandler Message.SMethod_TextDocumentDefinition
       respondWithDeclInOtherModule :: Maybe LspNameType -> P.ModuleName -> Text -> HandlerM ()
       respondWithDeclInOtherModule nameType modName ident = do
         declSpans <- getAstDeclarationLocationInModule nameType modName ident
-        debugLsp $ "Decl spans: " <> show declSpans
         forLsp (head declSpans) $ \sourceSpan ->
           locationRes (AST.spanName sourceSpan) (spanToRange sourceSpan)
+
+  debugLsp $ "Position: " <> show pos
 
   forLsp filePathMb \filePath -> do
     cacheOpenMb <- cachedRebuild filePath
@@ -59,18 +61,32 @@ definitionHandler = Server.requestHandler Message.SMethod_TextDocumentDefinition
               & P.getModuleDeclarations
               & filter (not . isPrimImport)
 
+          srcPosLine = fromIntegral _line + 1
+
           declAtPos =
             withoutPrim
-              & declAtLine (fromIntegral _line)
+              & declAtLine srcPosLine
 
-      forLsp declAtPos $ \decl ->
+      let declNameAndLine d = (foldMap printName (declName d), P.sourcePosLine $ P.spanStart $ fst $ P.declSourceAnn d)
+
+      debugLsp $ "srcPosLine: " <> show srcPosLine
+
+      debugLsp $ "all decls: " <> show (declNameAndLine <$> sortBy (comparing declStartLine) withoutPrim)
+
+
+      debugLsp $ "found decl at pos: " <> maybe "Nothing" (show . declNameAndLine) declAtPos
+
+      forLsp declAtPos $ \decl -> do
         let respondWithTypeLocation =
               forLsp (find (not . isNullSourceTypeSpan) $ getTypesAtPos pos decl) sourceTypeLocRes
-         in case head $ getExprsAtPos pos decl of
+
+            exprsAtPos = getExprsAtPos pos decl
+
+        debugLsp $ "exprs at pos: " <> show (length exprsAtPos)
+        case head exprsAtPos of
               Just expr -> do
-                debugLsp $ "expr: " <> show expr
                 case expr of
-                  P.Var _ (P.Qualified (P.BySourcePos srcPos) _) | srcPos /= P.SourcePos 0 0 -> do 
+                  P.Var _ (P.Qualified (P.BySourcePos srcPos) _) | srcPos /= P.SourcePos 0 0 -> do
                     debugLsp $ "Var in source pos: " <> show srcPos
                     posRes filePath srcPos
                   P.Var _ (P.Qualified (P.ByModuleName modName) ident) -> do

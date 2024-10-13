@@ -87,7 +87,7 @@ indexAstModule conn m@(P.Module _ss _comments moduleName' decls exportRefs) exte
       conn
       (SQL.Query 
       "INSERT INTO ast_declarations \
-      \        (module_name, name, value, printed_type, name_type, start_line, end_line, start_col, end_col, lines, cols, exported) \
+      \         (module_name, name, value, printed_type, name_type, start_line, end_line, start_col, end_col, lines, cols, exported) \
       \ VALUES (:module_name, :name, :value, :printed_type, :name_type, :start_line, :end_line, :start_col, :end_col, :lines, :cols, :exported)")
       [ ":module_name" := P.runModuleName moduleName',
         ":name" := printName <$> name,

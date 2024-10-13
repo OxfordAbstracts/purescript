@@ -234,23 +234,23 @@ declSourceSpanWithExpr d = maybe span (widenSourceSpan span) exprSpan
     exprSpan = case d of
       P.ValueDeclaration (P.ValueDeclarationData {..}) ->
         let go acc (P.GuardedExpr _ e) =
-             case acc of 
-               Nothing -> findExprSourceSpan e
-               Just acc' -> widenSourceSpan acc' <$> findExprSourceSpan e
+              case acc of
+                Nothing -> findExprSourceSpan e
+                Just acc' -> widenSourceSpan acc' <$> findExprSourceSpan e
          in foldl' go Nothing valdeclExpression
       _ -> Nothing
 
-
 declAtLine :: Int -> [P.Declaration] -> Maybe P.Declaration
-declAtLine l (d:d':ds) 
-  | declStartLine d >= l && declStartLine d' < l = Just d
-  | otherwise = declAtLine l (d':ds)
-declAtLine l [d] | declStartLine d >= l = Just d
-declAtLine _ _ = Nothing 
+declAtLine l = go . sortBy (comparing declStartLine)
+  where
+    go (d : d' : ds)
+      | declStartLine d <= l && declStartLine d' > l = Just d
+      | otherwise = go (d' : ds)
+    go [d] | declStartLine d >= l = Just d
+    go _ = Nothing
 
 declStartLine :: P.Declaration -> Int
 declStartLine = P.sourcePosLine . AST.spanStart . P.declSourceSpan
-
 
 findExprSourceSpan :: P.Expr -> Maybe AST.SourceSpan
 findExprSourceSpan = goExpr
