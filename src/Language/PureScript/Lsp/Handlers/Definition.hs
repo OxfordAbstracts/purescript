@@ -47,6 +47,7 @@ definitionHandler = Server.requestHandler Message.SMethod_TextDocumentDefinition
       respondWithDeclInOtherModule :: Maybe LspNameType -> P.ModuleName -> Text -> HandlerM ()
       respondWithDeclInOtherModule nameType modName ident = do
         declSpans <- getAstDeclarationLocationInModule nameType modName ident
+        debugLsp $ "Decl spans: " <> show declSpans
         forLsp (head declSpans) $ \sourceSpan ->
           locationRes (AST.spanName sourceSpan) (spanToRange sourceSpan)
 
@@ -63,21 +64,26 @@ definitionHandler = Server.requestHandler Message.SMethod_TextDocumentDefinition
               & declAtLine (fromIntegral _line)
 
       forLsp declAtPos $ \decl ->
-        case head $ getExprsAtPos pos decl of
-          Nothing -> nullRes
-          Just expr -> do
-            debugLsp $ "expr: " <> show expr
-            case expr of
-              P.Var _ (P.Qualified (P.BySourcePos srcPos) _) | srcPos /= P.SourcePos 0 0 -> posRes filePath srcPos
-              P.Var _ (P.Qualified (P.ByModuleName modName) ident) -> do
-                respondWithDeclInOtherModule (Just IdentNameType) modName $ P.runIdent ident
-              P.Op _ (P.Qualified (P.BySourcePos srcPos) _) | srcPos /= P.SourcePos 0 0 -> posRes filePath srcPos
-              P.Op _ (P.Qualified (P.ByModuleName srcPos) ident) -> do
-                respondWithDeclInOtherModule (Just ValOpNameType) srcPos $ P.runOpName ident
-              P.Constructor _ (P.Qualified (P.BySourcePos srcPos) _) | srcPos /= P.SourcePos 0 0 -> posRes filePath srcPos
-              P.Constructor _ (P.Qualified (P.ByModuleName srcPos) ident) -> do
-                respondWithDeclInOtherModule (Just DctorNameType) srcPos $ P.runProperName ident
-              _ -> forLsp (find (not . isNullSourceTypeSpan) $ getTypesAtPos pos decl) sourceTypeLocRes
+        let respondWithTypeLocation =
+              forLsp (find (not . isNullSourceTypeSpan) $ getTypesAtPos pos decl) sourceTypeLocRes
+         in case head $ getExprsAtPos pos decl of
+              Just expr -> do
+                debugLsp $ "expr: " <> show expr
+                case expr of
+                  P.Var _ (P.Qualified (P.BySourcePos srcPos) _) | srcPos /= P.SourcePos 0 0 -> do 
+                    debugLsp $ "Var in source pos: " <> show srcPos
+                    posRes filePath srcPos
+                  P.Var _ (P.Qualified (P.ByModuleName modName) ident) -> do
+                    debugLsp $ "Var in module: " <> show modName <> " " <> show ident
+                    respondWithDeclInOtherModule (Just IdentNameType) modName $ P.runIdent ident
+                  P.Op _ (P.Qualified (P.BySourcePos srcPos) _) | srcPos /= P.SourcePos 0 0 -> posRes filePath srcPos
+                  P.Op _ (P.Qualified (P.ByModuleName srcPos) ident) -> do
+                    respondWithDeclInOtherModule (Just ValOpNameType) srcPos $ P.runOpName ident
+                  P.Constructor _ (P.Qualified (P.BySourcePos srcPos) _) | srcPos /= P.SourcePos 0 0 -> posRes filePath srcPos
+                  P.Constructor _ (P.Qualified (P.ByModuleName srcPos) ident) -> do
+                    respondWithDeclInOtherModule (Just DctorNameType) srcPos $ P.runProperName ident
+                  _ -> respondWithTypeLocation
+              _ -> respondWithTypeLocation
 
 isNullSourceTypeSpan :: P.SourceType -> Bool
 isNullSourceTypeSpan st = getAnnForType st == (nullSourceSpan, [])

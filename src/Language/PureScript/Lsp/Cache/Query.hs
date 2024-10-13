@@ -137,7 +137,7 @@ getAstDeclarationLocationInModule lspNameType moduleName' name = do
       "SELECT path, start_line, start_col, end_line, end_col \
       \FROM ast_declarations \
       \INNER JOIN ast_modules on ast_declarations.module_name = ast_modules.module_name \
-      \WHERE module_name = :module_name \
+      \WHERE ast_declarations.module_name = :module_name \
       \AND name = :name \
       \AND name_type IS :name_type"
       [ ":module_name" := P.runModuleName moduleName',

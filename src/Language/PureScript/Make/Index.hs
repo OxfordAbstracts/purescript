@@ -85,7 +85,10 @@ indexAstModule conn m@(P.Module _ss _comments moduleName' decls exportRefs) exte
         nameType =  name <&> lspNameType
     SQL.executeNamed
       conn
-      (SQL.Query "INSERT INTO ast_declarations (module_name, name, value, printed_type, name_type, start_line, end_line, start_col, end_col, lines, cols, exported) VALUES (:module_name, :name, :value, :printed_type, :start_line, :end_line, :start_col, :end_col, :lines, :cols, :exported)")
+      (SQL.Query 
+      "INSERT INTO ast_declarations \
+      \        (module_name, name, value, printed_type, name_type, start_line, end_line, start_col, end_col, lines, cols, exported) \
+      \ VALUES (:module_name, :name, :value, :printed_type, :name_type, :start_line, :end_line, :start_col, :end_col, :lines, :cols, :exported)")
       [ ":module_name" := P.runModuleName moduleName',
         ":name" := printName <$> name,
         ":value" := serialise decl,
@@ -317,7 +320,7 @@ insertEfExport conn moduleName' dr = do
 
 initDb :: Connection -> IO ()
 initDb conn = do
-  -- dropTables conn
+  dropTables conn
   SQL.execute_ conn "pragma journal_mode=wal;"
   SQL.execute_ conn "pragma foreign_keys = ON;"
   SQL.execute_ conn "CREATE TABLE IF NOT EXISTS ast_modules (module_name TEXT, path TEXT, UNIQUE(module_name) on conflict replace, UNIQUE(path) on conflict replace)"
@@ -372,6 +375,7 @@ dropTables :: Connection -> IO ()
 dropTables conn = do
   SQL.execute_ conn "DROP TABLE IF EXISTS ast_declarations"
   SQL.execute_ conn "DROP TABLE IF EXISTS ast_expressions"
+  SQL.execute_ conn "DROP TABLE IF EXISTS ast_modules"
   SQL.execute_ conn "DROP TABLE IF EXISTS envs"
   SQL.execute_ conn "DROP TABLE IF EXISTS corefn_modules"
   SQL.execute_ conn "DROP TABLE IF EXISTS corefn_imports"
