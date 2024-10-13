@@ -1,4 +1,5 @@
 {-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE DeriveAnyClass #-}
 
 -- |
 -- Data types for names
@@ -21,6 +22,7 @@ import Data.Text (Text)
 import Data.Text qualified as T
 
 import Language.PureScript.AST.SourcePos (SourcePos, pattern SourcePos)
+import Data.Aeson qualified as A
 
 -- | A sum of the possible name types, useful for error and lint messages.
 data Name
@@ -175,6 +177,7 @@ data ProperNameType
   | ConstructorName
   | ClassName
   | Namespace
+  deriving (Show, Generic, A.FromJSON, A.ToJSON)
 
 -- |
 -- Coerces a ProperName from one ProperNameType to another. This should be used

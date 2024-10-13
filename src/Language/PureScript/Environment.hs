@@ -1,3 +1,4 @@
+{-# LANGUAGE DeriveAnyClass #-}
 module Language.PureScript.Environment where
 
 import Prelude
@@ -27,6 +28,7 @@ import Language.PureScript.Roles (Role(..))
 import Language.PureScript.TypeClassDictionaries (NamedDict)
 import Language.PureScript.Types (SourceConstraint, SourceType, Type(..), TypeVarVisibility(..), eqType, srcTypeConstructor, freeTypeVariables)
 import Language.PureScript.Constants.Prim qualified as C
+import Codec.Serialise qualified as S
 
 -- | The @Environment@ defines all values and types which are currently in scope:
 data Environment = Environment
@@ -45,9 +47,10 @@ data Environment = Environment
   -- scope (ie dictionaries brought in by a constrained type).
   , typeClasses :: M.Map (Qualified (ProperName 'ClassName)) TypeClassData
   -- ^ Type classes
-  } deriving (Show, Generic)
+  } deriving (Show, Generic, S.Serialise)
 
 instance NFData Environment
+
 
 -- | Information about a type class
 data TypeClassData = TypeClassData
@@ -71,7 +74,7 @@ data TypeClassData = TypeClassData
   -- ^ A sets of arguments that can be used to infer all other arguments.
   , typeClassIsEmpty :: Bool
   -- ^ Whether or not dictionaries for this type class are necessarily empty.
-  } deriving (Show, Generic)
+  } deriving (Show, Generic, S.Serialise)
 
 instance NFData TypeClassData
 
@@ -82,7 +85,7 @@ data FunctionalDependency = FunctionalDependency
   -- ^ the type arguments which determine the determined type arguments
   , fdDetermined  :: [Int]
   -- ^ the determined type arguments
-  } deriving (Show, Generic)
+  } deriving (Show, Eq, Ord, Generic)
 
 instance NFData FunctionalDependency
 instance Serialise FunctionalDependency
@@ -248,7 +251,7 @@ data NameKind
   -- ^ A public value for a module member or foreign import declaration
   | External
   -- ^ A name for member introduced by foreign import
-  deriving (Show, Eq, Generic)
+  deriving (Show, Eq, Ord, Generic)
 
 instance NFData NameKind
 instance Serialise NameKind

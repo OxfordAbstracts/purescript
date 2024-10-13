@@ -2,6 +2,7 @@
 
 module Language.PureScript.Ide.Logging
        ( runLogger
+       , runErrLogger
        , logPerf
        , displayTimeSpec
        , labelTimespec
@@ -9,7 +10,7 @@ module Language.PureScript.Ide.Logging
 
 import Protolude
 
-import "monad-logger" Control.Monad.Logger (LogLevel(..), LoggingT, MonadLogger, filterLogger, logOtherN, runStdoutLoggingT)
+import "monad-logger" Control.Monad.Logger (LogLevel(..), LoggingT, MonadLogger, filterLogger, logOtherN, runStdoutLoggingT, runStderrLoggingT)
 import Data.Text qualified as T
 import Language.PureScript.Ide.Types (IdeLogLevel(..))
 import System.Clock (Clock(..), TimeSpec, diffTimeSpec, getTime, toNanoSecs)
@@ -18,6 +19,16 @@ import Text.Printf (printf)
 runLogger :: MonadIO m => IdeLogLevel -> LoggingT m a -> m a
 runLogger logLevel' =
   runStdoutLoggingT . filterLogger (\_ logLevel ->
+                                       case logLevel' of
+                                         LogAll -> True
+                                         LogDefault -> not (logLevel == LevelOther "perf" || logLevel == LevelDebug)
+                                         LogNone -> False
+                                         LogDebug -> logLevel /= LevelOther "perf"
+                                         LogPerf -> logLevel == LevelOther "perf")
+
+runErrLogger :: MonadIO m => IdeLogLevel -> LoggingT m a -> m a
+runErrLogger logLevel' =
+  runStderrLoggingT . filterLogger (\_ logLevel ->
                                        case logLevel' of
                                          LogAll -> True
                                          LogDefault -> not (logLevel == LevelOther "perf" || logLevel == LevelDebug)

@@ -247,7 +247,7 @@ moduleToExternsFile (Module ss _ mn ds (Just exps)) env renamedIdents = ExternsF
   toExternsDeclaration (ValueRef _ ident)
     | Just (ty, _, _) <- Qualified (ByModuleName mn) ident `M.lookup` names env
     = [ EDValue (lookupRenamedIdent ident) ty ]
-  toExternsDeclaration (TypeClassRef _ className)
+  toExternsDeclaration (TypeClassRef _ss className)
     | let dictName = dictTypeName . coerceProperName $ className
     , Just TypeClassData{..} <- Qualified (ByModuleName mn) className `M.lookup` typeClasses env
     , Just (kind, tk) <- Qualified (ByModuleName mn) (coerceProperName className) `M.lookup` types env

@@ -15,6 +15,7 @@ import TestHierarchy qualified
 import TestPrimDocs qualified
 import TestPsci qualified
 import TestIde qualified
+import TestLsp qualified
 import TestPscPublish qualified
 import TestSourceMaps qualified
 -- import TestBundle qualified
@@ -35,6 +36,7 @@ main = do
     describe "cst" TestCst.spec
     describe "ast" TestAst.spec
     describe "ide" TestIde.spec
+    describe "lsp" TestLsp.spec
     beforeAll TestUtils.setupSupportModules $ do
       describe "compiler" TestCompiler.spec
       describe "sourcemaps" TestSourceMaps.spec

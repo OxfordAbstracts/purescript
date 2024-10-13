@@ -11,10 +11,12 @@
 -- |
 -- Error types for psc-ide
 -----------------------------------------------------------------------------
+{-# LANGUAGE DeriveAnyClass #-}
 
 module Language.PureScript.Ide.Error
        ( IdeError(..)
        , prettyPrintTypeSingleLine
+       , textError
        ) where
 
 import Data.Aeson (KeyValue(..), ToJSON(..), Value, object)
@@ -32,7 +34,7 @@ data IdeError
     | ModuleNotFound ModuleIdent
     | ModuleFileNotFound ModuleIdent
     | RebuildError [(FilePath, Text)] P.MultipleErrors
-    deriving (Show)
+    deriving (Show, Exception)
 
 instance ToJSON IdeError where
   toJSON (RebuildError files errs) = object
