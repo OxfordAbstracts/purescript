@@ -2,68 +2,31 @@
 
 module Language.PureScript.Lsp.Cache.Query where
 
-import Codec.Serialise (deserialise)
-import Data.Aeson (encode)
-import Data.ByteString.Lazy qualified as Lazy
-import Data.List qualified as List
-import Data.Map qualified as Map
 import Database.SQLite.Simple (NamedParam ((:=)), fromOnly)
 import Database.SQLite.Simple qualified as SQL
 import Language.LSP.Server (MonadLsp)
 import Language.PureScript.AST qualified as P
 import Language.PureScript.AST.SourcePos (SourcePos (SourcePos))
-import Language.PureScript.Externs qualified as P
 import Language.PureScript.Lsp.DB qualified as DB
+import Language.PureScript.Lsp.NameType (LspNameType)
 import Language.PureScript.Lsp.ServerConfig (ServerConfig, getMaxCompletions, getMaxTypeLength)
 import Language.PureScript.Lsp.Types (LspEnvironment)
 import Language.PureScript.Names qualified as P
 import Protolude
-import Language.PureScript.Lsp.NameType (LspNameType)
-
 
 ------------------------------------------------------------------------------------------------------------------------
------------- Externs ---------------------------------------------------------------------------------------------------
+------------ AST -------------------------------------------------------------------------------------------------------
 ------------------------------------------------------------------------------------------------------------------------
 
-getEfImportsMap :: (MonadIO f, MonadReader LspEnvironment f) => [P.ModuleName] -> f (Map P.ModuleName [P.DeclarationRef])
-getEfImportsMap mNames = Map.fromListWith (++) . fmap (fmap List.singleton) <$> getEfExports mNames
-
-getEfImports :: (MonadIO m, MonadReader LspEnvironment m) => P.ModuleName -> m [P.ExternsImport]
-getEfImports moduleName' = do
-  imports <-
-    DB.queryNamed
-      "SELECT value FROM ef_imports WHERE module_name = :module_name"
-      [":module_name" := P.runModuleName moduleName']
-  pure $ deserialise . fromOnly <$> imports
-
-getEfExports :: (MonadIO m, MonadReader LspEnvironment m) => [P.ModuleName] -> m [(P.ModuleName, P.DeclarationRef)]
-getEfExports moduleNames = do
-  exports :: [(Text, Lazy.ByteString)] <-
-    DB.queryNamed
-      "SELECT module_name, value FROM ef_exports WHERE module_name IN (SELECT value FROM json_each(:module_names))"
-      [ ":module_names" := encode (fmap P.runModuleName moduleNames)
-      ]
-  pure $ bimap P.ModuleName deserialise <$> exports
-
-getEfDeclarationInModule :: (MonadIO m, MonadReader LspEnvironment m) => P.ModuleName -> Text -> m (Maybe P.ExternsDeclaration)
-getEfDeclarationInModule moduleName' name = do
-  decls <-
-    DB.queryNamed
-      "SELECT value FROM ef_declarations WHERE module_name = :module_name AND name = :name"
-      [ ":module_name" := P.runModuleName moduleName',
-        ":name" := name
-      ]
-  pure $ deserialise . fromOnly <$> listToMaybe decls
-
-getAstDeclarationInModule :: (MonadIO m, MonadReader LspEnvironment m) => P.ModuleName -> Text -> m (Maybe P.Declaration)
+getAstDeclarationInModule :: (MonadIO m, MonadReader LspEnvironment m) => P.ModuleName -> Text -> m (Maybe (Text, Maybe LspNameType))
 getAstDeclarationInModule moduleName' name = do
   decls <-
     DB.queryNamed
-      "SELECT value FROM ast_declarations WHERE module_name = :module_name AND name = :name"
+      "SELECT name, name_type FROM ast_declarations WHERE module_name = :module_name AND name = :name"
       [ ":module_name" := P.runModuleName moduleName',
         ":name" := name
       ]
-  pure $ deserialise . fromOnly <$> listToMaybe decls
+  pure $ listToMaybe decls
 
 getAstDeclarationLocationInModule :: (MonadIO m, MonadReader LspEnvironment m) => Maybe LspNameType -> P.ModuleName -> Text -> m [P.SourceSpan]
 getAstDeclarationLocationInModule lspNameType moduleName' name = do
@@ -96,7 +59,6 @@ getAstDeclarationTypeInModule lspNameType moduleName' name = do
         ":name_type" := (map show lspNameType :: Maybe Text)
       ]
   pure $ decls <&> fromOnly
-
 
 getAstDeclarationsStartingWith ::
   (MonadIO m, MonadReader LspEnvironment m, MonadLsp ServerConfig m) =>

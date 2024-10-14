@@ -8,9 +8,8 @@ module Language.PureScript.Lsp.Util where
 import Codec.Serialise qualified as S
 -- import Language.PureScript.Linter qualified as P
 
-import Control.Lens (Field1 (_1), Field2 (_2), Field3 (_3), view, (^.))
+import Control.Lens (Field1 (_1), Field2 (_2), Field3 (_3), view)
 import Data.Map qualified as Map
-import Data.Set qualified as Set
 import Data.Text qualified as T
 import Data.Text.Utf16.Rope.Mixed as Rope
 import Database.SQLite.Simple.ToField (ToField (toField))

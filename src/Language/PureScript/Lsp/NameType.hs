@@ -1,7 +1,11 @@
+{-# LANGUAGE DeriveAnyClass #-}
+
 module Language.PureScript.Lsp.NameType where
 
-import Protolude
+import Database.SQLite.Simple.FromField (FromField (fromField))
+import Database.SQLite.Simple.ToField (ToField (toField))
 import Language.PureScript.Names
+import Protolude
 
 data LspNameType
   = IdentNameType
@@ -11,11 +15,16 @@ data LspNameType
   | DctorNameType
   | TyClassNameType
   | ModNameType
-  deriving (Show, Eq)
+  deriving (Show, Read, Eq, Generic)
 
+instance ToField LspNameType where
+  toField = toField . (show :: LspNameType -> Text)
+
+instance FromField LspNameType where
+  fromField = fmap (fromMaybe IdentNameType . (readMaybe :: Text -> Maybe LspNameType)) . fromField
 
 lspNameType :: Name -> LspNameType
-lspNameType = \case 
+lspNameType = \case
   IdentName _ -> IdentNameType
   ValOpName _ -> ValOpNameType
   TyName _ -> TyNameType

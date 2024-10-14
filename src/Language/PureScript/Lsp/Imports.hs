@@ -8,18 +8,19 @@ import Data.Text qualified as T
 import Data.Text.Utf16.Rope.Mixed qualified as Rope
 import Language.LSP.Protocol.Lens qualified as LSP
 import Language.LSP.Protocol.Types as LSP
+import Language.LSP.Server (MonadLsp)
 import Language.PureScript.AST.Declarations qualified as P
 import Language.PureScript.AST.SourcePos (nullSourceSpan)
 import Language.PureScript.Ide.Imports (Import (Import), prettyPrintImportSection, sliceImportSection)
 import Language.PureScript.Lsp.Cache.Query (getAstDeclarationInModule)
 import Language.PureScript.Lsp.Log (errorLsp)
+import Language.PureScript.Lsp.NameType (LspNameType (..))
 import Language.PureScript.Lsp.ReadFile (lspReadFileRope)
+import Language.PureScript.Lsp.ServerConfig (ServerConfig)
 import Language.PureScript.Lsp.Types (CompleteItemData (..), LspEnvironment)
+import Language.PureScript.Lsp.Util (filePathToNormalizedUri)
 import Language.PureScript.Names qualified as P
 import Protolude
-import Language.PureScript.Lsp.Util (filePathToNormalizedUri)
-import Language.LSP.Server (MonadLsp)
-import Language.PureScript.Lsp.ServerConfig (ServerConfig)
 
 getMatchingImport :: (MonadLsp ServerConfig m, MonadReader LspEnvironment m, MonadThrow m) => NormalizedUri -> P.ModuleName -> m (Maybe Import)
 getMatchingImport path moduleName' = do
@@ -49,8 +50,8 @@ getImportEdits (CompleteItemData path moduleName' importedModuleName name word (
         Nothing -> do
           errorLsp $ "In " <> T.pack path <> " failed to get declaration from module: " <> name
           pure Nothing
-        Just decl -> do
-          case addDeclarationToImports moduleName' importedModuleName wordQualifierMb decl imports of
+        Just (declName, nameType) -> do
+          case addDeclarationToImports moduleName' importedModuleName wordQualifierMb declName nameType imports of
             Nothing -> pure Nothing
             Just (newImports, moduleQualifier) -> do
               let importEdits = importsToTextEdit before newImports
@@ -69,8 +70,8 @@ getIdentModuleQualifier word =
     [_] -> Nothing
     xs -> Just (P.ModuleName $ T.intercalate "." $ init xs, last xs)
 
-addDeclarationToImports :: P.ModuleName -> P.ModuleName -> Maybe P.ModuleName -> P.Declaration -> [Import] -> Maybe ([Import], Maybe P.ModuleName)
-addDeclarationToImports moduleName' importedModuleName wordQualifierMb decl imports
+addDeclarationToImports :: P.ModuleName -> P.ModuleName -> Maybe P.ModuleName -> Text -> Maybe LspNameType -> [Import] -> Maybe ([Import], Maybe P.ModuleName)
+addDeclarationToImports moduleName' importedModuleName wordQualifierMb declName nameType imports
   | importingSelf = Nothing
   | Just existing <- alreadyImportedModuleMb,
     Just ref <- refMb = case existing of
@@ -99,14 +100,14 @@ addDeclarationToImports moduleName' importedModuleName wordQualifierMb decl impo
 
     refMb :: Maybe P.DeclarationRef
     refMb =
-      P.declName decl >>= \case
-        P.IdentName name -> Just $ P.ValueRef nullSourceSpan name
-        P.ValOpName name -> Just $ P.ValueOpRef nullSourceSpan name
-        P.TyName name -> Just $ P.TypeRef nullSourceSpan name Nothing
-        P.TyOpName name -> Just $ P.TypeOpRef nullSourceSpan name
-        P.TyClassName name -> Just $ P.TypeClassRef nullSourceSpan name
-        P.ModName name -> Just $ P.ModuleRef nullSourceSpan name
-        P.DctorName _name -> Nothing
+      nameType >>= \case
+        IdentNameType -> Just $ P.ValueRef nullSourceSpan (P.Ident declName)
+        ValOpNameType -> Just $ P.ValueOpRef nullSourceSpan (P.OpName declName)
+        TyNameType -> Just $ P.TypeRef nullSourceSpan (P.ProperName declName) Nothing
+        TyOpNameType -> Just $ P.TypeOpRef nullSourceSpan (P.OpName declName)
+        DctorNameType -> Nothing
+        TyClassNameType -> Just $ P.TypeClassRef nullSourceSpan (P.ProperName declName)
+        ModNameType -> Just $ P.ModuleRef nullSourceSpan (P.ModuleName declName)
 
     alreadyImportedModuleMb =
       find (\(Import mn' _ _) -> mn' == importedModuleName) imports
