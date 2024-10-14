@@ -21,22 +21,25 @@ import Language.PureScript.Lsp.State (clearCache)
 buildHandler :: Server.Handlers HandlerM
 buildHandler =
   Server.requestHandler (Message.SMethod_CustomMethod $ Proxy @"build") $ \_req res -> do
-    clearCache
-    config <- asks lspConfig
-    conn <- asks lspDbConnection
-    liftIO $ initDb conn
-    input <- updateAvailableSrcs
-    moduleFiles <- liftIO $ readUTF8FilesT input
-    (result, warnings) <-
-      liftIO $
-        compile
-          (P.Options False False codegenTargets)
-          moduleFiles
-          conn
-          (confOutputPath config)
-          False
-    let diags :: [Types.Diagnostic]
-        diags =
-          (errorMessageDiagnostic Types.DiagnosticSeverity_Error <$> either P.runMultipleErrors (const []) result)
-            <> (errorMessageDiagnostic Types.DiagnosticSeverity_Warning <$> P.runMultipleErrors warnings)
+    diags <- buildForLsp
     res $ Right $ A.toJSON diags
+
+buildForLsp :: HandlerM [Types.Diagnostic]
+buildForLsp = do
+  clearCache
+  config <- asks lspConfig
+  conn <- asks lspDbConnection
+  liftIO $ initDb conn
+  input <- updateAvailableSrcs
+  moduleFiles <- liftIO $ readUTF8FilesT input
+  (result, warnings) <-
+    liftIO $
+      compile
+        (P.Options False False codegenTargets)
+        moduleFiles
+        conn
+        (confOutputPath config)
+        False
+  pure $
+    (errorMessageDiagnostic Types.DiagnosticSeverity_Error <$> either P.runMultipleErrors (const []) result)
+      <> (errorMessageDiagnostic Types.DiagnosticSeverity_Warning <$> P.runMultipleErrors warnings)

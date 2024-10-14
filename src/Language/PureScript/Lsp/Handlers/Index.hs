@@ -19,13 +19,21 @@ import Language.PureScript.Make.Monad (readExternsFile)
 import Protolude hiding (to)
 import System.Directory (doesFileExist, getDirectoryContents)
 import System.FilePath ((</>))
+import Language.PureScript.Lsp.Handlers.DeleteOutput (deleteOutput)
+import Language.PureScript.Lsp.Handlers.Build (buildForLsp)
 
 indexHandler :: Server.Handlers HandlerM
 indexHandler =
-  Server.requestHandler (Message.SMethod_CustomMethod $ Proxy @"index") $ \_req res -> do
-    externs <- findAvailableExterns
-    for_ externs indexExternAndDecls
-    res $ Right A.Null
+  mconcat
+    [ Server.requestHandler (Message.SMethod_CustomMethod $ Proxy @"index-fast") $ \_req res -> do
+        externs <- findAvailableExterns
+        for_ externs indexExternAndDecls
+        res $ Right A.Null,
+      Server.requestHandler (Message.SMethod_CustomMethod $ Proxy @"index-full") $ \_req res -> do
+        deleteOutput
+        diags <- buildForLsp
+        res $ Right $ A.toJSON diags
+    ]
   where
     indexExternAndDecls :: ExternsFile -> HandlerM ()
     indexExternAndDecls ef = do
@@ -58,7 +66,7 @@ findAvailableExterns = do
 
     readExtern :: FilePath -> FilePath -> m (Maybe ExternsFile)
     readExtern oDir fp = do
-      let path = oDir </> fp
+      let path = oDir </> fp </> P.externsFileName
       res <- runExceptT $ readExternsFile path
       case res of
         Left err -> do

@@ -13,7 +13,7 @@ import Language.PureScript.AST.Declarations qualified as P
 import Language.PureScript.AST.SourcePos (nullSourceSpan)
 import Language.PureScript.Ide.Imports (Import (Import), prettyPrintImportSection, sliceImportSection)
 import Language.PureScript.Lsp.Cache.Query (getAstDeclarationInModule)
-import Language.PureScript.Lsp.Log (errorLsp)
+import Language.PureScript.Lsp.Log (errorLsp, warnLsp)
 import Language.PureScript.Lsp.NameType (LspNameType (..))
 import Language.PureScript.Lsp.ReadFile (lspReadFileRope)
 import Language.PureScript.Lsp.ServerConfig (ServerConfig)
@@ -139,3 +139,14 @@ parseImportsFromFile ::
 parseImportsFromFile fp = do
   rope <- lspReadFileRope fp
   pure $ sliceImportSection (Rope.lines rope)
+
+parseModuleNameFromFile ::
+  (MonadThrow m, MonadLsp ServerConfig m, MonadReader LspEnvironment m) =>
+  NormalizedUri ->
+  m (Maybe P.ModuleName)
+parseModuleNameFromFile = parseImportsFromFile >=> \case 
+  Left err -> do 
+    warnLsp $ "Failed to parse module name from file: " <> err
+    pure Nothing
+  Right (mn, _, _, _) -> pure $ Just mn
+

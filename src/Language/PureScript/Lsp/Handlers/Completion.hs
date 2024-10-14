@@ -14,10 +14,9 @@ import Language.LSP.Server qualified as Server
 import Language.LSP.VFS qualified as VFS
 import Language.PureScript qualified as P
 import Language.PureScript.Ide.Imports (Import (..))
-import Language.PureScript.Lsp.Cache (selectExternModuleNameFromFilePath)
 import Language.PureScript.Lsp.Cache.Query (CompletionResult (crModule, crName, crType), getAstDeclarationsStartingWith, getAstDeclarationsStartingWithAndSearchingModuleNames, getAstDeclarationsStartingWithOnlyInModule)
 import Language.PureScript.Lsp.Docs (readDeclarationDocsAsMarkdown)
-import Language.PureScript.Lsp.Imports (addImportToTextEdit, getIdentModuleQualifier, getMatchingImport)
+import Language.PureScript.Lsp.Imports (addImportToTextEdit, getIdentModuleQualifier, getMatchingImport, parseModuleNameFromFile)
 import Language.PureScript.Lsp.Log (logPerfStandard, debugLsp)
 import Language.PureScript.Lsp.Monad (HandlerM)
 import Language.PureScript.Lsp.ServerConfig (getMaxCompletions)
@@ -49,7 +48,8 @@ completionAndResolveHandlers =
           forLsp vfMb \vf -> do
             let (range, word) = getWordAt (VFS._file_text vf) pos
             debugLsp $ "word: " <> word
-            mNameMb <- selectExternModuleNameFromFilePath filePath
+            debugLsp $ "filePath: " <> show filePath
+            mNameMb <- parseModuleNameFromFile uri
             debugLsp $ "mNameMb: " <> show mNameMb
             forLsp mNameMb \mName -> do
               let withQualifier = getIdentModuleQualifier word
