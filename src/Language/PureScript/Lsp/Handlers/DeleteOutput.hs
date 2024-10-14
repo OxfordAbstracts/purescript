@@ -15,7 +15,7 @@ import System.FilePath ((</>))
 
 deleteOutputHandler :: Server.Handlers HandlerM
 deleteOutputHandler =
-  Server.requestHandler (Message.SMethod_CustomMethod $ Proxy @"delete output") $ \_req res -> do
+  Server.requestHandler (Message.SMethod_CustomMethod $ Proxy @"delete-output") $ \_req res -> do
     outDir <- asks (confOutputPath . lspConfig)
     liftIO $ createDirectoryIfMissing True outDir
     contents <- liftIO $ listDirectory outDir

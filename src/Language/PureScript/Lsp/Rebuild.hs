@@ -8,7 +8,7 @@ import Control.Monad.Catch (MonadThrow (throwM))
 import Data.Map.Lazy qualified as M
 import Data.Set qualified as Set
 import Language.LSP.Protocol.Types (NormalizedUri, fromNormalizedUri, uriToFilePath)
-import Language.LSP.Server (MonadLsp (getLspEnv))
+import Language.LSP.Server (MonadLsp)
 import Language.PureScript (MultipleErrors)
 import Language.PureScript.AST qualified as P
 import Language.PureScript.CST qualified as CST
@@ -18,7 +18,7 @@ import Language.PureScript.Ide.Rebuild (updateCacheDb)
 import Language.PureScript.Lsp.Cache (selectDependencies)
 import Language.PureScript.Lsp.Log (debugLsp, logPerfStandard)
 import Language.PureScript.Lsp.ReadFile (lspReadFileText)
-import Language.PureScript.Lsp.ServerConfig (ServerConfig (outputPath), getMaxFilesInCache)
+import Language.PureScript.Lsp.ServerConfig (ServerConfig, getMaxFilesInCache)
 import Language.PureScript.Lsp.State (addExternToExportEnv, buildExportEnvCache, cacheRebuild', cachedRebuild)
 import Language.PureScript.Lsp.Types (LspConfig (..), LspEnvironment (lspConfig, lspDbConnection, lspStateVar), LspState, OpenFile (OpenFile))
 import Language.PureScript.Make qualified as P

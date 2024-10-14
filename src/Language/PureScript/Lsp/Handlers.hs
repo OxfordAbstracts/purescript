@@ -62,13 +62,13 @@ handlers =
           Server.notificationHandler Message.SMethod_CancelRequest $ \msg -> do
             let reqId = msg ^. LSP.params . LSP.id
             cancelRequest reqId, 
-          Server.requestHandler (Message.SMethod_CustomMethod $ Proxy @"clear cache") $ \_req res -> do
+          Server.requestHandler (Message.SMethod_CustomMethod $ Proxy @"clear-cache") $ \_req res -> do
             clearCache
             res $ Right A.Null,
-          Server.requestHandler (Message.SMethod_CustomMethod $ Proxy @"clear export cache") $ \_req res -> do
+          Server.requestHandler (Message.SMethod_CustomMethod $ Proxy @"clear-cache:exports") $ \_req res -> do
             clearExportCache
             res $ Right A.Null,
-          Server.requestHandler (Message.SMethod_CustomMethod $ Proxy @"clear rebuild cache") $ \_req res -> do
+          Server.requestHandler (Message.SMethod_CustomMethod $ Proxy @"clear-cache:rebuilds") $ \_req res -> do
             clearRebuildCache
             res $ Right A.Null
         ]
