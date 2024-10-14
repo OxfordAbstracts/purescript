@@ -78,11 +78,8 @@ definitionHandler = Server.requestHandler Message.SMethod_TextDocumentDefinition
             withoutPrim
               & declAtLine srcPosLine
 
-      let declNameAndLine d = (foldMap printName (declName d), P.sourcePosLine $ P.spanStart $ fst $ P.declSourceAnn d)
 
       debugLsp $ "srcPosLine: " <> show srcPosLine
-
-      debugLsp $ "found decl at pos: " <> maybe "Nothing" (show . declNameAndLine) declAtPos
 
       forLsp declAtPos $ \decl -> do
         case decl of

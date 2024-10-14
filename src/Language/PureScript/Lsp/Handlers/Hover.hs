@@ -26,7 +26,7 @@ import Language.PureScript.Ide.Error (prettyPrintTypeSingleLine)
 import Language.PureScript.Lsp.Cache (selectExternModuleNameFromFilePath)
 import Language.PureScript.Lsp.Cache.Query (getAstDeclarationLocationInModule, getAstDeclarationTypeInModule, getCoreFnExprAt, getEfDeclarationInModule)
 import Language.PureScript.Lsp.Docs (readDeclarationDocsAsMarkdown, readDeclarationDocsWithNameType, readModuleDocs, readQualifiedNameDocsAsMarkdown)
-import Language.PureScript.Lsp.Handlers.Definition (findDeclRefAtPos, getExprsAtPos, getImportRefNameType, getTypedValuesAtPos, isPrimImport, spanToRange)
+import Language.PureScript.Lsp.Handlers.Definition (findDeclRefAtPos, fromPrim, getExprsAtPos, getImportRefNameType, getTypeColumns, getTypedValuesAtPos, getTypesAtPos, isNullSourceTypeSpan, isPrimImport, isSingleLine, spanToRange)
 import Language.PureScript.Lsp.Log (debugLsp)
 import Language.PureScript.Lsp.Monad (HandlerM)
 import Language.PureScript.Lsp.NameType (LspNameType (..))
@@ -50,9 +50,8 @@ hoverHandler = Server.requestHandler Message.SMethod_TextDocumentHover $ \req re
       forLsp :: Maybe a -> (a -> HandlerM ()) -> HandlerM ()
       forLsp val f = maybe nullRes f val
 
-      respondWithDeclInOtherModule :: P.SourceSpan -> LspNameType -> P.ModuleName -> Text -> HandlerM ()
-      respondWithDeclInOtherModule ss nameType modName ident = do
-        debugLsp $ "looking for decl in other module: " <> show (modName, ident, nameType)
+      respondWithDeclInModule :: P.SourceSpan -> LspNameType -> P.ModuleName -> Text -> HandlerM ()
+      respondWithDeclInModule ss nameType modName ident = do
         declDocMb <- readDeclarationDocsWithNameType modName nameType ident
         debugLsp $ "found docs: " <> show (isJust declDocMb)
         case declDocMb of
@@ -86,7 +85,7 @@ hoverHandler = Server.requestHandler Message.SMethod_TextDocumentHover $ \req re
             let name = P.declRefName import'
                 nameType = getImportRefNameType import'
             forLsp nameType \nameType' -> do
-              respondWithDeclInOtherModule ss nameType' importedModuleName (printName name)
+              respondWithDeclInModule ss nameType' importedModuleName (printName name)
           _ -> respondWithModule ss importedModuleName
 
   forLsp filePathMb \filePath -> do
@@ -102,9 +101,6 @@ hoverHandler = Server.requestHandler Message.SMethod_TextDocumentHover $ \req re
           declAtPos =
             withoutPrim
               & declAtLine srcPosLine
-      debugLsp $ "Position: " <> show pos
-
-      debugLsp $ "srcPosLine: " <> show srcPosLine
 
       forLsp declAtPos $ \decl -> do
         case decl of
@@ -128,13 +124,33 @@ hoverHandler = Server.requestHandler Message.SMethod_TextDocumentHover $ \req re
                 debugLsp $ "found hover expr at pos: " <> show expr
                 case expr of
                   P.Var ss (P.Qualified (P.ByModuleName modName) ident) -> do
-                    respondWithDeclInOtherModule ss IdentNameType modName (P.runIdent ident)
+                    respondWithDeclInModule ss IdentNameType modName (P.runIdent ident)
                   P.Op ss (P.Qualified (P.ByModuleName modName) ident) -> do
-                    respondWithDeclInOtherModule ss ValOpNameType modName (P.runOpName ident)
+                    respondWithDeclInModule ss ValOpNameType modName (P.runOpName ident)
                   P.Constructor ss (P.Qualified (P.ByModuleName modName) ident) -> do
-                    respondWithDeclInOtherModule ss DctorNameType modName (P.runProperName ident)
+                    respondWithDeclInModule ss DctorNameType modName (P.runProperName ident)
                   _ -> forLsp (findTypedExpr $ getTypedValuesAtPos pos decl) (respondWithSourceType expr)
-              _ -> nullRes
+              _ -> do
+                let tipes =
+                      filter (not . fromPrim) $
+                        filter (not . isNullSourceTypeSpan) $
+                          getTypesAtPos pos decl
+
+                    onOneLine = filter isSingleLine tipes
+                case onOneLine of
+                  [] -> nullRes
+                  _ -> do
+                    let smallest = minimumBy (comparing getTypeColumns) onOneLine
+                    case smallest of
+                      P.TypeConstructor (ss, _) (P.Qualified (P.ByModuleName modName) ident) -> do
+                        respondWithDeclInModule ss TyNameType modName $ P.runProperName ident
+                      P.TypeOp (ss, _) (P.Qualified (P.ByModuleName modName) ident) -> do
+                        respondWithDeclInModule ss TyOpNameType modName $ P.runOpName ident
+                      P.ConstrainedType (ss, _) c _ -> case P.constraintClass c of 
+                        (P.Qualified (P.ByModuleName modName) ident) -> do
+                          respondWithDeclInModule ss TyClassNameType modName $ P.runProperName ident
+                        _ -> nullRes 
+                      _ -> nullRes
 
 hoverHandlerV1 :: Server.Handlers HandlerM
 hoverHandlerV1 =
