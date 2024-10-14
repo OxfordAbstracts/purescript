@@ -48,7 +48,8 @@ lspOptions :: Server.Options
 lspOptions =
   Server.defaultOptions
     { Server.optTextDocumentSync = Just syncOptions,
-      Server.optExecuteCommandCommands = Just ["lsp-purescript-command"]
+      Server.optExecuteCommandCommands = Just ["lsp-purescript-command"],
+      Server.optCompletionTriggerCharacters = Just $ "._" <> ['a'..'z'] <> ['A'..'Z'] <> ['0'..'9'] 
     }
 
 syncOptions :: Types.TextDocumentSyncOptions
