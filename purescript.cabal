@@ -345,7 +345,6 @@ library
     Language.PureScript.Lsp.Docs
     Language.PureScript.Lsp.Imports
     Language.PureScript.Lsp.Cache
-    Language.PureScript.Lsp.Cache.IO
     Language.PureScript.Lsp.Cache.Query
     Language.PureScript.Lsp.Diagnostics
     Language.PureScript.Lsp.Handlers
