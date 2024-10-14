@@ -4,7 +4,6 @@
 module Language.PureScript.Lsp.Handlers.DeleteOutput where
 
 import Data.Aeson qualified as A
-import Data.Aeson.KeyMap (delete)
 import Language.LSP.Protocol.Message qualified as Message
 import Language.LSP.Server qualified as Server
 import Language.PureScript.DB (dbFile)
