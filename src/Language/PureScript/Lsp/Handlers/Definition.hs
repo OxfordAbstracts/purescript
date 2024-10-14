@@ -1,6 +1,4 @@
 {-# LANGUAGE BlockArguments #-}
-{-# OPTIONS_GHC -Wno-overlapping-patterns #-}
-{-# OPTIONS_GHC -Wno-unused-matches #-}
 
 module Language.PureScript.Lsp.Handlers.Definition where
 
@@ -9,7 +7,6 @@ import Language.LSP.Protocol.Lens qualified as LSP
 import Language.LSP.Protocol.Message qualified as Message
 import Language.LSP.Protocol.Types qualified as Types
 import Language.LSP.Server qualified as Server
-import Language.PureScript (declName)
 import Language.PureScript qualified as P
 import Language.PureScript.AST.SourcePos (nullSourceSpan)
 import Language.PureScript.Lsp.Cache (selectExternPathFromModuleName)
