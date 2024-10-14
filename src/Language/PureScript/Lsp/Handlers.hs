@@ -22,8 +22,9 @@ import Language.PureScript.Lsp.Handlers.Diagnostic (diagnosticAndCodeActionHandl
 import Language.PureScript.Lsp.Handlers.Hover (hoverHandler)
 import Language.PureScript.Lsp.Monad (HandlerM)
 import Language.PureScript.Lsp.ServerConfig (setTraceValue)
-import Language.PureScript.Lsp.State (cancelRequest, removedCachedRebuild)
+import Language.PureScript.Lsp.State (cancelRequest, removedCachedRebuild, clearCache, clearExportCache, clearRebuildCache)
 import Protolude hiding (to)
+import Data.Aeson qualified as A
 
 handlers :: Server.Handlers HandlerM
 handlers =
@@ -60,7 +61,16 @@ handlers =
             setTraceValue $ msg ^. LSP.params . LSP.value, -- probably no need to do this
           Server.notificationHandler Message.SMethod_CancelRequest $ \msg -> do
             let reqId = msg ^. LSP.params . LSP.id
-            cancelRequest reqId
+            cancelRequest reqId, 
+          Server.requestHandler (Message.SMethod_CustomMethod $ Proxy @"clear cache") $ \_req res -> do
+            clearCache
+            res $ Right A.Null,
+          Server.requestHandler (Message.SMethod_CustomMethod $ Proxy @"clear export cache") $ \_req res -> do
+            clearExportCache
+            res $ Right A.Null,
+          Server.requestHandler (Message.SMethod_CustomMethod $ Proxy @"clear rebuild cache") $ \_req res -> do
+            clearRebuildCache
+            res $ Right A.Null
         ]
 
 sendInfoMsg :: (Server.MonadLsp config f) => Text -> f ()

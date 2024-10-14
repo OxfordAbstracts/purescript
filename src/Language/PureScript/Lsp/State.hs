@@ -4,6 +4,9 @@ module Language.PureScript.Lsp.State
   ( cacheRebuild,
     cacheRebuild',
     cachedRebuild,
+    clearCache,
+    clearRebuildCache,
+    clearExportCache,
     removedCachedRebuild,
     buildExportEnvCache,
     addExternToExportEnv,
@@ -48,6 +51,8 @@ cacheRebuild' st maxFiles ef deps prevEnv module' = atomically . modifyTVar st $
     }
   where
     fp = P.spanName $ efSourceSpan ef
+    
+
 
 cachedRebuild :: (MonadIO m, MonadReader LspEnvironment m) => FilePath -> m (Maybe OpenFile)
 cachedRebuild fp = do
@@ -63,6 +68,19 @@ removedCachedRebuild fp = do
     x
       { openFiles = filter ((/= fp) . fst) (openFiles x)
       }
+
+clearRebuildCache :: (MonadReader LspEnvironment m, MonadIO m) => m ()
+clearRebuildCache = do
+  st <- lspStateVar <$> ask
+  liftIO . atomically $ modifyTVar st $ \x -> x {openFiles = []}
+
+clearExportCache :: (MonadReader LspEnvironment m, MonadIO m) => m ()
+clearExportCache = do
+  st <- lspStateVar <$> ask
+  liftIO . atomically $ modifyTVar st $ \x -> x {exportEnv = P.primEnv}
+
+clearCache :: (MonadReader LspEnvironment m, MonadIO m) => m ()
+clearCache = clearRebuildCache >> clearExportCache
 
 buildExportEnvCache :: (MonadIO m, MonadReader LspEnvironment m, MonadThrow m) => P.Module -> [ExternsFile] -> m P.Env
 buildExportEnvCache module' externs = do

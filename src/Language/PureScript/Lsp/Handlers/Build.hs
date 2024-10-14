@@ -16,10 +16,12 @@ import Language.PureScript.Lsp.Types (LspConfig (confOutputPath), LspEnvironment
 import Language.PureScript.Make.Index (initDb)
 import Protolude hiding (to)
 import System.IO.UTF8 (readUTF8FilesT)
+import Language.PureScript.Lsp.State (clearCache)
 
 buildHandler :: Server.Handlers HandlerM
 buildHandler =
   Server.requestHandler (Message.SMethod_CustomMethod $ Proxy @"build") $ \_req res -> do
+    clearCache
     config <- asks lspConfig
     conn <- asks lspDbConnection
     liftIO $ initDb conn
