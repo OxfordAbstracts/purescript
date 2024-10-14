@@ -4,20 +4,14 @@ module Language.PureScript.Lsp.Cache.Query where
 
 import Codec.Serialise (deserialise)
 import Data.Aeson (encode)
-import Data.Aeson qualified as A
-import Data.Aeson.Types qualified as A
 import Data.ByteString.Lazy qualified as Lazy
 import Data.List qualified as List
 import Data.Map qualified as Map
 import Database.SQLite.Simple (NamedParam ((:=)), fromOnly)
 import Database.SQLite.Simple qualified as SQL
-import Language.LSP.Protocol.Types qualified as LSP
 import Language.LSP.Server (MonadLsp)
 import Language.PureScript.AST qualified as P
 import Language.PureScript.AST.SourcePos (SourcePos (SourcePos))
-import Language.PureScript.CoreFn qualified as CF
-import Language.PureScript.CoreFn.Expr as CF
-import Language.PureScript.CoreFn.FromJSON qualified as CF
 import Language.PureScript.Externs qualified as P
 import Language.PureScript.Lsp.DB qualified as DB
 import Language.PureScript.Lsp.ServerConfig (ServerConfig, getMaxCompletions, getMaxTypeLength)
@@ -26,50 +20,6 @@ import Language.PureScript.Names qualified as P
 import Protolude
 import Language.PureScript.Lsp.NameType (LspNameType)
 
-getCoreFnExprAt :: (MonadIO m, MonadReader LspEnvironment m) => FilePath -> LSP.Position -> m (Maybe (CF.Expr CF.Ann))
-getCoreFnExprAt path (LSP.Position line col) = do
-  decls :: [SQL.Only Lazy.ByteString] <-
-    DB.queryNamed
-      "SELECT corefn_expressions.value FROM corefn_expressions \
-      \INNER JOIN corefn_modules on corefn_expressions.module_name = corefn_modules.name \
-      \WHERE start_line <= :line AND end_line >= :line \
-      \AND start_col <= :column AND end_col >= :column \
-      \AND path = :path \
-      \AND lines = 0 \
-      \ORDER BY cols ASC \
-      \LIMIT 1"
-      [ ":line" := toInteger (line + 1),
-        ":column" := toInteger (col + 1),
-        ":path" := path
-      ]
-
-  pure $
-    A.parseMaybe (CF.exprFromJSON path)
-      =<< A.decode'
-      =<< fromOnly
-      <$> listToMaybe decls
-
-getCodeFnBindAt :: (MonadIO m, MonadReader LspEnvironment m) => FilePath -> LSP.Position -> m (Maybe (CF.Bind CF.Ann))
-getCodeFnBindAt path (LSP.Position line col) = do
-  decls :: [SQL.Only Lazy.ByteString] <-
-    DB.queryNamed
-      "SELECT corefn_declarations.value FROM corefn_declarations \
-      \INNER JOIN corefn_modules on corefn_declarations.module_name = corefn_modules.name \
-      \WHERE start_line <= :line AND end_line >= :line \
-      \AND start_col <= :column AND end_col >= :column \
-      \AND path = :path \
-      \AND lines = 0 \
-      \ORDER BY cols ASC \
-      \LIMIT 1"
-      [ ":line" := toInteger (line + 1),
-        ":column" := toInteger (col + 1),
-        ":path" := path
-      ]
-  pure $
-    A.parseMaybe (CF.bindFromJSON path)
-      =<< A.decode'
-      =<< fromOnly
-      <$> listToMaybe decls
 
 ------------------------------------------------------------------------------------------------------------------------
 ------------ Externs ---------------------------------------------------------------------------------------------------
@@ -104,21 +54,6 @@ getEfDeclarationInModule moduleName' name = do
         ":name" := name
       ]
   pure $ deserialise . fromOnly <$> listToMaybe decls
-
-getEfDeclarationsAtSrcPos :: (MonadIO m, MonadReader LspEnvironment m) => FilePath -> SourcePos -> m [P.ExternsDeclaration]
-getEfDeclarationsAtSrcPos path (SourcePos line col) = do
-  decls <-
-    DB.queryNamed
-      "SELECT ef_declarations.value FROM ef_declarations \
-      \inner join externs on ef_declarations.module_name = externs.module_name \
-      \WHERE start_line <= :line AND end_line >= :line \
-      \AND start_col <= :column AND end_col >= :column \
-      \AND path = :path"
-      [ ":line" := line,
-        ":column" := col,
-        ":path" := path
-      ]
-  pure $ deserialise . fromOnly <$> decls
 
 getAstDeclarationInModule :: (MonadIO m, MonadReader LspEnvironment m) => P.ModuleName -> Text -> m (Maybe P.Declaration)
 getAstDeclarationInModule moduleName' name = do
@@ -162,22 +97,6 @@ getAstDeclarationTypeInModule lspNameType moduleName' name = do
       ]
   pure $ decls <&> fromOnly
 
--- pure $ deserialise . fromOnly <$> listToMaybe decls
-
-getAstDeclarationsAtSrcPos :: (MonadIO m, MonadReader LspEnvironment m) => P.ModuleName -> SourcePos -> m [P.Declaration]
-getAstDeclarationsAtSrcPos moduleName' (SourcePos line col) = do
-  decls <-
-    DB.queryNamed
-      "SELECT value FROM ast_declarations \
-      \WHERE start_line <= :line AND end_line >= :line \
-      \AND start_col <= :column AND end_col >= :column \
-      \AND module_name = :module_name \
-      \ORDER BY lines ASC, cols ASC"
-      [ ":line" := line,
-        ":column" := col,
-        ":module_name" := P.runModuleName moduleName'
-      ]
-  pure $ deserialise . fromOnly <$> decls
 
 getAstDeclarationsStartingWith ::
   (MonadIO m, MonadReader LspEnvironment m, MonadLsp ServerConfig m) =>

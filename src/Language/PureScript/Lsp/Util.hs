@@ -26,8 +26,6 @@ import Language.PureScript.Comments qualified as P
 import Language.PureScript.Environment qualified as P
 import Language.PureScript.Externs qualified as P
 import Language.PureScript.Linter qualified as P
-import Language.PureScript.Lsp.Cache.Query (getAstDeclarationsAtSrcPos)
-import Language.PureScript.Lsp.Print (printName)
 import Language.PureScript.Lsp.State (cachedRebuild)
 import Language.PureScript.Lsp.Types (LspEnvironment, OpenFile (ofFinalEnv))
 import Language.PureScript.Names qualified as P
@@ -83,64 +81,6 @@ getWordOnLine line' col =
 
     isWordBreak :: Char -> Bool
     isWordBreak = not . (isAlphaNum ||^ (== '_') ||^ (== '.'))
-
-getNamesAtPosition :: (MonadIO m, MonadReader LspEnvironment m) => Types.Position -> P.ModuleName -> Rope -> m (Set (P.Qualified P.Name))
-getNamesAtPosition pos moduleName' src = do
-  let (_, search) = getWordAt src pos
-  decls <- getAstDeclarationsAtSrcPos moduleName' (positionToSourcePos pos)
-  pure $
-    mconcat $
-      decls <&> \decl -> do
-        let goDef m _ = (m, mempty)
-            getDeclName :: P.ModuleName -> P.Declaration -> (P.ModuleName, Set (P.Qualified P.Name))
-            getDeclName modName decl' = case decl' of
-              P.ImportDeclaration _ newMod _ _ -> (newMod, mempty)
-              _ ->
-                (modName,)
-                  case decl' of
-                    P.DataDeclaration _ _ n _ _ | True -> Set.singleton $ flip P.mkQualified modName $ P.TyName n
-                    P.TypeSynonymDeclaration _ n _ _ | True -> Set.singleton $ flip P.mkQualified modName $ P.TyName n
-                    P.TypeClassDeclaration _ n _ _ _ _ | True -> Set.singleton $ flip P.mkQualified modName $ P.TyClassName n
-                    P.TypeDeclaration (P.TypeDeclarationData _ _ st) -> Set.fromList $ getTypeNames st
-                    P.ValueDeclaration (P.ValueDeclarationData _ ident _ _ _) ->
-                      Set.singleton $ flip P.mkQualified modName $ P.IdentName ident
-                    P.ExternDeclaration _ _ st -> Set.fromList $ getTypeNames st
-                    P.ExternDataDeclaration _ name st ->
-                      Set.fromList (getTypeNames st)
-                        <> Set.singleton (flip P.mkQualified modName $ P.TyName name)
-                    _ -> mempty
-
-            getExprNames :: P.ModuleName -> P.Expr -> (P.ModuleName, Set (P.Qualified P.Name))
-            getExprNames modName expr = (modName,) case expr of
-              P.Var _ (P.Qualified qb ident) | True -> Set.singleton $ P.Qualified qb $ P.IdentName ident
-              P.Constructor _ (P.Qualified qb ident) -> Set.singleton $ P.Qualified qb $ P.DctorName ident
-              P.TypeClassDictionary (P.Constraint _ (P.Qualified qb ident) _ _ _) _ _ -> Set.singleton $ P.Qualified qb $ P.TyClassName ident
-              P.DeferredDictionary (P.Qualified qb ident) _ -> Set.singleton $ P.Qualified qb $ P.TyClassName ident
-              P.DerivedInstancePlaceholder (P.Qualified qb ident) _ -> Set.singleton $ P.Qualified qb $ P.TyClassName ident
-              P.TypedValue _ _ tipe -> Set.fromList (getTypeNames tipe)
-              _ -> mempty
-
-            getTypeNames :: P.SourceType -> [P.Qualified P.Name]
-            getTypeNames = P.everythingOnTypes (<>) goType
-              where
-                goType :: P.SourceType -> [P.Qualified P.Name]
-                goType = \case
-                  P.TypeConstructor _ ctr -> [fmap P.TyName ctr]
-                  P.ConstrainedType _ (P.Constraint {..}) _ -> [fmap P.TyClassName constraintClass]
-                  -- P.TypeClassDictionary (P.Constraint {..}) _ _ -> [_ constraintClass]
-                  _ -> []
-
-            goBinder :: P.ModuleName -> P.Binder -> (P.ModuleName, Set (P.Qualified P.Name))
-            goBinder modName b = (modName,) case b of
-              P.ConstructorBinder _ (P.Qualified qb ident) _ -> Set.singleton $ P.Qualified qb $ P.DctorName ident
-              P.OpBinder _ (P.Qualified qb ident) -> Set.singleton $ P.Qualified qb $ P.ValOpName ident
-              P.TypedBinder st _ -> Set.fromList $ getTypeNames st
-              _ -> mempty
-
-            exprNames = P.everythingWithContextOnValues moduleName' Set.empty (<>) getDeclName getExprNames goBinder goDef goDef ^. _1 $ decl
-        -- typeNames = Set.fromList $ usedTypeNames moduleName' decl
-
-        Set.filter ((==) search . printName . P.disqualify) exprNames
 
 lookupTypeInEnv :: (MonadReader LspEnvironment m, MonadIO m) => FilePath -> P.Qualified P.Name -> m (Maybe P.SourceType)
 lookupTypeInEnv fp (P.Qualified qb name) = do
