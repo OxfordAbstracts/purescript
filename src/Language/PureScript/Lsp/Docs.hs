@@ -5,6 +5,7 @@ import Language.PureScript.AST.SourcePos qualified as P
 import Language.PureScript.Docs qualified as Docs
 import Language.PureScript.Docs.AsMarkdown (declAsMarkdown, runDocs)
 import Language.PureScript.Docs.Collect (parseDocsJsonFile)
+import Language.PureScript.Docs.Types (Declaration (declChildren))
 import Language.PureScript.Docs.Types qualified as P
 import Language.PureScript.Lsp.NameType (LspNameType (..))
 import Language.PureScript.Lsp.Print (printName)
@@ -22,7 +23,6 @@ readDeclarationDocs modName ident = do
   modMb <- readModuleDocs modName
   pure $ modMb >>= (P.modDeclarations >>> find ((== ident) . P.declTitle))
 
-
 -- todo: add child info and operator matching
 readDeclarationDocsWithNameType :: (MonadIO m, MonadReader LspEnvironment m) => P.ModuleName -> LspNameType -> Text -> m (Maybe Text)
 readDeclarationDocsWithNameType modName nameType ident = do
@@ -32,21 +32,26 @@ readDeclarationDocsWithNameType modName nameType ident = do
     getMarkdown :: [Docs.Declaration] -> Maybe Text
     getMarkdown [] = Nothing
     getMarkdown (decl : decls) = case decl of
-      _ | P.declTitle decl == ident && matchesNameType decl -> Just $ runDocs $ declAsMarkdown decl
+      _ | matchesNameType decl -> Just $ runDocs $ declAsMarkdown decl
+      _ | matchesChildren (declChildren decl) -> Just $ runDocs $ declAsMarkdown decl
       _ -> getMarkdown decls
 
     matchesNameType :: P.Declaration -> Bool
     matchesNameType d = case P.declInfo d of
-      P.ValueDeclaration _ -> nameType == IdentNameType
-      P.DataDeclaration _ _ _ -> nameType == TyNameType
-      P.TypeSynonymDeclaration _ _ -> nameType == TyNameType
-      P.TypeClassDeclaration _ _ _ -> nameType == TyClassNameType
+      P.ValueDeclaration _ -> nameType == IdentNameType && P.declTitle d == ident
+      P.DataDeclaration _ _ _ -> nameType == TyNameType && P.declTitle d == ident
+      P.TypeSynonymDeclaration _ _ -> nameType == TyNameType && P.declTitle d == ident
+      P.TypeClassDeclaration _ _ _ -> nameType == TyClassNameType && P.declTitle d == ident
       _ -> False
 
--- matches
--- if P.declTitle decl == ident && P.declNameType decl == Just nameType
---   then Just $ runDocs $ declAsMarkdown decl
---   else getMarkdown decls
+    matchesChildren :: [P.ChildDeclaration] -> Bool
+    matchesChildren = any matchesChild
+
+    matchesChild :: P.ChildDeclaration -> Bool
+    matchesChild cd = case P.cdeclInfo cd of
+      P.ChildInstance _ _ -> nameType == TyClassNameType && P.cdeclTitle cd == ident
+      P.ChildDataConstructor _ -> nameType == DctorNameType && P.cdeclTitle cd == ident
+      P.ChildTypeClassMember _ -> nameType == IdentNameType && P.cdeclTitle cd == ident
 
 readDeclarationDocsAsMarkdown :: (MonadIO m, MonadReader LspEnvironment m) => P.ModuleName -> Text -> m (Maybe Text)
 readDeclarationDocsAsMarkdown modName ident = fmap (runDocs . declAsMarkdown) <$> readDeclarationDocs modName ident

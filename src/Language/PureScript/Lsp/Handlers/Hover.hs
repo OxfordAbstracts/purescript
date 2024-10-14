@@ -25,15 +25,15 @@ import Language.PureScript.Docs.Types qualified as Docs
 import Language.PureScript.Ide.Error (prettyPrintTypeSingleLine)
 import Language.PureScript.Lsp.Cache (selectExternModuleNameFromFilePath)
 import Language.PureScript.Lsp.Cache.Query (getAstDeclarationLocationInModule, getAstDeclarationTypeInModule, getCoreFnExprAt, getEfDeclarationInModule)
-import Language.PureScript.Lsp.Docs (readDeclarationDocsAsMarkdown, readModuleDocs, readQualifiedNameDocsAsMarkdown, readDeclarationDocsWithNameType)
-import Language.PureScript.Lsp.Handlers.Definition (findDeclRefAtPos, getImportRefNameType, isPrimImport, spanToRange)
+import Language.PureScript.Lsp.Docs (readDeclarationDocsAsMarkdown, readDeclarationDocsWithNameType, readModuleDocs, readQualifiedNameDocsAsMarkdown)
+import Language.PureScript.Lsp.Handlers.Definition (findDeclRefAtPos, getExprsAtPos, getImportRefNameType, isPrimImport, spanToRange)
 import Language.PureScript.Lsp.Log (debugLsp)
 import Language.PureScript.Lsp.Monad (HandlerM)
 import Language.PureScript.Lsp.NameType (LspNameType (..))
 import Language.PureScript.Lsp.Print (printName)
 import Language.PureScript.Lsp.State (cacheRebuild, cachedRebuild)
 import Language.PureScript.Lsp.Types (OpenFile (..))
-import Language.PureScript.Lsp.Util (declAtLine, efDeclSourceType, getNamesAtPosition, lookupTypeInEnv)
+import Language.PureScript.Lsp.Util (declAtLine, efDeclSourceType, getNamesAtPosition, lookupTypeInEnv, declStartLine)
 import Language.PureScript.Names (Qualified (..), disqualify, runIdent)
 import Protolude hiding (to)
 
@@ -51,7 +51,9 @@ hoverHandler = Server.requestHandler Message.SMethod_TextDocumentHover $ \req re
 
       respondWithDeclInOtherModule :: P.SourceSpan -> LspNameType -> P.ModuleName -> Text -> HandlerM ()
       respondWithDeclInOtherModule ss nameType modName ident = do
-        declDocMb <- readDeclarationDocsWithNameType modName nameType ident -- TODO include nametype
+        debugLsp $ "looking for decl in other module: " <> show (modName, ident, nameType)
+        declDocMb <- readDeclarationDocsWithNameType modName nameType ident
+        debugLsp $ "found docs: " <> show (isJust declDocMb)
         case declDocMb of
           Just docs -> markdownRes docs (Just $ spanToRange ss)
           _ -> do
@@ -75,8 +77,6 @@ hoverHandler = Server.requestHandler Message.SMethod_TextDocumentHover $ \req re
               respondWithDeclInOtherModule ss nameType' importedModuleName (printName name)
           _ -> respondWithModule ss importedModuleName
 
-  debugLsp $ "Position: " <> show pos
-
   forLsp filePathMb \filePath -> do
     cacheOpenMb <- cachedRebuild filePath
     forLsp cacheOpenMb \OpenFile {..} -> do
@@ -90,16 +90,35 @@ hoverHandler = Server.requestHandler Message.SMethod_TextDocumentHover $ \req re
           declAtPos =
             withoutPrim
               & declAtLine srcPosLine
+      debugLsp $ "Position: " <> show pos
+
+      debugLsp $ "srcPosLine: " <> show srcPosLine
+
       forLsp declAtPos $ \decl -> do
         case decl of
           P.ImportDeclaration (ss, _) importedModuleName importType _ -> do
-            -- debugLsp $ "found import at pos: " <> show importedModuleName
             case importType of
               P.Implicit -> respondWithModule ss importedModuleName
               P.Explicit imports -> respondWithImports ss importedModuleName imports
               P.Hiding imports -> respondWithImports ss importedModuleName imports
-          _ ->
-            nullRes
+          _ -> do
+            let 
+              exprsAtPos = getExprsAtPos pos decl
+              -- fromExprType
+            debugLsp $ "Exprs at pos: " <> show (length exprsAtPos)
+
+            case head exprsAtPos of
+              Just expr -> do
+                debugLsp $ "found hover expr at pos: " <> show expr
+                case expr of
+                  P.Var ss (P.Qualified (P.ByModuleName modName) ident) -> do
+                    respondWithDeclInOtherModule ss IdentNameType modName (P.runIdent ident)
+                  P.Op ss (P.Qualified (P.ByModuleName modName) ident) -> do
+                    respondWithDeclInOtherModule ss ValOpNameType modName (P.runOpName ident)
+                  P.Constructor ss (P.Qualified (P.ByModuleName modName) ident) -> do
+                    respondWithDeclInOtherModule ss DctorNameType modName (P.runProperName ident)
+                  _ -> nullRes
+              _ -> nullRes
 
 hoverHandlerV1 :: Server.Handlers HandlerM
 hoverHandlerV1 =

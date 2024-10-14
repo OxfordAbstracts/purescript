@@ -246,7 +246,7 @@ declAtLine l = go . sortBy (comparing declStartLine)
     go (d : d' : ds)
       | declStartLine d <= l && declStartLine d' > l = Just d
       | otherwise = go (d' : ds)
-    go [d] | declStartLine d >= l = Just d
+    go [d] | declStartLine d <= l = Just d
     go _ = Nothing
 
 declStartLine :: P.Declaration -> Int
