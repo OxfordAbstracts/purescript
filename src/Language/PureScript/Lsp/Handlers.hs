@@ -25,6 +25,7 @@ import Language.PureScript.Lsp.ServerConfig (setTraceValue)
 import Language.PureScript.Lsp.State (cancelRequest, removedCachedRebuild, clearCache, clearExportCache, clearRebuildCache)
 import Protolude hiding (to)
 import Data.Aeson qualified as A
+import Language.PureScript.Lsp.Handlers.Index (indexHandler)
 
 handlers :: Server.Handlers HandlerM
 handlers =
@@ -35,7 +36,8 @@ handlers =
       definitionHandler,
       deleteOutputHandler,
       diagnosticAndCodeActionHandlers,
-      hoverHandler
+      hoverHandler,
+      indexHandler
     ]
   where
     -- Simple handlers that don't need to be in their own module

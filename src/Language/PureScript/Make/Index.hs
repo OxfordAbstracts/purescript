@@ -38,7 +38,7 @@ import Language.PureScript.Ide.Error (IdeError (GeneralError, RebuildError))
 import Language.PureScript.Ide.Rebuild (updateCacheDb)
 import Language.PureScript.Ide.Types (ModuleMap)
 import Language.PureScript.Ide.Util (ideReadFile)
-import Language.PureScript.Lsp.Print (printDeclarationType, printEfDeclName, printName)
+import Language.PureScript.Lsp.Print (printDeclarationType, printEfDeclName, printName, printEfDeclType)
 import Language.PureScript.Lsp.Types (LspConfig (..), LspEnvironment (lspConfig))
 import Language.PureScript.Lsp.Util (efDeclCategory, efDeclSourceSpan)
 import Language.PureScript.Make (ffiCodegen')
@@ -50,7 +50,7 @@ import Language.PureScript.Types (everywhereOnTypesM)
 import Paths_purescript qualified as Paths
 import Protolude hiding (moduleName)
 import "monad-logger" Control.Monad.Logger (MonadLogger, logDebugN)
-import Language.PureScript.Lsp.NameType (lspNameType)
+import Language.PureScript.Lsp.NameType (lspNameType, externDeclNameType)
 
 addAllIndexing :: (MonadIO m) => Connection -> P.MakeActions m -> P.MakeActions m
 addAllIndexing conn ma =
@@ -102,6 +102,32 @@ indexAstModule conn m@(P.Module _ss _comments moduleName' decls exportRefs) exte
       ]
   where
     externPath = P.spanName (P.efSourceSpan extern)
+
+indexAstDeclFromExternDecl :: (MonadIO m) => Connection -> P.ModuleName -> P.ExternsDeclaration -> m ()
+indexAstDeclFromExternDecl conn moduleName' externDecl = liftIO do
+  let ss = efDeclSourceSpan externDecl
+      start = P.spanStart ss
+      end = P.spanEnd ss
+      printedType :: Text 
+      printedType = printEfDeclType externDecl
+  SQL.executeNamed
+    conn
+    (SQL.Query 
+    "INSERT INTO ast_declarations \
+    \         (module_name, name, printed_type, name_type, start_line, end_line, start_col, end_col, lines, cols, exported) \
+    \ VALUES (:module_name, :name, :printed_type, :name_type, :start_line, :end_line, :start_col, :end_col, :lines, :cols, :exported)")
+    [ ":module_name" := P.runModuleName moduleName',
+      ":name" := printEfDeclName externDecl,
+      ":printed_type" := printedType,
+      ":name_type" := externDeclNameType externDecl,
+      ":start_line" := P.sourcePosLine start,
+      ":end_line" := P.sourcePosLine end,
+      ":start_col" := P.sourcePosColumn start,
+      ":end_col" := P.sourcePosColumn end,
+      ":lines" := P.sourcePosLine end - P.sourcePosLine start,
+      ":cols" := P.sourcePosColumn end - P.sourcePosColumn start,
+      ":exported" := False
+    ]
 
 addExternIndexing :: (MonadIO m) => Connection -> P.MakeActions m -> P.MakeActions m
 addExternIndexing conn ma =

@@ -4,12 +4,15 @@ module Language.PureScript.Lsp.State
   ( cacheRebuild,
     cacheRebuild',
     cachedRebuild,
+    cacheDependencies,
     clearCache,
     clearRebuildCache,
     clearExportCache,
+    setExportEnvCache,
     removedCachedRebuild,
     buildExportEnvCache,
     addExternToExportEnv,
+    addExternsToExportEnv,
     getExportEnv,
     cancelRequest,
     addRunningRequest,
@@ -18,7 +21,6 @@ module Language.PureScript.Lsp.State
 where
 
 import Control.Concurrent.STM (TVar, modifyTVar, readTVar, readTVarIO, writeTVar)
-import Control.Monad.Catch (MonadThrow (throwM))
 import Control.Monad.Trans.Writer (WriterT (runWriterT))
 import Data.List qualified as List
 import Data.Map qualified as Map
@@ -36,6 +38,7 @@ import Language.PureScript.Lsp.Types
 import Language.PureScript.Sugar.Names (externsEnv)
 import Language.PureScript.Sugar.Names.Env qualified as P
 import Protolude hiding (moduleName, unzip)
+import Language.PureScript.Names qualified as P
 
 -- | Sets rebuild cache to the given ExternsFile
 cacheRebuild :: (MonadReader LspEnvironment m, MonadLsp ServerConfig m) => ExternsFile -> [ExternsFile] -> P.Environment -> P.Module -> m ()
@@ -51,8 +54,6 @@ cacheRebuild' st maxFiles ef deps prevEnv module' = atomically . modifyTVar st $
     }
   where
     fp = P.spanName $ efSourceSpan ef
-    
-
 
 cachedRebuild :: (MonadIO m, MonadReader LspEnvironment m) => FilePath -> m (Maybe OpenFile)
 cachedRebuild fp = do
@@ -60,6 +61,17 @@ cachedRebuild fp = do
   liftIO . atomically $ do
     st' <- readTVar st
     pure $ List.lookup fp $ openFiles st'
+
+cacheDependencies :: (MonadReader LspEnvironment m, MonadLsp ServerConfig m) => P.ModuleName -> [ExternsFile] -> m ()
+cacheDependencies moduleName deps = do
+  st <- lspStateVar <$> ask
+  liftIO . atomically $ modifyTVar st $ \x ->
+    x
+      { openFiles = openFiles x <&> \(fp, ofile) ->
+          if ofModuleName ofile == moduleName
+            then (fp, ofile {ofDependencies = deps})
+            else (fp, ofile)
+      }
 
 removedCachedRebuild :: (MonadIO m, MonadReader LspEnvironment m) => FilePath -> m ()
 removedCachedRebuild fp = do
@@ -82,34 +94,35 @@ clearExportCache = do
 clearCache :: (MonadReader LspEnvironment m, MonadIO m) => m ()
 clearCache = clearRebuildCache >> clearExportCache
 
-buildExportEnvCache :: (MonadIO m, MonadReader LspEnvironment m, MonadThrow m) => P.Module -> [ExternsFile] -> m P.Env
+buildExportEnvCache :: (MonadIO m, MonadReader LspEnvironment m) => P.Module -> [ExternsFile] -> m (Either MultipleErrors P.Env)
 buildExportEnvCache module' externs = do
   st <- lspStateVar <$> ask
-  result <- liftIO . atomically $ do
+  liftIO . atomically $ do
     st' <- readTVar st
     if Map.member (P.getModuleName module') (exportEnv st')
       then pure $ Right $ exportEnv st'
       else do
         let notInEnv :: ExternsFile -> Bool
             notInEnv = flip Map.notMember (exportEnv st') . efModuleName
-        result <- addExterns (exportEnv st') (filter notInEnv externs)
+        result <- addExternsToExportEnv (exportEnv st') (filter notInEnv externs)
         case result of
           Left err -> pure $ Left err
           Right newEnv -> do
             writeTVar st $ st' {exportEnv = newEnv}
             pure $ Right newEnv
 
-  case result of
-    Left err -> throwM $ BuildEnvCacheException $ printBuildErrors err
-    Right env -> pure env
+setExportEnvCache :: (MonadIO m, MonadReader LspEnvironment m) => P.Env -> m ()
+setExportEnvCache env = do
+  st <- lspStateVar <$> ask
+  liftIO . atomically $ modifyTVar st $ \x -> x {exportEnv = env}
 
 data BuildEnvCacheException = BuildEnvCacheException Text
   deriving (Show)
 
 instance Exception BuildEnvCacheException
 
-addExterns :: (Foldable t, Monad f) => P.Env -> t ExternsFile -> f (Either MultipleErrors P.Env)
-addExterns env externs = fmap fst . runWriterT $ runExceptT $ foldM externsEnv env externs
+addExternsToExportEnv :: (Foldable t, Monad f) => P.Env -> t ExternsFile -> f (Either MultipleErrors P.Env)
+addExternsToExportEnv env externs = fmap fst . runWriterT $ runExceptT $ foldM externsEnv env externs
 
 logBuildErrors :: (MonadIO m, MonadReader LspEnvironment m) => MultipleErrors -> m ()
 logBuildErrors = errorLsp . printBuildErrors
@@ -122,7 +135,7 @@ addExternToExportEnv ef = do
   stVar <- lspStateVar <$> ask
   error <- liftIO $ atomically $ do
     st <- readTVar stVar
-    result <- addExterns (exportEnv st) [ef]
+    result <- addExternsToExportEnv (exportEnv st) [ef]
     case result of
       Left err -> pure $ Just err
       Right newEnv -> do

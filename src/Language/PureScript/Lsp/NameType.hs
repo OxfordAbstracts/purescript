@@ -6,6 +6,7 @@ import Database.SQLite.Simple.FromField (FromField (fromField))
 import Database.SQLite.Simple.ToField (ToField (toField))
 import Language.PureScript.Names
 import Protolude
+import Language.PureScript.Externs (ExternsDeclaration(..))
 
 data LspNameType
   = IdentNameType
@@ -32,3 +33,12 @@ lspNameType = \case
   DctorName _ -> DctorNameType
   TyClassName _ -> TyClassNameType
   ModName _ -> ModNameType
+
+externDeclNameType :: ExternsDeclaration -> LspNameType
+externDeclNameType = \case
+  EDType _ _ _ -> TyNameType
+  EDTypeSynonym _ _ _ -> TyNameType
+  EDDataConstructor _ _ _ _ _ -> DctorNameType
+  EDValue _ _ -> IdentNameType
+  EDClass _ _ _ _ _ _ -> TyClassNameType
+  EDInstance _ _ _ _ _ _ _ _ _ _ -> IdentNameType

@@ -9,21 +9,22 @@ import Data.Map.Lazy qualified as M
 import Data.Set qualified as Set
 import Language.LSP.Protocol.Types (NormalizedUri, fromNormalizedUri, uriToFilePath)
 import Language.LSP.Server (MonadLsp)
-import Language.PureScript (MultipleErrors)
+import Language.PureScript (primEnv)
 import Language.PureScript.AST qualified as P
 import Language.PureScript.CST qualified as CST
 import Language.PureScript.Errors qualified as P
 import Language.PureScript.Externs (ExternsFile)
 import Language.PureScript.Ide.Rebuild (updateCacheDb)
 import Language.PureScript.Lsp.Cache (selectDependencies)
-import Language.PureScript.Lsp.Log (debugLsp, logPerfStandard)
+import Language.PureScript.Lsp.Log (debugLsp, logPerfStandard, warnLsp)
 import Language.PureScript.Lsp.ReadFile (lspReadFileText)
 import Language.PureScript.Lsp.ServerConfig (ServerConfig, getMaxFilesInCache)
-import Language.PureScript.Lsp.State (addExternToExportEnv, buildExportEnvCache, cacheRebuild', cachedRebuild)
+import Language.PureScript.Lsp.State (addExternToExportEnv, addExternsToExportEnv, buildExportEnvCache, cacheRebuild', cachedRebuild, setExportEnvCache, cacheDependencies)
 import Language.PureScript.Lsp.Types (LspConfig (..), LspEnvironment (lspConfig, lspDbConnection, lspStateVar), LspState, OpenFile (OpenFile))
 import Language.PureScript.Make qualified as P
 import Language.PureScript.Make.Index (addAllIndexing)
 import Language.PureScript.Options qualified as P
+import Language.PureScript.Sugar.Names qualified as P
 import Protolude hiding (moduleName)
 
 rebuildFile ::
@@ -58,7 +59,8 @@ rebuildFile uri = logPerfStandard "Rebuild file " do
       case cachedBuild of
         Just (OpenFile _ _ externs env _) -> do
           foreigns <- P.inferForeignModules (M.singleton moduleName (Right fp))
-          exportEnv <- logPerfStandard "build export cache" $ buildExportEnvCache m externs
+          (exportEnv, externsMb) <- logPerfStandard "build export cache" $ buildExportEnvCacheAndHandleErrors (selectDependencies m) m externs
+          for_ externsMb (cacheDependencies moduleName)
           res <- logPerfStandard "Rebuild Module with provided env" $ liftIO $ do
             P.runMake (P.defaultOptions {P.optionsCodegenTargets = codegenTargets}) do
               newExtern <- P.rebuildModuleWithProvidedEnv (makeEnv foreigns externs) exportEnv env externs m Nothing
@@ -68,7 +70,7 @@ rebuildFile uri = logPerfStandard "Rebuild file " do
         Nothing -> do
           externs <- logPerfStandard "Select depenencies" $ selectDependencies m
           foreigns <- P.inferForeignModules (M.singleton moduleName (Right fp))
-          exportEnv <- logPerfStandard "build export cache" $ buildExportEnvCache m externs
+          (exportEnv, _) <- logPerfStandard "build export cache" $ buildExportEnvCacheAndHandleErrors (pure externs) m externs
           res <- logPerfStandard "Rebuild Module" $ liftIO $ do
             P.runMake (P.defaultOptions {P.optionsCodegenTargets = codegenTargets}) do
               newExtern <- P.rebuildModule' (makeEnv foreigns externs) exportEnv externs m
@@ -84,11 +86,31 @@ rebuildFile uri = logPerfStandard "Rebuild file " do
           addExternToExportEnv newExtern
           pure $ RebuildWarning (CST.toMultipleWarnings fp pwarnings <> warnings)
 
+buildExportEnvCacheAndHandleErrors :: (MonadReader LspEnvironment m, MonadIO m, MonadThrow m) => m [ExternsFile] -> P.Module -> [ExternsFile] -> m (P.Env, Maybe [ExternsFile])
+buildExportEnvCacheAndHandleErrors refectExterns m externs = do
+  fromCache <- buildExportEnvCache m externs
+  case fromCache of
+    Left err -> do
+      warnLsp $ "Error building export env cache: " <> show err
+      externs' <- refectExterns
+      envRes <- addExternsToExportEnv primEnv externs'
+      case envRes of
+        Left err' ->
+          throwM $
+            CouldNotRebuildExportEnv $
+              P.prettyPrintMultipleErrors P.noColorPPEOptions err'
+        Right env -> do
+          setExportEnvCache env
+          pure (env, Just externs')
+    Right env -> pure (env, Nothing)
+
 data RebuildResult
   = RebuildError P.MultipleErrors
   | RebuildWarning P.MultipleErrors
 
-data RebuildException = CouldNotConvertUriToFilePath NormalizedUri | CouldNotReadCacheDb MultipleErrors
+data RebuildException
+  = CouldNotConvertUriToFilePath NormalizedUri
+  | CouldNotRebuildExportEnv [Char]
   deriving (Exception, Show)
 
 codegenTargets :: Set P.CodegenTarget

@@ -20,8 +20,6 @@ import System.Directory (doesDirectoryExist, doesFileExist, getDirectoryContents
 import System.FilePath (normalise, (</>))
 import Language.PureScript.Lsp.Log (logPerfStandard)
 
--- import Language.PureScript.Lsp.Prim (primExterns)
-
 selectAllExternsMap :: (MonadIO m, MonadReader LspEnvironment m) => m (Map P.ModuleName ExternsFile)
 selectAllExternsMap = do
   Map.fromList . fmap (\ef -> (efModuleName ef, ef)) <$> selectAllExterns
