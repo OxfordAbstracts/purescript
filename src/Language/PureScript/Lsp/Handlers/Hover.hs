@@ -26,15 +26,16 @@ import Language.PureScript.Ide.Error (prettyPrintTypeSingleLine)
 import Language.PureScript.Lsp.Cache (selectExternModuleNameFromFilePath)
 import Language.PureScript.Lsp.Cache.Query (getAstDeclarationLocationInModule, getAstDeclarationTypeInModule, getCoreFnExprAt, getEfDeclarationInModule)
 import Language.PureScript.Lsp.Docs (readDeclarationDocsAsMarkdown, readDeclarationDocsWithNameType, readModuleDocs, readQualifiedNameDocsAsMarkdown)
-import Language.PureScript.Lsp.Handlers.Definition (findDeclRefAtPos, getExprsAtPos, getImportRefNameType, isPrimImport, spanToRange)
+import Language.PureScript.Lsp.Handlers.Definition (findDeclRefAtPos, getExprsAtPos, getImportRefNameType, getTypedValuesAtPos, isPrimImport, spanToRange)
 import Language.PureScript.Lsp.Log (debugLsp)
 import Language.PureScript.Lsp.Monad (HandlerM)
 import Language.PureScript.Lsp.NameType (LspNameType (..))
 import Language.PureScript.Lsp.Print (printName)
 import Language.PureScript.Lsp.State (cacheRebuild, cachedRebuild)
 import Language.PureScript.Lsp.Types (OpenFile (..))
-import Language.PureScript.Lsp.Util (declAtLine, efDeclSourceType, getNamesAtPosition, lookupTypeInEnv, declStartLine)
+import Language.PureScript.Lsp.Util (declAtLine, declStartLine, efDeclSourceType, getNamesAtPosition, lookupTypeInEnv)
 import Language.PureScript.Names (Qualified (..), disqualify, runIdent)
+import Language.PureScript.Types (getAnnForType)
 import Protolude hiding (to)
 
 hoverHandler :: Server.Handlers HandlerM
@@ -60,6 +61,17 @@ hoverHandler = Server.requestHandler Message.SMethod_TextDocumentHover $ \req re
             tipes <- getAstDeclarationTypeInModule (Just nameType) modName ident
             forLsp (head tipes) \tipe ->
               markdownRes tipe (Just $ spanToRange ss)
+
+      respondWithSourceType :: P.Expr -> (P.SourceType, Maybe P.SourceSpan) -> HandlerM ()
+      respondWithSourceType expr (tipe, sa) = do
+        let word = case expr of
+              P.Var _ (P.Qualified _ ident) -> P.runIdent ident
+              P.Op _ (P.Qualified _ ident) -> P.runOpName ident
+              P.Constructor _ (P.Qualified _ ident) -> P.runProperName ident
+              _ -> "<expression>"
+            printedType = prettyPrintTypeSingleLine tipe
+
+        markdownRes (pursTypeStr word (Just printedType) []) (spanToRange <$> sa)
 
       respondWithModule :: P.SourceSpan -> P.ModuleName -> HandlerM ()
       respondWithModule ss modName = do
@@ -102,9 +114,13 @@ hoverHandler = Server.requestHandler Message.SMethod_TextDocumentHover $ \req re
               P.Explicit imports -> respondWithImports ss importedModuleName imports
               P.Hiding imports -> respondWithImports ss importedModuleName imports
           _ -> do
-            let 
-              exprsAtPos = getExprsAtPos pos decl
-              -- fromExprType
+            debugLsp $ "Decl at pos: " <> show decl
+            let exprsAtPos = getExprsAtPos pos decl
+                findTypedExpr :: [Expr] -> Maybe (P.SourceType, Maybe P.SourceSpan)
+                findTypedExpr ((P.TypedValue _ e t) : _) = Just (t, P.exprSourceSpan e)
+                findTypedExpr (_ : es) = findTypedExpr es
+                findTypedExpr [] = Nothing
+
             debugLsp $ "Exprs at pos: " <> show (length exprsAtPos)
 
             case head exprsAtPos of
@@ -117,7 +133,7 @@ hoverHandler = Server.requestHandler Message.SMethod_TextDocumentHover $ \req re
                     respondWithDeclInOtherModule ss ValOpNameType modName (P.runOpName ident)
                   P.Constructor ss (P.Qualified (P.ByModuleName modName) ident) -> do
                     respondWithDeclInOtherModule ss DctorNameType modName (P.runProperName ident)
-                  _ -> nullRes
+                  _ -> forLsp (findTypedExpr $ getTypedValuesAtPos pos decl) (respondWithSourceType expr)
               _ -> nullRes
 
 hoverHandlerV1 :: Server.Handlers HandlerM

@@ -184,6 +184,23 @@ getExprsAtPos pos declaration = execState (goDecl declaration) []
         modify (expr :)
       pure expr
 
+getTypedValuesAtPos :: Types.Position -> P.Declaration -> [P.Expr]
+getTypedValuesAtPos pos declaration = execState (goDecl declaration) []
+  where
+    goDecl :: P.Declaration -> StateT [P.Expr] Identity P.Declaration
+    goDecl = onDecl
+
+    (onDecl, _, _) = P.everywhereOnValuesTopDownM pure handleExpr pure
+
+    handleExpr :: P.Expr -> StateT [P.Expr] Identity P.Expr
+    handleExpr expr = do
+      case expr of
+        P.TypedValue _ e t -> do
+          when (maybe False (posInSpan pos) (P.exprSourceSpan e) || posInSpan pos (fst $ getAnnForType t)) do
+            modify (expr :)
+        _ -> pure ()
+      pure expr
+
 getTypesAtPos :: Types.Position -> P.Declaration -> [P.SourceType]
 getTypesAtPos pos decl = P.everythingOnTypes (<>) getAtPos =<< (view _1 $ P.accumTypes getAtPos) decl
   where
