@@ -25,7 +25,7 @@ diagnosticAndCodeActionHandlers =
         let params = req ^. LSP.params
             diags = params ^. LSP.context . LSP.diagnostics
             uri = getMsgUri req
-
+            
         res $
           Right $
             Types.InL $

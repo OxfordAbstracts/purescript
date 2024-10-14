@@ -8,8 +8,6 @@ module Language.PureScript.Lsp.Util where
 import Codec.Serialise qualified as S
 -- import Language.PureScript.Linter qualified as P
 
-import Control.Lens (Field1 (_1), Field2 (_2), Field3 (_3), view)
-import Data.Map qualified as Map
 import Data.Text qualified as T
 import Data.Text.Utf16.Rope.Mixed as Rope
 import Database.SQLite.Simple.ToField (ToField (toField))
@@ -22,12 +20,7 @@ import Language.PureScript.AST.Declarations (declSourceAnn)
 
 import Language.PureScript.AST.SourcePos (widenSourceSpan)
 import Language.PureScript.Comments qualified as P
-import Language.PureScript.Environment qualified as P
 import Language.PureScript.Externs qualified as P
-import Language.PureScript.Linter qualified as P
-import Language.PureScript.Lsp.State (cachedRebuild)
-import Language.PureScript.Lsp.Types (LspEnvironment, OpenFile (ofFinalEnv))
-import Language.PureScript.Names qualified as P
 import Language.PureScript.Types qualified as P
 import Protolude hiding (to)
 
@@ -80,24 +73,6 @@ getWordOnLine line' col =
 
     isWordBreak :: Char -> Bool
     isWordBreak = not . (isAlphaNum ||^ (== '_') ||^ (== '.'))
-
-lookupTypeInEnv :: (MonadReader LspEnvironment m, MonadIO m) => FilePath -> P.Qualified P.Name -> m (Maybe P.SourceType)
-lookupTypeInEnv fp (P.Qualified qb name) = do
-  envMb :: Maybe P.Environment <- fmap ofFinalEnv <$> cachedRebuild fp
-  pure $
-    envMb
-      >>= ( \(P.Environment {..}) -> case name of
-              P.IdentName ident -> view _1 <$> Map.lookup (P.Qualified qb ident) names
-              P.ValOpName _opName -> Nothing
-              P.TyName tyName ->
-                (view _1 <$> Map.lookup (P.Qualified qb tyName) types)
-                  <|> (view _2 <$> Map.lookup (P.Qualified qb tyName) typeSynonyms)
-              P.TyOpName _opName -> Nothing
-              P.DctorName dctorName -> view _3 <$> Map.lookup (P.Qualified qb dctorName) dataConstructors
-              P.TyClassName tyClassName ->
-                view _1 <$> Map.lookup (P.Qualified qb $ P.coerceProperName tyClassName) types
-              P.ModName _ -> Nothing
-          )
 
 data ExternsDeclarationCategory
   = EDCType

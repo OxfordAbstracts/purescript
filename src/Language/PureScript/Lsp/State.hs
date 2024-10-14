@@ -10,7 +10,7 @@ module Language.PureScript.Lsp.State
     getExportEnv,
     cancelRequest,
     addRunningRequest,
-    removeRunningRequest
+    removeRunningRequest,
   )
 where
 
@@ -35,16 +35,16 @@ import Language.PureScript.Sugar.Names.Env qualified as P
 import Protolude hiding (moduleName, unzip)
 
 -- | Sets rebuild cache to the given ExternsFile
-cacheRebuild :: (MonadReader LspEnvironment m, MonadLsp ServerConfig m) => ExternsFile -> [ExternsFile] -> P.Environment -> P.Environment -> P.Module -> m ()
-cacheRebuild ef deps prevEnv finalEnv module' = do
+cacheRebuild :: (MonadReader LspEnvironment m, MonadLsp ServerConfig m) => ExternsFile -> [ExternsFile] -> P.Environment -> P.Module -> m ()
+cacheRebuild ef deps prevEnv module' = do
   st <- lspStateVar <$> ask
   maxFiles <- getMaxFilesInCache
-  liftIO $ cacheRebuild' st maxFiles ef deps prevEnv finalEnv  module'
+  liftIO $ cacheRebuild' st maxFiles ef deps prevEnv module'
 
-cacheRebuild' :: TVar LspState -> Int -> ExternsFile -> [P.ExternsFile] -> P.Environment -> P.Environment -> P.Module -> IO ()
-cacheRebuild' st maxFiles ef deps prevEnv finalEnv  module' = atomically . modifyTVar st $ \x ->
+cacheRebuild' :: TVar LspState -> Int -> ExternsFile -> [P.ExternsFile] -> P.Environment -> P.Module -> IO ()
+cacheRebuild' st maxFiles ef deps prevEnv module' = atomically . modifyTVar st $ \x ->
   x
-    { openFiles = List.take maxFiles $ (fp, OpenFile (efModuleName ef) ef deps prevEnv finalEnv module') : filter ((/= fp) . fst) (openFiles x)
+    { openFiles = List.take maxFiles $ (fp, OpenFile (efModuleName ef) ef deps prevEnv module') : filter ((/= fp) . fst) (openFiles x)
     }
   where
     fp = P.spanName $ efSourceSpan ef
