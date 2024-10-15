@@ -15,14 +15,14 @@ import Language.LSP.Protocol.Message qualified as LSP
 import Language.LSP.Protocol.Types qualified as Types
 import Language.LSP.Server (MonadLsp (getLspEnv), mapHandlers)
 import Language.LSP.Server qualified as Server
+import Language.PureScript.DB (mkDbPath)
 import Language.PureScript.Lsp.Handlers (handlers)
-import Language.PureScript.Lsp.Log (debugLsp, errorLsp, warnLsp)
+import Language.PureScript.Lsp.Log (debugLsp, errorLsp, logPerfStandard, warnLsp)
 import Language.PureScript.Lsp.Monad (HandlerM)
 import Language.PureScript.Lsp.ServerConfig (ServerConfig (outputPath), defaultConfig)
-import Language.PureScript.Lsp.State (addRunningRequest, removeRunningRequest, putNewEnv, getDbPath)
+import Language.PureScript.Lsp.State (addRunningRequest, getDbPath, putNewEnv, removeRunningRequest)
 import Language.PureScript.Lsp.Types (LspEnvironment)
 import Protolude hiding (to)
-import Language.PureScript.DB (mkDbPath)
 
 main :: LspEnvironment -> IO Int
 main lspEnv = do
@@ -34,7 +34,7 @@ serverDefinition lspEnv =
     { parseConfig = \_current json -> first T.pack $ A.parseEither A.parseJSON json,
       onConfigChange = \newConfig -> do
         debugLsp $ "new config: " <> show newConfig
-        dbPath <- getDbPath 
+        dbPath <- getDbPath
         newDbPath <- liftIO $ mkDbPath (outputPath newConfig)
         when (newDbPath /= dbPath) do
           debugLsp "DB path changed"
@@ -76,12 +76,9 @@ lspHandlers lspEnv = mapHandlers goReq goNotification handlers
       let reqId = case id of
             LSP.IdInt i -> Left i
             LSP.IdString t -> Right t
+          methodText = T.pack $ LSP.someMethodToMethodString $ LSP.SomeMethod method
       env <- getLspEnv
-      debugLsp $ "Request: " <> show method
-      --  <>  case method of
-      --     Method_CustomMethod a ->  _ a
-      --     _ -> show method
-      liftIO $ do
+      logPerfStandard methodText $ liftIO $ do
         withAsync (runHandler env $ f msg k) \asyncAct -> do
           addRunningRequest lspEnv reqId asyncAct
           result <- waitCatch asyncAct
@@ -89,16 +86,17 @@ lspHandlers lspEnv = mapHandlers goReq goNotification handlers
             Left e -> do
               case fromException e of
                 Just AsyncCancelled -> do
-                  warnLsp $ "Request cancelled. Method: " <> show method <> ". id: " <> show reqId
+                  warnLsp $ "Request cancelled. Method: " <> methodText <> ". id: " <> show reqId
                   k $ Left $ LSP.TResponseError (Types.InL Types.LSPErrorCodes_RequestCancelled) "Cancelled" Nothing
                 _ -> do
-                  errorLsp $ "Request failed. Method: " <> show method <> ". id: " <> show reqId <> ". Error: " <> show e
+                  errorLsp $ "Request failed. Method: " <> methodText <> ". id: " <> show reqId <> ". Error: " <> show e
                   k $ Left $ LSP.TResponseError (Types.InR Types.ErrorCodes_InternalError) "Internal error" Nothing
             _ -> pure ()
           removeRunningRequest lspEnv reqId
 
     goNotification :: forall (a :: LSP.Method LSP.ClientToServer LSP.Notification). Server.Handler HandlerM a -> Server.Handler HandlerM a
     goNotification f msg@(LSP.TNotificationMessage _ method _) = do
+      let methodText = T.pack $ LSP.someMethodToMethodString $ LSP.SomeMethod method
       env <- getLspEnv
       liftIO $ withAsync (runHandler env $ f msg) \asyncAct -> do
         result <- waitCatch asyncAct
@@ -106,9 +104,9 @@ lspHandlers lspEnv = mapHandlers goReq goNotification handlers
           Left e -> do
             runHandler env case fromException e of
               Just AsyncCancelled -> do
-                warnLsp $ "Notification cancelled. Method: " <> show method
+                warnLsp $ "Notification cancelled. Method: " <> methodText
               _ -> do
-                errorLsp $ "Notification failed. Method: " <> show method <> ". Error: " <> show e
+                errorLsp $ "Notification failed. Method: " <> methodText <> ". Error: " <> show e
           _ -> pure ()
 
     runHandler env a = Server.runLspT env $ runReaderT a lspEnv
