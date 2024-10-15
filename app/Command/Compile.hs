@@ -72,7 +72,7 @@ compile PSCMakeOptions {..} = do
           "Usage: For basic information, try the `--help' option."
         ]
     exitFailure
-  conn <- mkConnection pscmOutputDir
+  (_, conn) <- mkConnection pscmOutputDir
   initDb conn
   moduleFiles <- readUTF8FilesT input
   (makeErrors, makeWarnings) <- P.compile pscmOpts moduleFiles conn pscmOutputDir pscmUsePrefix

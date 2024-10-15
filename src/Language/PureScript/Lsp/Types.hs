@@ -21,7 +21,7 @@ import Protolude
 import Language.PureScript.AST qualified as P
 
 data LspEnvironment = LspEnvironment
-  { lspDbConnectionVar :: TVar Connection,
+  { lspDbConnectionVar :: TVar (FilePath, Connection),
     lspStateVar :: TVar LspState
   }
 

@@ -18,6 +18,7 @@ module Language.PureScript.Lsp.State
     cancelRequest,
     addRunningRequest,
     removeRunningRequest,
+    getDbPath,
     putNewEnv,
   )
 where
@@ -31,6 +32,7 @@ import Database.SQLite.Simple (Connection)
 import Language.LSP.Protocol.Types (type (|?) (..))
 import Language.LSP.Server (MonadLsp)
 import Language.PureScript (MultipleErrors, prettyPrintMultipleErrors)
+import Language.PureScript.DB (mkConnection)
 import Language.PureScript.Environment qualified as P
 import Language.PureScript.Errors qualified as P
 import Language.PureScript.Externs (ExternsFile (..))
@@ -42,10 +44,9 @@ import Language.PureScript.Names qualified as P
 import Language.PureScript.Sugar.Names (externsEnv)
 import Language.PureScript.Sugar.Names.Env qualified as P
 import Protolude hiding (moduleName, unzip)
-import Language.PureScript.DB (mkConnection)
 
 getDbConn :: (MonadReader LspEnvironment m, MonadIO m) => m Connection
-getDbConn = liftIO . readTVarIO . lspDbConnectionVar =<< ask
+getDbConn = liftIO . fmap snd . readTVarIO . lspDbConnectionVar =<< ask
 
 -- | Sets rebuild cache to the given ExternsFile
 cacheRebuild :: (MonadReader LspEnvironment m, MonadLsp ServerConfig m) => ExternsFile -> [ExternsFile] -> P.Environment -> P.Module -> m ()
@@ -179,11 +180,13 @@ cancelRequest requestId = do
       InL i -> Left i
       InR t -> Right t
 
+getDbPath :: (MonadReader LspEnvironment m, MonadIO m) => m FilePath
+getDbPath = do 
+  env <- ask
+  liftIO $ fst <$> readTVarIO (lspDbConnectionVar env)
+
 putNewEnv :: LspEnvironment -> FilePath -> IO ()
-putNewEnv env  outputPath  = do
-  newConn <- mkConnection outputPath
-  atomically $ writeTVar (lspDbConnectionVar env) newConn
+putNewEnv env outputPath = do
+  (path, newConn) <- mkConnection outputPath
+  atomically $ writeTVar (lspDbConnectionVar env) (path, newConn)
   atomically $ writeTVar (lspStateVar env) emptyState
-  -- connVar <- lspDbConnectionVar <$> ask
-  -- newConn <- liftIO (readTVarIO (lspDbConnectionVar env))
-  -- liftIO . atomically $ writeTVar connVar newConn

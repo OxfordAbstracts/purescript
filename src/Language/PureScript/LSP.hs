@@ -19,9 +19,10 @@ import Language.PureScript.Lsp.Handlers (handlers)
 import Language.PureScript.Lsp.Log (debugLsp, errorLsp, warnLsp)
 import Language.PureScript.Lsp.Monad (HandlerM)
 import Language.PureScript.Lsp.ServerConfig (ServerConfig (outputPath), defaultConfig)
-import Language.PureScript.Lsp.State (addRunningRequest, removeRunningRequest, putNewEnv)
+import Language.PureScript.Lsp.State (addRunningRequest, removeRunningRequest, putNewEnv, getDbPath)
 import Language.PureScript.Lsp.Types (LspEnvironment)
 import Protolude hiding (to)
+import Language.PureScript.DB (mkDbPath)
 
 main :: LspEnvironment -> IO Int
 main lspEnv = do
@@ -32,11 +33,11 @@ serverDefinition lspEnv =
   Server.ServerDefinition
     { parseConfig = \_current json -> first T.pack $ A.parseEither A.parseJSON json,
       onConfigChange = \newConfig -> do
-        oldConfig <- Server.getConfig
-        debugLsp $ "old config: " <> show oldConfig
         debugLsp $ "new config: " <> show newConfig
-        when (outputPath oldConfig /= outputPath newConfig) do
-          debugLsp "Config output path changed"
+        dbPath <- getDbPath 
+        newDbPath <- liftIO $ mkDbPath (outputPath newConfig)
+        when (newDbPath /= dbPath) do
+          debugLsp "DB path changed"
           liftIO $ putNewEnv lspEnv $ outputPath newConfig,
       defaultConfig = defaultConfig,
       configSection = "purescript-lsp",
