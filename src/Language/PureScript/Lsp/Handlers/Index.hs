@@ -10,7 +10,7 @@ import Language.LSP.Server (MonadLsp, getConfig)
 import Language.LSP.Server qualified as Server
 import Language.PureScript (ExternsFile)
 import Language.PureScript qualified as P
-import Language.PureScript.Lsp.Log (debugLsp)
+import Language.PureScript.Lsp.Log (errorLsp)
 import Language.PureScript.Lsp.Monad (HandlerM)
 import Language.PureScript.Lsp.ServerConfig (ServerConfig (outputPath))
 import Language.PureScript.Lsp.Types (LspEnvironment)
@@ -75,7 +75,7 @@ findAvailableExterns = do
       res <- runExceptT $ readExternsFile path
       case res of
         Left err -> do
-          debugLsp $ "Error reading externs file: " <> T.pack (P.prettyPrintMultipleErrors P.noColorPPEOptions err)
+          errorLsp $ "Error reading externs file: " <> T.pack (P.prettyPrintMultipleErrors P.noColorPPEOptions err)
           pure Nothing
         Right (Just ef) -> pure $ Just ef
         _ -> pure Nothing

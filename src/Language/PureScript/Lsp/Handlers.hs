@@ -27,7 +27,6 @@ import Protolude hiding (to)
 import Data.Aeson qualified as A
 import Language.PureScript.Lsp.Handlers.Index (indexHandler)
 import Language.PureScript.Make.Index (initDb, dropTables)
-import Language.PureScript.Lsp.Log (debugLsp)
 
 handlers :: Server.Handlers HandlerM
 handlers =
@@ -62,7 +61,6 @@ handlers =
                 fileName = Types.uriToFilePath uri
             traverse_ removedCachedRebuild fileName,
           Server.notificationHandler Message.SMethod_WorkspaceDidChangeConfiguration $ \_msg -> do
-            debugLsp  "SMethod_WorkspaceDidChangeConfiguration"
             void updateAvailableSrcs,
           Server.notificationHandler Message.SMethod_SetTrace $ \msg -> do
             setTraceValue $ msg ^. LSP.params . LSP.value, -- probably no need to do this

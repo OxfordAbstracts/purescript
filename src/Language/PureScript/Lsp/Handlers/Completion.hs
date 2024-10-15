@@ -17,7 +17,7 @@ import Language.PureScript.Ide.Imports (Import (..))
 import Language.PureScript.Lsp.Cache.Query (CompletionResult (crModule, crName, crType), getAstDeclarationsStartingWith, getAstDeclarationsStartingWithAndSearchingModuleNames, getAstDeclarationsStartingWithOnlyInModule)
 import Language.PureScript.Lsp.Docs (readDeclarationDocsAsMarkdown)
 import Language.PureScript.Lsp.Imports (addImportToTextEdit, getIdentModuleQualifier, getMatchingImport, parseModuleNameFromFile)
-import Language.PureScript.Lsp.Log (logPerfStandard, debugLsp)
+import Language.PureScript.Lsp.Log (logPerfStandard)
 import Language.PureScript.Lsp.Monad (HandlerM)
 import Language.PureScript.Lsp.ServerConfig (getMaxCompletions)
 import Language.PureScript.Lsp.Types (CompleteItemData (CompleteItemData), decodeCompleteItemData)
@@ -47,29 +47,19 @@ completionAndResolveHandlers =
           vfMb <- Server.getVirtualFile uri
           forLsp vfMb \vf -> do
             let (range, word) = getWordAt (VFS._file_text vf) pos
-            debugLsp $ "word: " <> word
-            debugLsp $ "filePath: " <> show filePath
             mNameMb <- parseModuleNameFromFile uri
-            debugLsp $ "mNameMb: " <> show mNameMb
             forLsp mNameMb \mName -> do
               let withQualifier = getIdentModuleQualifier word
                   wordWithoutQual = maybe word snd withQualifier
-              debugLsp $ "withQualifier: " <> show withQualifier
-              debugLsp $ "wordWithoutQual: " <> wordWithoutQual
               limit <- getMaxCompletions
               matchingImport <- maybe (pure Nothing) (getMatchingImport uri . fst) withQualifier
-              debugLsp $ "matchingImport: " <> show matchingImport
               decls <- logPerfStandard "get completion declarations" case (matchingImport, withQualifier) of
                 (Just (Import importModuleName _ _), _) -> do 
-                  debugLsp "getAstDeclarationsStartingWithOnlyInModule"
                   getAstDeclarationsStartingWithOnlyInModule importModuleName wordWithoutQual
                 (_, Just (wordModuleName, _)) -> do 
-                  debugLsp $ "getAstDeclarationsStartingWithAndSearchingModuleNames: " <> show wordModuleName
                   getAstDeclarationsStartingWithAndSearchingModuleNames mName wordModuleName wordWithoutQual
                 _ ->  do
-                  debugLsp "getAstDeclarationsStartingWith"
                   getAstDeclarationsStartingWith mName wordWithoutQual
-              debugLsp $ "decls length: " <> show (length decls)
               res $
                 Right $
                   Types.InR $

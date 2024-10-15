@@ -11,7 +11,6 @@ import Language.PureScript qualified as P
 import Language.PureScript.AST.SourcePos (nullSourceSpan)
 import Language.PureScript.Lsp.Cache (selectExternPathFromModuleName)
 import Language.PureScript.Lsp.Cache.Query (getAstDeclarationLocationInModule)
-import Language.PureScript.Lsp.Log (debugLsp)
 import Language.PureScript.Lsp.Monad (HandlerM)
 import Language.PureScript.Lsp.NameType (LspNameType (..))
 import Language.PureScript.Lsp.Print (printName)
@@ -59,7 +58,6 @@ definitionHandler = Server.requestHandler Message.SMethod_TextDocumentDefinition
             respondWithDeclInOtherModule nameType importedModuleName (printName name)
           _ -> respondWithModule ss importedModuleName
 
-  debugLsp $ "Position: " <> show pos
 
   forLsp filePathMb \filePath -> do
     cacheOpenMb <- cachedRebuild filePath
@@ -76,12 +74,10 @@ definitionHandler = Server.requestHandler Message.SMethod_TextDocumentDefinition
               & declAtLine srcPosLine
 
 
-      debugLsp $ "srcPosLine: " <> show srcPosLine
 
       forLsp declAtPos $ \decl -> do
         case decl of
           P.ImportDeclaration (ss, _) importedModuleName importType _ -> do 
-            debugLsp $ "found import at pos: " <> show importedModuleName
             case importType of
               P.Implicit -> respondWithModule ss importedModuleName
               P.Explicit imports -> respondWithImports ss importedModuleName imports

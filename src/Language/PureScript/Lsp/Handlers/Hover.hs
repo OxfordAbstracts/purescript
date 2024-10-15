@@ -17,7 +17,6 @@ import Language.PureScript.Ide.Error (prettyPrintTypeSingleLine)
 import Language.PureScript.Lsp.Cache.Query (getAstDeclarationTypeInModule)
 import Language.PureScript.Lsp.Docs (readDeclarationDocsWithNameType, readModuleDocs)
 import Language.PureScript.Lsp.Handlers.Definition (findDeclRefAtPos, fromPrim, getExprsAtPos, getImportRefNameType, getTypeColumns, getTypedValuesAtPos, getTypesAtPos, isNullSourceTypeSpan, isPrimImport, isSingleLine, spanToRange)
-import Language.PureScript.Lsp.Log (debugLsp)
 import Language.PureScript.Lsp.Monad (HandlerM)
 import Language.PureScript.Lsp.NameType (LspNameType (..))
 import Language.PureScript.Lsp.Print (printName)
@@ -41,7 +40,6 @@ hoverHandler = Server.requestHandler Message.SMethod_TextDocumentHover $ \req re
       respondWithDeclInModule :: P.SourceSpan -> LspNameType -> P.ModuleName -> Text -> HandlerM ()
       respondWithDeclInModule ss nameType modName ident = do
         declDocMb <- readDeclarationDocsWithNameType modName nameType ident
-        debugLsp $ "found docs: " <> show (isJust declDocMb)
         case declDocMb of
           Just docs -> markdownRes docs (Just $ spanToRange ss)
           _ -> do
@@ -98,18 +96,15 @@ hoverHandler = Server.requestHandler Message.SMethod_TextDocumentHover $ \req re
               P.Explicit imports -> respondWithImports ss importedModuleName imports
               P.Hiding imports -> respondWithImports ss importedModuleName imports
           _ -> do
-            debugLsp $ "Decl at pos: " <> show decl
             let exprsAtPos = getExprsAtPos pos decl
                 findTypedExpr :: [Expr] -> Maybe (P.SourceType, Maybe P.SourceSpan)
                 findTypedExpr ((P.TypedValue _ e t) : _) = Just (t, P.exprSourceSpan e)
                 findTypedExpr (_ : es) = findTypedExpr es
                 findTypedExpr [] = Nothing
 
-            debugLsp $ "Exprs at pos: " <> show (length exprsAtPos)
 
             case head exprsAtPos of
               Just expr -> do
-                debugLsp $ "found hover expr at pos: " <> show expr
                 case expr of
                   P.Var ss (P.Qualified (P.ByModuleName modName) ident) -> do
                     respondWithDeclInModule ss IdentNameType modName (P.runIdent ident)
