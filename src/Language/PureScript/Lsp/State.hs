@@ -1,7 +1,8 @@
 {-# LANGUAGE TypeOperators #-}
 
 module Language.PureScript.Lsp.State
-  ( cacheRebuild,
+  ( getDbConn, 
+    cacheRebuild,
     cacheRebuild',
     cachedRebuild,
     cacheDependencies,
@@ -39,6 +40,10 @@ import Language.PureScript.Sugar.Names (externsEnv)
 import Language.PureScript.Sugar.Names.Env qualified as P
 import Protolude hiding (moduleName, unzip)
 import Language.PureScript.Names qualified as P
+import Database.SQLite.Simple (Connection)
+
+getDbConn :: (MonadReader LspEnvironment m, MonadIO m) => m  Connection
+getDbConn = liftIO . readTVarIO . lspDbConnection =<< ask
 
 -- | Sets rebuild cache to the given ExternsFile
 cacheRebuild :: (MonadReader LspEnvironment m, MonadLsp ServerConfig m) => ExternsFile -> [ExternsFile] -> P.Environment -> P.Module -> m ()
@@ -124,13 +129,13 @@ instance Exception BuildEnvCacheException
 addExternsToExportEnv :: (Foldable t, Monad f) => P.Env -> t ExternsFile -> f (Either MultipleErrors P.Env)
 addExternsToExportEnv env externs = fmap fst . runWriterT $ runExceptT $ foldM externsEnv env externs
 
-logBuildErrors :: (MonadIO m, MonadReader LspEnvironment m) => MultipleErrors -> m ()
+logBuildErrors :: (MonadLsp ServerConfig m, MonadReader LspEnvironment m) => MultipleErrors -> m ()
 logBuildErrors = errorLsp . printBuildErrors
 
 printBuildErrors :: MultipleErrors -> Text
 printBuildErrors = T.pack . prettyPrintMultipleErrors P.noColorPPEOptions
 
-addExternToExportEnv :: (MonadIO m, MonadReader LspEnvironment m) => ExternsFile -> m ()
+addExternToExportEnv :: (MonadLsp ServerConfig m, MonadReader LspEnvironment m) => ExternsFile -> m ()
 addExternToExportEnv ef = do
   stVar <- lspStateVar <$> ask
   error <- liftIO $ atomically $ do

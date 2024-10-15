@@ -1,6 +1,6 @@
 module Command.Lsp (command) where
 
-import Language.PureScript.Lsp.Types (LspConfig (..), mkEnv, LspLogLevel(..))
+import Language.PureScript.Lsp.Types (mkEnv, LspLogLevel(..))
 import Language.PureScript.Lsp as Lsp
 import Options.Applicative qualified as Opts
 import Protolude
@@ -32,19 +32,12 @@ command = Opts.helper <*> subcommands
         ]
 
     server :: ServerOptions -> IO ()
-    server opts'@(ServerOptions dir globs globsFromFile _globsExcluded outputPath logLevel) = do
+    server opts'@(ServerOptions dir _globs _globsFromFile _globsExcluded outputPath logLevel) = do
       when
         (logLevel == LogDebug || logLevel == LogAll)
         (hPutStrLn stderr ("Parsed Options:" :: Text) *> hPutStrLn stderr (show opts' :: Text))
       maybe (pure ()) setCurrentDirectory dir
-      let conf =
-            LspConfig
-              { confOutputPath = outputPath,
-                confGlobs = globs,
-                confInputSrcFromFile = globsFromFile,
-                confLogLevel = logLevel
-              }
-      env <- mkEnv conf
+      env <- mkEnv outputPath
       startServer env
 
     serverOptions :: Opts.Parser ServerOptions

@@ -18,21 +18,18 @@ import Language.PureScript.Names qualified as P
 import Language.PureScript.Sugar.Names (Env)
 import Language.PureScript.Sugar.Names qualified as P
 import Protolude
-import System.Directory (createDirectoryIfMissing)
 import Language.PureScript.AST qualified as P
 
 data LspEnvironment = LspEnvironment
-  { lspConfig :: LspConfig,
-    lspDbConnection :: Connection,
+  { lspDbConnection :: TVar Connection,
     lspStateVar :: TVar LspState
   }
 
-mkEnv :: LspConfig -> IO LspEnvironment
-mkEnv conf = do
-  createDirectoryIfMissing True $ confOutputPath conf
-  connection <- mkConnection $ confOutputPath conf
+mkEnv :: FilePath -> IO LspEnvironment
+mkEnv outputPath = do
+  connection <- newTVarIO =<< mkConnection outputPath
   st <- newTVarIO (LspState mempty P.primEnv mempty)
-  pure $ LspEnvironment conf connection st
+  pure $ LspEnvironment connection st
 
 data LspConfig = LspConfig
   { confOutputPath :: FilePath,

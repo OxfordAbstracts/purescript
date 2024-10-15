@@ -22,10 +22,11 @@ import Language.PureScript.Lsp.Handlers.Diagnostic (diagnosticAndCodeActionHandl
 import Language.PureScript.Lsp.Handlers.Hover (hoverHandler)
 import Language.PureScript.Lsp.Monad (HandlerM)
 import Language.PureScript.Lsp.ServerConfig (setTraceValue)
-import Language.PureScript.Lsp.State (cancelRequest, removedCachedRebuild, clearCache, clearExportCache, clearRebuildCache)
+import Language.PureScript.Lsp.State (cancelRequest, removedCachedRebuild, clearCache, clearExportCache, clearRebuildCache, getDbConn)
 import Protolude hiding (to)
 import Data.Aeson qualified as A
 import Language.PureScript.Lsp.Handlers.Index (indexHandler)
+import Language.PureScript.Make.Index (initDb, dropTables)
 
 handlers :: Server.Handlers HandlerM
 handlers =
@@ -46,6 +47,8 @@ handlers =
         [ Server.notificationHandler Message.SMethod_Initialized $ \_not -> do
             void updateAvailableSrcs
             sendInfoMsg "Lsp initialized",
+          Server.notificationHandler Message.SMethod_WorkspaceDidChangeWatchedFiles $ \_not -> do
+            pure (),
           Server.notificationHandler Message.SMethod_TextDocumentDidOpen $ \_msg -> do
             pure (),
           Server.notificationHandler Message.SMethod_TextDocumentDidChange $ \_msg -> do
@@ -72,6 +75,14 @@ handlers =
             res $ Right A.Null,
           Server.requestHandler (Message.SMethod_CustomMethod $ Proxy @"clear-cache:rebuilds") $ \_req res -> do
             clearRebuildCache
+            res $ Right A.Null,
+          Server.requestHandler (Message.SMethod_CustomMethod $ Proxy @"create-index-tables") $ \_req res -> do
+            conn <- getDbConn
+            liftIO $ initDb conn
+            res $ Right A.Null,
+          Server.requestHandler (Message.SMethod_CustomMethod $ Proxy @"drop-index-tables") $ \_req res -> do
+            conn <- getDbConn
+            liftIO $ dropTables conn
             res $ Right A.Null
         ]
 

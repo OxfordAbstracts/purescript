@@ -8,7 +8,7 @@ import Control.Monad.Catch (MonadThrow (throwM))
 import Data.Map.Lazy qualified as M
 import Data.Set qualified as Set
 import Language.LSP.Protocol.Types (NormalizedUri, fromNormalizedUri, uriToFilePath)
-import Language.LSP.Server (MonadLsp)
+import Language.LSP.Server (MonadLsp, getConfig)
 import Language.PureScript (primEnv)
 import Language.PureScript.AST qualified as P
 import Language.PureScript.CST qualified as CST
@@ -18,9 +18,9 @@ import Language.PureScript.Ide.Rebuild (updateCacheDb)
 import Language.PureScript.Lsp.Cache (selectDependencies)
 import Language.PureScript.Lsp.Log (debugLsp, logPerfStandard, warnLsp)
 import Language.PureScript.Lsp.ReadFile (lspReadFileText)
-import Language.PureScript.Lsp.ServerConfig (ServerConfig, getMaxFilesInCache)
-import Language.PureScript.Lsp.State (addExternToExportEnv, addExternsToExportEnv, buildExportEnvCache, cacheRebuild', cachedRebuild, setExportEnvCache, cacheDependencies)
-import Language.PureScript.Lsp.Types (LspConfig (..), LspEnvironment (lspConfig, lspDbConnection, lspStateVar), LspState, OpenFile (OpenFile))
+import Language.PureScript.Lsp.ServerConfig (ServerConfig (outputPath), getMaxFilesInCache)
+import Language.PureScript.Lsp.State (addExternToExportEnv, addExternsToExportEnv, buildExportEnvCache, cacheRebuild', cachedRebuild, setExportEnvCache, cacheDependencies, getDbConn)
+import Language.PureScript.Lsp.Types (LspEnvironment (lspStateVar), LspState, OpenFile (OpenFile))
 import Language.PureScript.Make qualified as P
 import Language.PureScript.Make.Index (addAllIndexing)
 import Language.PureScript.Options qualified as P
@@ -29,7 +29,7 @@ import Protolude hiding (moduleName)
 
 rebuildFile ::
   ( MonadThrow m,
-    MonadReader LspEnvironment m,
+    MonadReader Language.PureScript.Lsp.Types.LspEnvironment m,
     MonadLsp ServerConfig m
   ) =>
   NormalizedUri ->
@@ -45,8 +45,8 @@ rebuildFile uri = logPerfStandard "Rebuild file " do
     Right (pwarnings, m) -> do
       let moduleName = P.getModuleName m
       let filePathMap = M.singleton moduleName (Left P.RebuildAlways)
-      outputDirectory <- asks (confOutputPath . lspConfig)
-      conn <- asks lspDbConnection
+      outputDirectory <- outputPath <$> getConfig
+      conn <- getDbConn
       stVar <- asks lspStateVar
       maxCache <- getMaxFilesInCache
       cachedBuild <- cachedRebuild fp
@@ -57,7 +57,7 @@ rebuildFile uri = logPerfStandard "Rebuild file " do
               & addRebuildCaching stVar maxCache externs
       debugLsp $ "Cache found: " <> show (isJust cachedBuild)
       case cachedBuild of
-        Just (OpenFile _ _ externs env _) -> do
+        Just (Language.PureScript.Lsp.Types.OpenFile _ _ externs env _) -> do
           foreigns <- P.inferForeignModules (M.singleton moduleName (Right fp))
           (exportEnv, externsMb) <- logPerfStandard "build export cache" $ buildExportEnvCacheAndHandleErrors (selectDependencies m) m externs
           for_ externsMb (cacheDependencies moduleName)
@@ -86,7 +86,7 @@ rebuildFile uri = logPerfStandard "Rebuild file " do
           addExternToExportEnv newExtern
           pure $ RebuildWarning (CST.toMultipleWarnings fp pwarnings <> warnings)
 
-buildExportEnvCacheAndHandleErrors :: (MonadReader LspEnvironment m, MonadIO m, MonadThrow m) => m [ExternsFile] -> P.Module -> [ExternsFile] -> m (P.Env, Maybe [ExternsFile])
+buildExportEnvCacheAndHandleErrors :: (MonadReader Language.PureScript.Lsp.Types.LspEnvironment m, MonadLsp ServerConfig m, MonadThrow m) => m [ExternsFile] -> P.Module -> [ExternsFile] -> m (P.Env, Maybe [ExternsFile])
 buildExportEnvCacheAndHandleErrors refectExterns m externs = do
   fromCache <- buildExportEnvCache m externs
   case fromCache of
@@ -121,7 +121,7 @@ shushProgress :: (Monad m) => P.MakeActions m -> P.MakeActions m
 shushProgress ma =
   ma {P.progress = \_ -> pure ()}
 
-addRebuildCaching :: TVar LspState -> Int -> [ExternsFile] -> P.MakeActions P.Make -> P.MakeActions P.Make
+addRebuildCaching :: TVar Language.PureScript.Lsp.Types.LspState -> Int -> [ExternsFile] -> P.MakeActions P.Make -> P.MakeActions P.Make
 addRebuildCaching stVar maxCache deps ma =
   ma
     { P.codegen = \prevEnv env astM m docs ext -> lift (liftIO $ cacheRebuild' stVar maxCache ext deps prevEnv astM) <* P.codegen ma prevEnv env astM m docs ext

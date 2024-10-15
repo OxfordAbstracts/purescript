@@ -1,6 +1,7 @@
 module Language.PureScript.Lsp.Docs where
 
 import Control.Arrow ((>>>))
+import Language.LSP.Server (MonadLsp, getConfig)
 import Language.PureScript.AST.SourcePos qualified as P
 import Language.PureScript.Docs qualified as Docs
 import Language.PureScript.Docs.AsMarkdown (declAsMarkdown, runDocs)
@@ -9,22 +10,23 @@ import Language.PureScript.Docs.Types (Declaration (declChildren))
 import Language.PureScript.Docs.Types qualified as P
 import Language.PureScript.Lsp.NameType (LspNameType (..))
 import Language.PureScript.Lsp.Print (printName)
-import Language.PureScript.Lsp.Types (LspConfig (confOutputPath), LspEnvironment (lspConfig))
+import Language.PureScript.Lsp.ServerConfig (ServerConfig (outputPath))
+import Language.PureScript.Lsp.Types (LspEnvironment)
 import Language.PureScript.Names qualified as P
 import Protolude
 
-readModuleDocs :: (MonadIO m, MonadReader LspEnvironment m) => P.ModuleName -> m (Maybe Docs.Module)
+readModuleDocs :: (MonadLsp ServerConfig m) => P.ModuleName -> m (Maybe Docs.Module)
 readModuleDocs modName = do
-  outputDirectory <- asks (confOutputPath . lspConfig)
+  outputDirectory <- outputPath <$> getConfig
   liftIO $ catchError (Just <$> parseDocsJsonFile outputDirectory modName) (const $ pure Nothing)
 
-readDeclarationDocs :: (MonadIO m, MonadReader LspEnvironment m) => P.ModuleName -> Text -> m (Maybe Docs.Declaration)
+readDeclarationDocs :: (MonadLsp ServerConfig m) => P.ModuleName -> Text -> m (Maybe Docs.Declaration)
 readDeclarationDocs modName ident = do
   modMb <- readModuleDocs modName
   pure $ modMb >>= (P.modDeclarations >>> find ((== ident) . P.declTitle))
 
 -- todo: add child info and operator matching
-readDeclarationDocsWithNameType :: (MonadIO m, MonadReader LspEnvironment m) => P.ModuleName -> LspNameType -> Text -> m (Maybe Text)
+readDeclarationDocsWithNameType :: (MonadReader LspEnvironment m, MonadLsp ServerConfig m) => P.ModuleName -> LspNameType -> Text -> m (Maybe Text)
 readDeclarationDocsWithNameType modName nameType ident = do
   modMb <- readModuleDocs modName
   pure $ modMb >>= (P.modDeclarations >>> getMarkdown)
@@ -53,18 +55,18 @@ readDeclarationDocsWithNameType modName nameType ident = do
       P.ChildDataConstructor _ -> nameType == DctorNameType && P.cdeclTitle cd == ident
       P.ChildTypeClassMember _ -> nameType == IdentNameType && P.cdeclTitle cd == ident
 
-readDeclarationDocsAsMarkdown :: (MonadIO m, MonadReader LspEnvironment m) => P.ModuleName -> Text -> m (Maybe Text)
+readDeclarationDocsAsMarkdown :: (MonadReader LspEnvironment m, MonadLsp ServerConfig m) => P.ModuleName -> Text -> m (Maybe Text)
 readDeclarationDocsAsMarkdown modName ident = fmap (runDocs . declAsMarkdown) <$> readDeclarationDocs modName ident
 
-readQualifiedNameDocsAsMarkdown :: (MonadIO m, MonadReader LspEnvironment m) => P.Qualified P.Name -> m (Maybe Text)
+readQualifiedNameDocsAsMarkdown :: (MonadReader LspEnvironment m, MonadLsp ServerConfig m) => P.Qualified P.Name -> m (Maybe Text)
 readQualifiedNameDocsAsMarkdown = \case
   (P.Qualified (P.ByModuleName modName) ident) -> readDeclarationDocsAsMarkdown modName (printName ident)
   _ -> pure Nothing
 
-readDeclarationDocsSourceSpan :: (MonadIO m, MonadReader LspEnvironment m) => P.ModuleName -> Text -> m (Maybe P.SourceSpan)
+readDeclarationDocsSourceSpan :: (MonadReader LspEnvironment m, MonadLsp ServerConfig m) => P.ModuleName -> Text -> m (Maybe P.SourceSpan)
 readDeclarationDocsSourceSpan modName ident = readDeclarationDocs modName ident <&> (=<<) P.declSourceSpan
 
-readQualifiedNameDocsSourceSpan :: (MonadIO m, MonadReader LspEnvironment m) => P.Qualified P.Name -> m (Maybe P.SourceSpan)
+readQualifiedNameDocsSourceSpan :: (MonadReader LspEnvironment m, MonadLsp ServerConfig m) => P.Qualified P.Name -> m (Maybe P.SourceSpan)
 readQualifiedNameDocsSourceSpan = \case
   (P.Qualified (P.ByModuleName modName) ident) -> readDeclarationDocsSourceSpan modName (printName ident)
   _ -> pure Nothing

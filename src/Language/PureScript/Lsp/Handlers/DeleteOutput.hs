@@ -8,10 +8,11 @@ import Language.LSP.Protocol.Message qualified as Message
 import Language.LSP.Server qualified as Server
 import Language.PureScript.DB (dbFile)
 import Language.PureScript.Lsp.Monad (HandlerM)
-import Language.PureScript.Lsp.Types (LspConfig (confOutputPath), LspEnvironment (lspConfig))
 import Protolude hiding (to)
 import System.Directory (createDirectoryIfMissing, listDirectory, removePathForcibly)
 import System.FilePath ((</>))
+import Language.PureScript.Lsp.ServerConfig (ServerConfig(outputPath))
+import Language.LSP.Server (getConfig)
 
 deleteOutputHandler :: Server.Handlers HandlerM
 deleteOutputHandler =
@@ -21,7 +22,7 @@ deleteOutputHandler =
 
 deleteOutput :: HandlerM ()
 deleteOutput = do
-  outDir <- asks (confOutputPath . lspConfig)
+  outDir <- outputPath <$> getConfig
   liftIO $ createDirectoryIfMissing True outDir
   contents <- liftIO $ listDirectory outDir
   for_ contents \f -> do

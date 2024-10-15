@@ -17,7 +17,7 @@ import Language.LSP.Server qualified as Server
 import Language.PureScript.Lsp.Handlers (handlers)
 import Language.PureScript.Lsp.Log (debugLsp, errorLsp, warnLsp)
 import Language.PureScript.Lsp.Monad (HandlerM)
-import Language.PureScript.Lsp.ServerConfig (ServerConfig, defaultFromEnv)
+import Language.PureScript.Lsp.ServerConfig (ServerConfig, defaultConfig)
 import Language.PureScript.Lsp.State (addRunningRequest, removeRunningRequest)
 import Language.PureScript.Lsp.Types (LspEnvironment)
 import Protolude hiding (to)
@@ -32,7 +32,7 @@ serverDefinition lspEnv =
   Server.ServerDefinition
     { parseConfig = \_current json -> first T.pack $ A.parseEither A.parseJSON json,
       onConfigChange = const $ pure (),
-      defaultConfig = defaultFromEnv lspEnv,
+      defaultConfig = defaultConfig,
       configSection = "purs-lsp-client",
       doInitialize = \env _ -> pure (Right env),
       staticHandlers = const (lspHandlers lspEnv),
@@ -72,6 +72,9 @@ lspHandlers lspEnv = mapHandlers goReq goNotification handlers
             LSP.IdString t -> Right t
       env <- getLspEnv
       debugLsp $ "Request: " <> show method
+      --  <>  case method of 
+      --     Method_CustomMethod a ->  _ a 
+      --     _ -> show method
       liftIO $ do
         withAsync (runHandler env $ f msg k) \asyncAct -> do
           addRunningRequest lspEnv reqId asyncAct
@@ -103,3 +106,5 @@ lspHandlers lspEnv = mapHandlers goReq goNotification handlers
           _ -> pure ()
 
     runHandler env a = Server.runLspT env $ runReaderT a lspEnv
+
+

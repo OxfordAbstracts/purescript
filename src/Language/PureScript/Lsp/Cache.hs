@@ -13,12 +13,14 @@ import Language.PureScript.Externs qualified as P
 import Language.PureScript.Glob (PSCGlobs (..), toInputGlobs, warnFileTypeNotFound)
 import Language.PureScript.Ide.Error (IdeError (GeneralError))
 import Language.PureScript.Lsp.DB qualified as DB
-import Language.PureScript.Lsp.Types (LspConfig (..), LspEnvironment (lspConfig))
+import Language.PureScript.Lsp.Types (LspEnvironment)
 import Language.PureScript.Names qualified as P
 import Protolude
 import System.Directory (doesDirectoryExist, doesFileExist, getDirectoryContents, makeAbsolute, canonicalizePath)
 import System.FilePath (normalise, (</>))
 import Language.PureScript.Lsp.Log (logPerfStandard)
+import Language.PureScript.Lsp.ServerConfig (ServerConfig(outputPath, globs, inputSrcFromFile))
+import Language.LSP.Server (getConfig, MonadLsp)
 
 selectAllExternsMap :: (MonadIO m, MonadReader LspEnvironment m) => m (Map P.ModuleName ExternsFile)
 selectAllExternsMap = do
@@ -82,9 +84,9 @@ selectExternPathFromModuleName mName =
 
 -- | Finds all the externs inside the output folder and returns the
 -- corresponding module names
-findAvailableExterns :: (MonadIO m, MonadReader LspEnvironment m, MonadError IdeError m) => m [P.ModuleName]
+findAvailableExterns :: (MonadReader LspEnvironment m, MonadError IdeError m, MonadLsp ServerConfig m) => m [P.ModuleName]
 findAvailableExterns = do
-  oDir <- asks (confOutputPath . lspConfig)
+  oDir <- outputPath <$> getConfig
   unlessM
     (liftIO (doesDirectoryExist oDir))
     (throwError (GeneralError $ "Couldn't locate your output directory at: " <> T.pack (normalise oDir)))
@@ -102,17 +104,17 @@ findAvailableExterns = do
           let file = oDir </> d </> P.externsFileName
           doesFileExist file
 
-updateAvailableSrcs :: (MonadIO m, MonadReader LspEnvironment m) => m [FilePath]
+updateAvailableSrcs :: (MonadLsp ServerConfig m, MonadReader LspEnvironment m) => m [FilePath]
 updateAvailableSrcs = logPerfStandard "updateAvailableSrcs" $ do
   DB.execute_ "CREATE TABLE IF NOT EXISTS available_srcs (path TEXT PRIMARY KEY NOT NULL, UNIQUE(path) on conflict replace)"
   DB.execute_ (Query "DELETE FROM available_srcs")
-  config <- asks lspConfig
+  config <- getConfig
   srcs <-
     liftIO $
       toInputGlobs $
         PSCGlobs
-          { pscInputGlobs = confGlobs config,
-            pscInputGlobsFromFile = confInputSrcFromFile config,
+          { pscInputGlobs = globs config,
+            pscInputGlobsFromFile = inputSrcFromFile config,
             pscExcludeGlobs = [],
             pscWarnFileTypeNotFound = warnFileTypeNotFound "lsp server"
           }

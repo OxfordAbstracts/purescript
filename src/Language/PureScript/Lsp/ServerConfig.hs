@@ -5,7 +5,7 @@ module Language.PureScript.Lsp.ServerConfig where
 import Data.Aeson (FromJSON, ToJSON)
 import Language.LSP.Protocol.Types (TraceValue (..))
 import Language.LSP.Server (MonadLsp, getConfig, setConfig)
-import Language.PureScript.Lsp.Types (LspConfig (..), LspEnvironment (..), LspLogLevel (..))
+import Language.PureScript.Lsp.Types (LspLogLevel (..))
 import Protolude
 
 data ServerConfig = ServerConfig
@@ -20,24 +20,18 @@ data ServerConfig = ServerConfig
   }
   deriving (Show, Eq, Generic, ToJSON, FromJSON)
 
-defaultFromEnv :: LspEnvironment -> ServerConfig
-defaultFromEnv env =
+defaultConfig :: ServerConfig
+defaultConfig  =
   ServerConfig
-    { outputPath = confOutputPath $ lspConfig env,
-      globs = confGlobs $ lspConfig env,
-      inputSrcFromFile = confInputSrcFromFile $ lspConfig env,
-      logLevel = logLevel,
-      traceValue = Just $ case logLevel of
-        LogDebug -> TraceValue_Verbose
-        LogAll -> TraceValue_Verbose
-        LogWarning -> TraceValue_Messages
-        _ -> TraceValue_Off,
-      maxTypeLength = Nothing,
-      maxCompletions = Nothing, 
-      maxFilesInCache = Nothing
+    { outputPath = "./output",
+      globs = ["./src/**/*.purs"],
+      inputSrcFromFile = Nothing,
+      logLevel = LogWarning,
+      traceValue = Nothing,
+      maxTypeLength = Just defaultMaxTypeLength,
+      maxCompletions = Just defaultMaxCompletions, 
+      maxFilesInCache = Just defaultMaxFilesInCache
     }
-  where
-    logLevel = confLogLevel $ lspConfig env
 
 setTraceValue :: (MonadLsp ServerConfig m) => TraceValue -> m ()
 setTraceValue tv = do

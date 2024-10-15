@@ -39,7 +39,7 @@ import Language.PureScript.Ide.Rebuild (updateCacheDb)
 import Language.PureScript.Ide.Types (ModuleMap)
 import Language.PureScript.Ide.Util (ideReadFile)
 import Language.PureScript.Lsp.Print (printDeclarationType, printEfDeclName, printName, printEfDeclType)
-import Language.PureScript.Lsp.Types (LspConfig (..), LspEnvironment (lspConfig))
+import Language.PureScript.Lsp.Types (LspConfig (..), LspEnvironment)
 import Language.PureScript.Lsp.Util (efDeclCategory, efDeclSourceSpan)
 import Language.PureScript.Make (ffiCodegen')
 import Language.PureScript.Make qualified as P
@@ -170,20 +170,12 @@ insertEfImport conn moduleName' ei = do
 
 initDb :: Connection -> IO ()
 initDb conn = do
-  dropTables conn
   SQL.execute_ conn "pragma journal_mode=wal;"
   SQL.execute_ conn "pragma foreign_keys = ON;"
   SQL.execute_ conn "CREATE TABLE IF NOT EXISTS ast_modules (module_name TEXT, path TEXT, UNIQUE(module_name) on conflict replace, UNIQUE(path) on conflict replace)"
   SQL.execute_ conn "CREATE TABLE IF NOT EXISTS ast_declarations (module_name TEXT, name TEXT, name_type TEXT, printed_type TEXT, start_line INTEGER, end_line INTEGER, start_col INTEGER, end_col INTEGER, lines INTEGER, cols INTEGER, exported BOOLEAN)"
-  SQL.execute_ conn "CREATE TABLE IF NOT EXISTS ast_expressions (module_name TEXT, value TEXT, start_line INTEGER, end_line INTEGER, start_col INTEGER, end_col INTEGER, length INTEGER)"
-  SQL.execute_ conn "CREATE TABLE IF NOT EXISTS envs (module_name TEXT PRIMARY KEY, value TEXT)"
-  SQL.execute_ conn "CREATE TABLE IF NOT EXISTS corefn_modules (name TEXT PRIMARY KEY, path TEXT, value TEXT, UNIQUE(name) on conflict replace, UNIQUE(path) on conflict replace)"
-  SQL.execute_ conn "CREATE TABLE IF NOT EXISTS corefn_imports (module_name TEXT references corefn_modules(name) ON DELETE CASCADE, imported_module TEXT, UNIQUE(module_name, imported_module) on conflict replace)"
-  SQL.execute_ conn "CREATE TABLE IF NOT EXISTS corefn_declarations (module_name TEXT references corefn_modules(name) ON DELETE CASCADE, ident TEXT, top_level BOOLEAN, value TEXT, start_line INTEGER, end_line INTEGER, start_col INTEGER, end_col INTEGER)"
-  SQL.execute_ conn "CREATE TABLE IF NOT EXISTS corefn_expressions (module_name TEXT references corefn_modules(name) ON DELETE CASCADE, value TEXT, start_line INTEGER, end_line INTEGER, start_col INTEGER, end_col INTEGER, lines INTEGER, cols INTEGER)"
   SQL.execute_ conn "CREATE TABLE IF NOT EXISTS externs (path TEXT PRIMARY KEY, ef_version TEXT, value BLOB, module_name TEXT, UNIQUE(path) on conflict replace, UNIQUE(module_name) on conflict replace)"
   SQL.execute_ conn "CREATE TABLE IF NOT EXISTS ef_imports (module_name TEXT references externs(module_name) ON DELETE CASCADE, imported_module TEXT, import_type TEXT, imported_as TEXT, value BLOB)"
-
   SQL.execute_ conn "CREATE TABLE IF NOT EXISTS available_srcs (path TEXT PRIMARY KEY NOT NULL, UNIQUE(path) on conflict replace)"
 
   addDbIndexes conn

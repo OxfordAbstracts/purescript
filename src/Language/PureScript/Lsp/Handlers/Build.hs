@@ -12,11 +12,12 @@ import Language.PureScript.Lsp.Cache (updateAvailableSrcs)
 import Language.PureScript.Lsp.Diagnostics (errorMessageDiagnostic)
 import Language.PureScript.Lsp.Monad (HandlerM)
 import Language.PureScript.Lsp.Rebuild (codegenTargets)
-import Language.PureScript.Lsp.Types (LspConfig (confOutputPath), LspEnvironment (lspConfig, lspDbConnection))
 import Language.PureScript.Make.Index (initDb)
 import Protolude hiding (to)
 import System.IO.UTF8 (readUTF8FilesT)
-import Language.PureScript.Lsp.State (clearCache)
+import Language.PureScript.Lsp.State (clearCache, getDbConn)
+import Language.LSP.Server (getConfig)
+import Language.PureScript.Lsp.ServerConfig (ServerConfig(outputPath))
 
 buildHandler :: Server.Handlers HandlerM
 buildHandler =
@@ -27,8 +28,8 @@ buildHandler =
 buildForLsp :: HandlerM [Types.Diagnostic]
 buildForLsp = do
   clearCache
-  config <- asks lspConfig
-  conn <- asks lspDbConnection
+  outDir <-  outputPath <$> getConfig
+  conn <- getDbConn
   liftIO $ initDb conn
   input <- updateAvailableSrcs
   moduleFiles <- liftIO $ readUTF8FilesT input
@@ -38,7 +39,7 @@ buildForLsp = do
         (P.Options False False codegenTargets)
         moduleFiles
         conn
-        (confOutputPath config)
+        outDir
         False
   pure $
     (errorMessageDiagnostic Types.DiagnosticSeverity_Error <$> either P.runMultipleErrors (const []) result)

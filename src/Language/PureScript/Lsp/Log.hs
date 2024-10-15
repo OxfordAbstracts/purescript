@@ -3,28 +3,30 @@ module Language.PureScript.Lsp.Log where
 import Data.Text qualified as T
 import Data.Time (defaultTimeLocale, formatTime, getCurrentTime)
 import Language.PureScript.Ide.Logging (displayTimeSpec)
-import Language.PureScript.Lsp.Types (LspConfig (confLogLevel), LspEnvironment (lspConfig), LspLogLevel (..))
+import Language.PureScript.Lsp.Types (LspEnvironment, LspLogLevel (..))
 import Protolude
 import System.Clock (Clock (Monotonic), TimeSpec, diffTimeSpec, getTime)
+import Language.PureScript.Lsp.ServerConfig (ServerConfig(logLevel))
+import Language.LSP.Server (getConfig, MonadLsp)
 
-infoLsp :: (MonadIO m, MonadReader LspEnvironment m) => Text -> m ()
+infoLsp :: (MonadLsp ServerConfig m, MonadReader LspEnvironment m) => Text -> m ()
 infoLsp = logLsp LogMsgInfo
 
-warnLsp :: (MonadIO m, MonadReader LspEnvironment m) => Text -> m ()
+warnLsp :: (MonadLsp ServerConfig m, MonadReader LspEnvironment m) => Text -> m ()
 warnLsp = logLsp LogMsgWarning
 
-errorLsp :: (MonadIO m, MonadReader LspEnvironment m) => Text -> m ()
+errorLsp :: (MonadLsp ServerConfig m, MonadReader LspEnvironment m) => Text -> m ()
 errorLsp = logLsp LogMsgError
 
-debugLsp :: (MonadIO m, MonadReader LspEnvironment m) => Text -> m ()
+debugLsp :: (MonadLsp ServerConfig m, MonadReader LspEnvironment m) => Text -> m ()
 debugLsp = logLsp LogMsgDebug
 
-perfLsp :: (MonadIO m, MonadReader LspEnvironment m) => Text -> m ()
+perfLsp :: (MonadLsp ServerConfig m, MonadReader LspEnvironment m) => Text -> m ()
 perfLsp = logLsp LogMsgPerf
 
-logLsp :: (MonadIO m, MonadReader LspEnvironment m) => LogMsgSeverity -> Text -> m ()
+logLsp :: (MonadLsp ServerConfig m, MonadReader LspEnvironment m) => LogMsgSeverity -> Text -> m ()
 logLsp msgLogLevel msg = do
-  logLevel <- confLogLevel . lspConfig <$> ask
+  logLevel <- logLevel <$> getConfig
   when (shouldLog msgLogLevel logLevel) $ do
     now <- liftIO getCurrentTime
     liftIO $
@@ -39,10 +41,10 @@ logLsp msgLogLevel msg = do
             <> "\n\n"
         )
 
-logPerfStandard :: (MonadIO m, MonadReader LspEnvironment m) => Text -> m t -> m t
+logPerfStandard :: (MonadLsp ServerConfig m, MonadReader LspEnvironment m) => Text -> m t -> m t
 logPerfStandard label f = logPerf (labelTimespec label) f
 
-logPerf :: (MonadIO m, MonadReader LspEnvironment m) => (TimeSpec -> Text) -> m t -> m t
+logPerf :: (MonadLsp ServerConfig m, MonadReader LspEnvironment m) => (TimeSpec -> Text) -> m t -> m t
 logPerf format f = do
   start <- getPerfTime
   result <- f

@@ -13,23 +13,28 @@ import Language.PureScript qualified as P
 import Language.PureScript.Lsp.Log (debugLsp)
 import Language.PureScript.Lsp.Monad (HandlerM)
 import Language.PureScript.Lsp.ServerConfig (ServerConfig (outputPath))
-import Language.PureScript.Lsp.Types (LspEnvironment (lspDbConnection))
-import Language.PureScript.Make.Index (indexAstDeclFromExternDecl, indexExtern)
+import Language.PureScript.Lsp.Types (LspEnvironment)
+import Language.PureScript.Make.Index (indexAstDeclFromExternDecl, indexExtern, initDb)
 import Language.PureScript.Make.Monad (readExternsFile)
 import Protolude hiding (to)
 import System.Directory (doesFileExist, getDirectoryContents)
 import System.FilePath ((</>))
 import Language.PureScript.Lsp.Handlers.DeleteOutput (deleteOutput)
 import Language.PureScript.Lsp.Handlers.Build (buildForLsp)
+import Language.PureScript.Lsp.State (getDbConn)
 
 indexHandler :: Server.Handlers HandlerM
 indexHandler =
   mconcat
     [ Server.requestHandler (Message.SMethod_CustomMethod $ Proxy @"index-fast") $ \_req res -> do
+        conn <- getDbConn
+        liftIO $ initDb conn
         externs <- findAvailableExterns
         for_ externs indexExternAndDecls
         res $ Right A.Null,
       Server.requestHandler (Message.SMethod_CustomMethod $ Proxy @"index-full") $ \_req res -> do
+        conn <- getDbConn
+        liftIO $ initDb conn
         deleteOutput
         diags <- buildForLsp
         res $ Right $ A.toJSON diags
@@ -37,7 +42,7 @@ indexHandler =
   where
     indexExternAndDecls :: ExternsFile -> HandlerM ()
     indexExternAndDecls ef = do
-      conn <- asks lspDbConnection
+      conn <- getDbConn
       indexExtern conn ef
       for_ (P.efDeclarations ef) (indexAstDeclFromExternDecl conn (P.efModuleName ef))
 
