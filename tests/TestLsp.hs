@@ -65,7 +65,7 @@ sessionConfig :: SessionConfig
 sessionConfig = SessionConfig 30 True True True clientConfig True True True Nothing
   where
     clientConfig :: KeyMap A.Value
-    clientConfig = KeyMap.singleton "oa-purescript-lsp" (A.toJSON pursLspConfig)
+    clientConfig = KeyMap.singleton "purs-lsp-client" (A.toJSON pursLspConfig)
 
     pursLspConfig :: Map Text.Text A.Value
     pursLspConfig = Map.empty

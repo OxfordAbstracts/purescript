@@ -13,7 +13,7 @@ data ServerConfig = ServerConfig
     globs :: [FilePath],
     inputSrcFromFile :: Maybe FilePath,
     logLevel :: LspLogLevel,
-    traceValue :: TraceValue,
+    traceValue :: Maybe TraceValue,
     maxTypeLength :: Maybe Int,
     maxCompletions :: Maybe Int, 
     maxFilesInCache :: Maybe Int
@@ -27,7 +27,7 @@ defaultFromEnv env =
       globs = confGlobs $ lspConfig env,
       inputSrcFromFile = confInputSrcFromFile $ lspConfig env,
       logLevel = logLevel,
-      traceValue = case logLevel of
+      traceValue = Just $ case logLevel of
         LogDebug -> TraceValue_Verbose
         LogAll -> TraceValue_Verbose
         LogWarning -> TraceValue_Messages
@@ -42,7 +42,7 @@ defaultFromEnv env =
 setTraceValue :: (MonadLsp ServerConfig m) => TraceValue -> m ()
 setTraceValue tv = do
   config <- getConfig
-  setConfig (config {traceValue = tv})
+  setConfig (config {traceValue = Just tv})
 
 defaultMaxTypeLength :: Int
 defaultMaxTypeLength = 100
