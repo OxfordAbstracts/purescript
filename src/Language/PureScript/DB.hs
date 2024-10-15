@@ -8,7 +8,9 @@ import System.Directory (createDirectoryIfMissing)
 mkConnection :: FilePath -> IO Connection
 mkConnection outputDir =  do
   createDirectoryIfMissing True outputDir
-  open (outputDir </> dbFile)
+  let path = outputDir </> dbFile
+  putErrLn $ "Opening sqlite database at " <> path
+  open path
 
 dbFile :: FilePath
 dbFile = "purescript.sqlite"
