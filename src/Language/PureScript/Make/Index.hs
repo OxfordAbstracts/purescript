@@ -1,56 +1,22 @@
 {-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE PackageImports #-}
-{-# OPTIONS_GHC -Wno-unused-imports #-}
-{-# OPTIONS_GHC -Wno-unused-matches #-}
 
 module Language.PureScript.Make.Index where
 
 import Codec.Serialise (serialise)
-import Control.Exception (handle)
-import Control.Monad.Cont (MonadIO)
-import Control.Monad.Supply (SupplyT (SupplyT))
-import Data.Aeson qualified as A
-import Data.List qualified as List
-import Data.Map.Lazy qualified as M
-import Data.Maybe (fromJust)
-import Data.Set qualified as S
 import Data.Set qualified as Set
-import Data.Text qualified as T
 import Database.SQLite.Simple (Connection, NamedParam ((:=)))
 import Database.SQLite.Simple qualified as SQL
 import Distribution.Compat.Directory (makeAbsolute)
-import Language.PureScript (declRefName)
 import Language.PureScript.AST qualified as P
-import Language.PureScript.AST.Declarations (exprSourceSpan)
-import Language.PureScript.AST.Declarations qualified as P
-import Language.PureScript.AST.Traversals qualified as P
-import Language.PureScript.CST qualified as CST
-import Language.PureScript.CoreFn qualified as CF
-import Language.PureScript.CoreFn.FromJSON qualified as CFJ
-import Language.PureScript.CoreFn.ToJSON qualified as CFJ
-import Language.PureScript.CoreFn.Traversals (traverseCoreFn)
-import Language.PureScript.Docs.Types qualified as Docs
-import Language.PureScript.Environment qualified as P
-import Language.PureScript.Errors qualified as P
 import Language.PureScript.Externs (ExternsFile (efModuleName))
 import Language.PureScript.Externs qualified as P
-import Language.PureScript.Ide.Error (IdeError (GeneralError, RebuildError))
-import Language.PureScript.Ide.Rebuild (updateCacheDb)
-import Language.PureScript.Ide.Types (ModuleMap)
-import Language.PureScript.Ide.Util (ideReadFile)
-import Language.PureScript.Lsp.Print (printDeclarationType, printEfDeclName, printName, printEfDeclType)
-import Language.PureScript.Lsp.Types (LspConfig (..), LspEnvironment)
-import Language.PureScript.Lsp.Util (efDeclCategory, efDeclSourceSpan)
-import Language.PureScript.Make (ffiCodegen')
+import Language.PureScript.Lsp.NameType (externDeclNameType, lspNameType)
+import Language.PureScript.Lsp.Print (printDeclarationType, printEfDeclName, printEfDeclType, printName)
+import Language.PureScript.Lsp.Util (efDeclSourceSpan)
 import Language.PureScript.Make qualified as P
-import Language.PureScript.ModuleDependencies qualified as P
 import Language.PureScript.Names qualified as P
-import Language.PureScript.Options qualified as P
-import Language.PureScript.Types (everywhereOnTypesM)
-import Paths_purescript qualified as Paths
 import Protolude hiding (moduleName)
-import "monad-logger" Control.Monad.Logger (MonadLogger, logDebugN)
-import Language.PureScript.Lsp.NameType (lspNameType, externDeclNameType)
 
 addAllIndexing :: (MonadIO m) => Connection -> P.MakeActions m -> P.MakeActions m
 addAllIndexing conn ma =
@@ -64,7 +30,7 @@ addAstModuleIndexing conn ma =
     }
 
 indexAstModule :: (MonadIO m) => Connection -> P.Module -> ExternsFile -> m ()
-indexAstModule conn m@(P.Module _ss _comments moduleName' decls exportRefs) extern = liftIO do
+indexAstModule conn m@(P.Module _ss _comments moduleName' decls _exportRefs) extern = liftIO do
   path <- makeAbsolute externPath
   SQL.executeNamed
     conn
@@ -81,13 +47,14 @@ indexAstModule conn m@(P.Module _ss _comments moduleName' decls exportRefs) exte
         start = P.spanStart ss
         end = P.spanEnd ss
         name = P.declName decl
-        nameType =  name <&> lspNameType
+        nameType = name <&> lspNameType
     SQL.executeNamed
       conn
-      (SQL.Query 
-      "INSERT INTO ast_declarations \
-      \         (module_name, name, printed_type, name_type, start_line, end_line, start_col, end_col, lines, cols, exported) \
-      \ VALUES (:module_name, :name, :printed_type, :name_type, :start_line, :end_line, :start_col, :end_col, :lines, :cols, :exported)")
+      ( SQL.Query
+          "INSERT INTO ast_declarations \
+          \         (module_name, name, printed_type, name_type, start_line, end_line, start_col, end_col, lines, cols, exported) \
+          \ VALUES (:module_name, :name, :printed_type, :name_type, :start_line, :end_line, :start_col, :end_col, :lines, :cols, :exported)"
+      )
       [ ":module_name" := P.runModuleName moduleName',
         ":name" := printName <$> name,
         ":printed_type" := printDeclarationType decl,
@@ -103,19 +70,23 @@ indexAstModule conn m@(P.Module _ss _comments moduleName' decls exportRefs) exte
   where
     externPath = P.spanName (P.efSourceSpan extern)
 
-indexAstDeclFromExternDecl :: (MonadIO m) => Connection -> P.ModuleName -> P.ExternsDeclaration -> m ()
-indexAstDeclFromExternDecl conn moduleName' externDecl = liftIO do
-  let ss = efDeclSourceSpan externDecl
+indexAstDeclFromExternDecl :: (MonadIO m) => Connection -> P.ModuleName -> [P.ExternsDeclaration] -> P.ExternsDeclaration -> m ()
+indexAstDeclFromExternDecl conn moduleName' moduleDecls externDecl = liftIO do
+  let ss = case externDecl of
+        P.EDDataConstructor {..}
+          | Just typeCtr <- find (isTypeOfName edDataCtorTypeCtor) moduleDecls -> efDeclSourceSpan typeCtr
+        _ -> efDeclSourceSpan externDecl
       start = P.spanStart ss
       end = P.spanEnd ss
-      printedType :: Text 
+      printedType :: Text
       printedType = printEfDeclType externDecl
   SQL.executeNamed
     conn
-    (SQL.Query 
-    "INSERT INTO ast_declarations \
-    \         (module_name, name, printed_type, name_type, start_line, end_line, start_col, end_col, lines, cols, exported) \
-    \ VALUES (:module_name, :name, :printed_type, :name_type, :start_line, :end_line, :start_col, :end_col, :lines, :cols, :exported)")
+    ( SQL.Query
+        "INSERT INTO ast_declarations \
+        \         (module_name, name, printed_type, name_type, start_line, end_line, start_col, end_col, lines, cols, exported) \
+        \ VALUES (:module_name, :name, :printed_type, :name_type, :start_line, :end_line, :start_col, :end_col, :lines, :cols, :exported)"
+    )
     [ ":module_name" := P.runModuleName moduleName',
       ":name" := printEfDeclName externDecl,
       ":printed_type" := printedType,
@@ -128,6 +99,10 @@ indexAstDeclFromExternDecl conn moduleName' externDecl = liftIO do
       ":cols" := P.sourcePosColumn end - P.sourcePosColumn start,
       ":exported" := False
     ]
+  where
+    isTypeOfName :: P.ProperName 'P.TypeName -> P.ExternsDeclaration -> Bool
+    isTypeOfName name P.EDType {..} = edTypeName == name
+    isTypeOfName _ _ = False
 
 addExternIndexing :: (MonadIO m) => Connection -> P.MakeActions m -> P.MakeActions m
 addExternIndexing conn ma =
@@ -166,7 +141,6 @@ insertEfImport conn moduleName' ei = do
       ":imported_as" := fmap P.runModuleName (P.eiImportedAs ei),
       ":value" := serialise ei
     ]
-
 
 initDb :: Connection -> IO ()
 initDb conn = do

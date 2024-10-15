@@ -24,6 +24,8 @@ import Language.PureScript.Lsp.State (cachedRebuild)
 import Language.PureScript.Lsp.Types (OpenFile (..))
 import Language.PureScript.Lsp.Util (declAtLine)
 import Protolude hiding (to)
+import Text.PrettyPrint.Boxes (render)
+import Data.Text qualified as T
 
 hoverHandler :: Server.Handlers HandlerM
 hoverHandler = Server.requestHandler Message.SMethod_TextDocumentHover $ \req res -> do
@@ -53,7 +55,7 @@ hoverHandler = Server.requestHandler Message.SMethod_TextDocumentHover $ \req re
               P.Var _ (P.Qualified _ ident) -> P.runIdent ident
               P.Op _ (P.Qualified _ ident) -> P.runOpName ident
               P.Constructor _ (P.Qualified _ ident) -> P.runProperName ident
-              _ -> "<expression>"
+              _ -> T.pack $ render $ P.prettyPrintValue 3 expr
             printedType = prettyPrintTypeSingleLine tipe
 
         markdownRes (pursTypeStr word (Just printedType) []) (spanToRange <$> sa)
