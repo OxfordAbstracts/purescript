@@ -29,6 +29,7 @@ command = Opts.helper <*> subcommands
     server :: ServerOptions -> IO ()
     server (ServerOptions dir outputPath) = do
       maybe (pure ()) setCurrentDirectory dir
+      putErrLn $ "Starting server with output path: " <> outputPath
       env <- mkEnv outputPath
       startServer env
 

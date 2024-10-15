@@ -13,15 +13,15 @@ import Data.Aeson.Types qualified as A
 import Data.Text qualified as T
 import Language.LSP.Protocol.Message qualified as LSP
 import Language.LSP.Protocol.Types qualified as Types
+import Language.LSP.Server (MonadLsp (getLspEnv), mapHandlers)
 import Language.LSP.Server qualified as Server
 import Language.PureScript.Lsp.Handlers (handlers)
 import Language.PureScript.Lsp.Log (debugLsp, errorLsp, warnLsp)
 import Language.PureScript.Lsp.Monad (HandlerM)
-import Language.PureScript.Lsp.ServerConfig (ServerConfig, defaultConfig)
-import Language.PureScript.Lsp.State (addRunningRequest, removeRunningRequest)
+import Language.PureScript.Lsp.ServerConfig (ServerConfig (outputPath), defaultConfig)
+import Language.PureScript.Lsp.State (addRunningRequest, removeRunningRequest, putNewEnv)
 import Language.PureScript.Lsp.Types (LspEnvironment)
 import Protolude hiding (to)
-import Language.LSP.Server (mapHandlers, MonadLsp (getLspEnv))
 
 main :: LspEnvironment -> IO Int
 main lspEnv = do
@@ -31,9 +31,15 @@ serverDefinition :: LspEnvironment -> Server.ServerDefinition ServerConfig
 serverDefinition lspEnv =
   Server.ServerDefinition
     { parseConfig = \_current json -> first T.pack $ A.parseEither A.parseJSON json,
-      onConfigChange = const $ pure (),
+      onConfigChange = \newConfig -> do
+        oldConfig <- Server.getConfig
+        debugLsp $ "old config: " <> show oldConfig
+        debugLsp $ "new config: " <> show newConfig
+        when (outputPath oldConfig /= outputPath newConfig) do
+          debugLsp "Config output path changed"
+          liftIO $ putNewEnv lspEnv $ outputPath newConfig,
       defaultConfig = defaultConfig,
-      configSection = "purs-lsp-client",
+      configSection = "purescript-lsp",
       doInitialize = \env _ -> pure (Right env),
       staticHandlers = const (lspHandlers lspEnv),
       interpretHandler = \serverEnv ->
@@ -48,8 +54,7 @@ lspOptions :: Server.Options
 lspOptions =
   Server.defaultOptions
     { Server.optTextDocumentSync = Just syncOptions,
-      Server.optExecuteCommandCommands = Just ["lsp-purescript-command"],
-      Server.optCompletionTriggerCharacters = Just $ "._" <> ['a'..'z'] <> ['A'..'Z'] <> ['0'..'9'] 
+      Server.optCompletionTriggerCharacters = Just $ "._" <> ['a' .. 'z'] <> ['A' .. 'Z'] <> ['0' .. '9']
     }
 
 syncOptions :: Types.TextDocumentSyncOptions
@@ -72,8 +77,8 @@ lspHandlers lspEnv = mapHandlers goReq goNotification handlers
             LSP.IdString t -> Right t
       env <- getLspEnv
       debugLsp $ "Request: " <> show method
-      --  <>  case method of 
-      --     Method_CustomMethod a ->  _ a 
+      --  <>  case method of
+      --     Method_CustomMethod a ->  _ a
       --     _ -> show method
       liftIO $ do
         withAsync (runHandler env $ f msg k) \asyncAct -> do
@@ -106,5 +111,3 @@ lspHandlers lspEnv = mapHandlers goReq goNotification handlers
           _ -> pure ()
 
     runHandler env a = Server.runLspT env $ runReaderT a lspEnv
-
-

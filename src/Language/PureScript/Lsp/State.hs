@@ -1,7 +1,7 @@
 {-# LANGUAGE TypeOperators #-}
 
 module Language.PureScript.Lsp.State
-  ( getDbConn, 
+  ( getDbConn,
     cacheRebuild,
     cacheRebuild',
     cachedRebuild,
@@ -18,6 +18,7 @@ module Language.PureScript.Lsp.State
     cancelRequest,
     addRunningRequest,
     removeRunningRequest,
+    putNewEnv,
   )
 where
 
@@ -26,6 +27,7 @@ import Control.Monad.Trans.Writer (WriterT (runWriterT))
 import Data.List qualified as List
 import Data.Map qualified as Map
 import Data.Text qualified as T
+import Database.SQLite.Simple (Connection)
 import Language.LSP.Protocol.Types (type (|?) (..))
 import Language.LSP.Server (MonadLsp)
 import Language.PureScript (MultipleErrors, prettyPrintMultipleErrors)
@@ -36,14 +38,14 @@ import Language.PureScript.Externs qualified as P
 import Language.PureScript.Lsp.Log (errorLsp)
 import Language.PureScript.Lsp.ServerConfig (ServerConfig, getMaxFilesInCache)
 import Language.PureScript.Lsp.Types
+import Language.PureScript.Names qualified as P
 import Language.PureScript.Sugar.Names (externsEnv)
 import Language.PureScript.Sugar.Names.Env qualified as P
 import Protolude hiding (moduleName, unzip)
-import Language.PureScript.Names qualified as P
-import Database.SQLite.Simple (Connection)
+import Language.PureScript.DB (mkConnection)
 
-getDbConn :: (MonadReader LspEnvironment m, MonadIO m) => m  Connection
-getDbConn = liftIO . readTVarIO . lspDbConnection =<< ask
+getDbConn :: (MonadReader LspEnvironment m, MonadIO m) => m Connection
+getDbConn = liftIO . readTVarIO . lspDbConnectionVar =<< ask
 
 -- | Sets rebuild cache to the given ExternsFile
 cacheRebuild :: (MonadReader LspEnvironment m, MonadLsp ServerConfig m) => ExternsFile -> [ExternsFile] -> P.Environment -> P.Module -> m ()
@@ -72,10 +74,11 @@ cacheDependencies moduleName deps = do
   st <- lspStateVar <$> ask
   liftIO . atomically $ modifyTVar st $ \x ->
     x
-      { openFiles = openFiles x <&> \(fp, ofile) ->
-          if ofModuleName ofile == moduleName
-            then (fp, ofile {ofDependencies = deps})
-            else (fp, ofile)
+      { openFiles =
+          openFiles x <&> \(fp, ofile) ->
+            if ofModuleName ofile == moduleName
+              then (fp, ofile {ofDependencies = deps})
+              else (fp, ofile)
       }
 
 removedCachedRebuild :: (MonadIO m, MonadReader LspEnvironment m) => FilePath -> m ()
@@ -175,3 +178,12 @@ cancelRequest requestId = do
     eitherId = case requestId of
       InL i -> Left i
       InR t -> Right t
+
+putNewEnv :: LspEnvironment -> FilePath -> IO ()
+putNewEnv env  outputPath  = do
+  newConn <- mkConnection outputPath
+  atomically $ writeTVar (lspDbConnectionVar env) newConn
+  atomically $ writeTVar (lspStateVar env) emptyState
+  -- connVar <- lspDbConnectionVar <$> ask
+  -- newConn <- liftIO (readTVarIO (lspDbConnectionVar env))
+  -- liftIO . atomically $ writeTVar connVar newConn

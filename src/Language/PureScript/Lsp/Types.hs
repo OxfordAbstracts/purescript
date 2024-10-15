@@ -21,7 +21,7 @@ import Protolude
 import Language.PureScript.AST qualified as P
 
 data LspEnvironment = LspEnvironment
-  { lspDbConnection :: TVar Connection,
+  { lspDbConnectionVar :: TVar Connection,
     lspStateVar :: TVar LspState
   }
 
@@ -30,6 +30,9 @@ mkEnv outputPath = do
   connection <- newTVarIO =<< mkConnection outputPath
   st <- newTVarIO (LspState mempty P.primEnv mempty)
   pure $ LspEnvironment connection st
+
+emptyState :: LspState
+emptyState = LspState mempty P.primEnv mempty
 
 data LspConfig = LspConfig
   { confOutputPath :: FilePath,
