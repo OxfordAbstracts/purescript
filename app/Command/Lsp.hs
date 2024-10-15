@@ -1,19 +1,14 @@
 module Command.Lsp (command) where
 
-import Language.PureScript.Lsp.Types (mkEnv, LspLogLevel(..))
 import Language.PureScript.Lsp as Lsp
+import Language.PureScript.Lsp.Types (mkEnv)
 import Options.Applicative qualified as Opts
 import Protolude
-import SharedCLI qualified
 import System.Directory (setCurrentDirectory)
 
 data ServerOptions = ServerOptions
   { _serverDirectory :: Maybe FilePath,
-    _serverGlobs :: [FilePath],
-    _serverGlobsFromFile :: Maybe FilePath,
-    _serverGlobsExcluded :: [FilePath],
-    _serverOutputPath :: FilePath,
-    _serverLoglevel :: LspLogLevel
+    _serverOutputPath :: FilePath
   }
   deriving (Show)
 
@@ -32,10 +27,7 @@ command = Opts.helper <*> subcommands
         ]
 
     server :: ServerOptions -> IO ()
-    server opts'@(ServerOptions dir _globs _globsFromFile _globsExcluded outputPath logLevel) = do
-      when
-        (logLevel == LogDebug || logLevel == LogAll)
-        (hPutStrLn stderr ("Parsed Options:" :: Text) *> hPutStrLn stderr (show opts' :: Text))
+    server (ServerOptions dir outputPath) = do
       maybe (pure ()) setCurrentDirectory dir
       env <- mkEnv outputPath
       startServer env
@@ -44,25 +36,7 @@ command = Opts.helper <*> subcommands
     serverOptions =
       ServerOptions
         <$> optional (Opts.strOption (Opts.long "directory" `mappend` Opts.short 'd'))
-        <*> many SharedCLI.inputFile
-        <*> SharedCLI.globInputFile
-        <*> many SharedCLI.excludeFiles
         <*> Opts.strOption (Opts.long "output-directory" `mappend` Opts.value "output/")
-        <*> ( parseLogLevel
-                <$> Opts.strOption
-                  ( Opts.long "log-level"
-                      `mappend` Opts.value ""
-                      `mappend` Opts.help "One of \"debug\", \"perf\", \"all\" or \"none\""
-                  )
-            )
-
-    parseLogLevel :: Text -> LspLogLevel
-    parseLogLevel s = case s of
-      "debug" -> LogDebug
-      "perf" -> LogPerf
-      "all" -> LogAll
-      "none" -> LogNone
-      _ -> LogWarning
 
     startServer env = do
       code <- Lsp.main env
