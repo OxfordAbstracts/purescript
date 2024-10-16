@@ -83,6 +83,7 @@ lspHandlers lspEnv = mapHandlers goReq goNotification handlers
             LSP.IdString t -> Right t
           methodText = T.pack $ LSP.someMethodToMethodString $ LSP.SomeMethod method
       env <- getLspEnv
+      debugLsp methodText
       logPerfStandard methodText $ liftIO $ do
         withAsync (runHandler env $ f msg k) \asyncAct -> do
           addRunningRequest lspEnv reqId asyncAct
