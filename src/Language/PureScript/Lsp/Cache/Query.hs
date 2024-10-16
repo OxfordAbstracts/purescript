@@ -40,7 +40,7 @@ getAstDeclarationLocationInModule lspNameType moduleName' name = do
       \AND name_type IS :name_type"
       [ ":module_name" := P.runModuleName moduleName',
         ":name" := name,
-        ":name_type" := (map show lspNameType :: Maybe Text)
+        ":name_type" := lspNameType
       ]
   pure $ decls <&> \(spanName, sl, sc, el, ec) -> P.SourceSpan spanName (SourcePos sl sc) (SourcePos el ec)
 
@@ -56,7 +56,7 @@ getAstDeclarationTypeInModule lspNameType moduleName' name = do
       \AND name_type IS :name_type"
       [ ":module_name" := P.runModuleName moduleName',
         ":name" := name,
-        ":name_type" := (map show lspNameType :: Maybe Text)
+        ":name_type" := lspNameType
       ]
   pure $ decls <&> fromOnly
 

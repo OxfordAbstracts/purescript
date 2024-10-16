@@ -19,6 +19,7 @@ import Language.PureScript.Lsp.Types (OpenFile (..))
 import Language.PureScript.Lsp.Util (declAtLine, posInSpan, sourcePosToPosition)
 import Language.PureScript.Types (getAnnForType)
 import Protolude hiding (to)
+import Language.PureScript.Lsp.Log (debugLsp)
 
 definitionHandler :: Server.Handlers HandlerM
 definitionHandler = Server.requestHandler Message.SMethod_TextDocumentDefinition $ \req res -> do
@@ -37,6 +38,7 @@ definitionHandler = Server.requestHandler Message.SMethod_TextDocumentDefinition
       respondWithDeclInOtherModule :: Maybe LspNameType -> P.ModuleName -> Text -> HandlerM ()
       respondWithDeclInOtherModule nameType modName ident = do
         declSpans <- getAstDeclarationLocationInModule nameType modName ident
+        debugLsp $ "SourceSpans: " <> show declSpans
         forLsp (head declSpans) $ \sourceSpan ->
           locationRes (P.spanName sourceSpan) (spanToRange sourceSpan)
 
@@ -54,9 +56,11 @@ definitionHandler = Server.requestHandler Message.SMethod_TextDocumentDefinition
           Just import' -> do
             let name = P.declRefName import'
                 nameType = getImportRefNameType import'
-            
+            debugLsp $ "import: " <> show import'
             respondWithDeclInOtherModule nameType importedModuleName (printName name)
-          _ -> respondWithModule ss importedModuleName
+          _ -> do 
+            debugLsp $ "respondWithModule importedModuleName: " <> show importedModuleName
+            respondWithModule ss importedModuleName
 
 
   forLsp filePathMb \filePath -> do
@@ -78,6 +82,7 @@ definitionHandler = Server.requestHandler Message.SMethod_TextDocumentDefinition
       forLsp declAtPos $ \decl -> do
         case decl of
           P.ImportDeclaration (ss, _) importedModuleName importType _ -> do 
+            debugLsp $ "ImportDeclaration iomportedModuleName: " <> show importedModuleName
             case importType of
               P.Implicit -> respondWithModule ss importedModuleName
               P.Explicit imports -> respondWithImports ss importedModuleName imports
@@ -111,13 +116,15 @@ definitionHandler = Server.requestHandler Message.SMethod_TextDocumentDefinition
                         _ -> nullRes
 
                 exprsAtPos = getExprsAtPos pos decl
-
+            debugLsp $ "exprsAtPos: " <> show (length exprsAtPos)
             case head exprsAtPos of
               Just expr -> do
                 case expr of
                   P.Var _ (P.Qualified (P.BySourcePos srcPos) _) | srcPos /= P.SourcePos 0 0 -> do
+                    debugLsp $ "Var BySourcePos : " <> show srcPos
                     posRes filePath srcPos
                   P.Var _ (P.Qualified (P.ByModuleName modName) ident) -> do
+                    debugLsp $ "Var ByModuleName : " <> show modName <> "." <> P.runIdent ident
                     respondWithDeclInOtherModule (Just IdentNameType) modName $ P.runIdent ident
                   P.Op _ (P.Qualified (P.BySourcePos srcPos) _) | srcPos /= P.SourcePos 0 0 -> posRes filePath srcPos
                   P.Op _ (P.Qualified (P.ByModuleName srcPos) ident) -> do

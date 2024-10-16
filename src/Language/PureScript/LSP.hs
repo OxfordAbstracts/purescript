@@ -19,10 +19,11 @@ import Language.PureScript.DB (mkDbPath)
 import Language.PureScript.Lsp.Handlers (handlers)
 import Language.PureScript.Lsp.Log (debugLsp, errorLsp, logPerfStandard, warnLsp)
 import Language.PureScript.Lsp.Monad (HandlerM)
-import Language.PureScript.Lsp.ServerConfig (ServerConfig (outputPath), defaultConfig)
-import Language.PureScript.Lsp.State (addRunningRequest, getDbPath, putNewEnv, removeRunningRequest)
+import Language.PureScript.Lsp.ServerConfig (ServerConfig (outputPath, globs), defaultConfig)
+import Language.PureScript.Lsp.State (addRunningRequest, getDbPath, putNewEnv, removeRunningRequest, getPreviousConfig, putPreviousConfig)
 import Language.PureScript.Lsp.Types (LspEnvironment)
 import Protolude hiding (to)
+import Language.PureScript.Lsp.Cache (updateAvailableSrcs)
 
 main :: LspEnvironment -> IO Int
 main lspEnv = do
@@ -33,12 +34,16 @@ serverDefinition lspEnv =
   Server.ServerDefinition
     { parseConfig = \_current json -> first T.pack $ A.parseEither A.parseJSON json,
       onConfigChange = \newConfig -> do
-        debugLsp $ "new config: " <> show newConfig
         dbPath <- getDbPath
         newDbPath <- liftIO $ mkDbPath (outputPath newConfig)
         when (newDbPath /= dbPath) do
           debugLsp "DB path changed"
-          liftIO $ putNewEnv lspEnv $ outputPath newConfig,
+          liftIO $ putNewEnv lspEnv $ outputPath newConfig
+        prevConfig <- getPreviousConfig
+        when (globs newConfig /= globs prevConfig) do
+          debugLsp "Globs changed"
+          void updateAvailableSrcs
+        putPreviousConfig newConfig,
       defaultConfig = defaultConfig,
       configSection = "purescript-lsp",
       doInitialize = \env _ -> pure (Right env),

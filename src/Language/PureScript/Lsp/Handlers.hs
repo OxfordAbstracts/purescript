@@ -61,7 +61,7 @@ handlers =
                 fileName = Types.uriToFilePath uri
             traverse_ removedCachedRebuild fileName,
           Server.notificationHandler Message.SMethod_WorkspaceDidChangeConfiguration $ \_msg -> do
-            void updateAvailableSrcs,
+            pure (),
           Server.notificationHandler Message.SMethod_SetTrace $ \msg -> do
             setTraceValue $ msg ^. LSP.params . LSP.value, -- probably no need to do this
           Server.notificationHandler Message.SMethod_CancelRequest $ \msg -> do

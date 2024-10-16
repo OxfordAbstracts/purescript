@@ -20,6 +20,8 @@ module Language.PureScript.Lsp.State
     removeRunningRequest,
     getDbPath,
     putNewEnv,
+    putPreviousConfig,
+    getPreviousConfig,
   )
 where
 
@@ -190,3 +192,9 @@ putNewEnv env outputPath = do
   (path, newConn) <- mkConnection outputPath
   atomically $ writeTVar (lspDbConnectionVar env) (path, newConn)
   atomically $ writeTVar (lspStateVar env) emptyState
+
+getPreviousConfig :: (MonadReader LspEnvironment m, MonadIO m) => m ServerConfig
+getPreviousConfig = liftIO . readTVarIO . previousConfig =<< ask
+
+putPreviousConfig :: (MonadReader LspEnvironment m, MonadIO m) => ServerConfig -> m ()
+putPreviousConfig config = liftIO . atomically . flip writeTVar config . previousConfig =<< ask

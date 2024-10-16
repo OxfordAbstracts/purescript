@@ -3,11 +3,12 @@ module Language.PureScript.Lsp.Log where
 import Data.Text qualified as T
 import Data.Time (defaultTimeLocale, formatTime, getCurrentTime)
 import Language.PureScript.Ide.Logging (displayTimeSpec)
-import Language.PureScript.Lsp.Types (LspEnvironment, LspLogLevel (..))
+import Language.PureScript.Lsp.Types (LspEnvironment)
 import Protolude
 import System.Clock (Clock (Monotonic), TimeSpec, diffTimeSpec, getTime)
 import Language.PureScript.Lsp.ServerConfig (ServerConfig(logLevel))
 import Language.LSP.Server (getConfig, MonadLsp)
+import Language.PureScript.Lsp.LogLevel (LspLogLevel(..))
 
 infoLsp :: (MonadLsp ServerConfig m, MonadReader LspEnvironment m) => Text -> m ()
 infoLsp = logLsp LogMsgInfo

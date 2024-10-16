@@ -1,14 +1,10 @@
 {-# LANGUAGE DeriveAnyClass #-}
-{-# LANGUAGE PackageImports #-}
 
 module Language.PureScript.Lsp.Types where
 
 import Control.Concurrent.STM (TVar, newTVarIO)
--- import Language.PureScript.Ide.Types (IdeLogLevel)
-
 import Data.Aeson (FromJSON, ToJSON)
 import Data.Aeson qualified as A
-import Data.Aeson.Types qualified as AT
 import Database.SQLite.Simple (Connection)
 import Language.LSP.Protocol.Types (Range)
 import Language.PureScript.DB (mkConnection)
@@ -19,17 +15,21 @@ import Language.PureScript.Sugar.Names (Env)
 import Language.PureScript.Sugar.Names qualified as P
 import Protolude
 import Language.PureScript.AST qualified as P
+import Language.PureScript.Lsp.ServerConfig (ServerConfig, defaultConfig)
+import Language.PureScript.Lsp.LogLevel (LspLogLevel)
 
 data LspEnvironment = LspEnvironment
   { lspDbConnectionVar :: TVar (FilePath, Connection),
-    lspStateVar :: TVar LspState
+    lspStateVar :: TVar LspState,
+    previousConfig :: TVar  ServerConfig
   }
 
 mkEnv :: FilePath -> IO LspEnvironment
 mkEnv outputPath = do
   connection <- newTVarIO =<< mkConnection outputPath
   st <- newTVarIO (LspState mempty P.primEnv mempty)
-  pure $ LspEnvironment connection st
+  prevConfig <- newTVarIO defaultConfig
+  pure $ LspEnvironment connection st prevConfig
 
 emptyState :: LspState
 emptyState = LspState mempty P.primEnv mempty
@@ -67,37 +67,6 @@ data CompleteItemData = CompleteItemData
   }
   deriving (Show, Eq, Generic, ToJSON, FromJSON)
 
-data LspLogLevel
-  = LogAll
-  | LogDebug
-  | LogPerf
-  | LogInfo
-  | LogWarning
-  | LogError
-  | LogNone
-  deriving (Show, Eq, Ord, Generic)
-
-instance A.ToJSON LspLogLevel where
-  toJSON = \case
-    LogAll -> A.String "all"
-    LogDebug -> A.String "debug"
-    LogPerf -> A.String "perf"
-    LogInfo -> A.String "info"
-    LogWarning -> A.String "warning"
-    LogError -> A.String "error"
-    LogNone -> A.String "none"
-
-instance FromJSON LspLogLevel where
-  parseJSON v = case v of
-    A.String "all" -> pure LogAll
-    A.String "debug" -> pure LogDebug
-    A.String "perf" -> pure LogPerf
-    A.String "info" -> pure LogInfo
-    A.String "warning" -> pure LogWarning
-    A.String "error" -> pure LogError
-    A.String "none" -> pure LogNone
-    A.String _ -> AT.unexpected v
-    _ -> AT.typeMismatch "String" v
 
 decodeCompleteItemData :: Maybe A.Value -> A.Result (Maybe CompleteItemData)
 decodeCompleteItemData Nothing = pure Nothing
