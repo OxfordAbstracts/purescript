@@ -14,7 +14,7 @@ import Language.PureScript.Lsp.Log (errorLsp)
 import Language.PureScript.Lsp.Monad (HandlerM)
 import Language.PureScript.Lsp.ServerConfig (ServerConfig (outputPath))
 import Language.PureScript.Lsp.Types (LspEnvironment)
-import Language.PureScript.Make.Index (indexAstDeclFromExternDecl, indexExtern, initDb)
+import Language.PureScript.Make.Index (indexAstDeclFromExternDecl, indexExtern, initDb, indexAstModuleFromExtern)
 import Language.PureScript.Make.Monad (readExternsFile)
 import Protolude hiding (to)
 import System.Directory (doesFileExist, getDirectoryContents)
@@ -44,6 +44,7 @@ indexHandler =
     indexExternAndDecls ef = do
       conn <- getDbConn
       indexExtern conn ef
+      indexAstModuleFromExtern conn ef
       for_ (P.efDeclarations ef) (indexAstDeclFromExternDecl conn (P.efModuleName ef) (P.efDeclarations ef))
 
 -- \| Finds all the externs inside the output folder and returns the

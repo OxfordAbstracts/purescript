@@ -70,6 +70,18 @@ indexAstModule conn m@(P.Module _ss _comments moduleName' decls _exportRefs) ext
   where
     externPath = P.spanName (P.efSourceSpan extern)
 
+indexAstModuleFromExtern :: (MonadIO m) => Connection -> ExternsFile -> m ()
+indexAstModuleFromExtern conn extern = liftIO do
+  path <- makeAbsolute externPath
+  SQL.executeNamed
+    conn
+    (SQL.Query "INSERT OR REPLACE INTO ast_modules (module_name, path) VALUES (:module_name, :path)")
+    [ ":module_name" := P.runModuleName (efModuleName extern),
+      ":path" := path
+    ]
+  where
+    externPath = P.spanName (P.efSourceSpan extern)
+
 indexAstDeclFromExternDecl :: (MonadIO m) => Connection -> P.ModuleName -> [P.ExternsDeclaration] -> P.ExternsDeclaration -> m ()
 indexAstDeclFromExternDecl conn moduleName' moduleDecls externDecl = liftIO do
   let ss = case externDecl of

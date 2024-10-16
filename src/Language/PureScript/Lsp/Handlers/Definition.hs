@@ -37,6 +37,7 @@ definitionHandler = Server.requestHandler Message.SMethod_TextDocumentDefinition
 
       respondWithDeclInOtherModule :: Maybe LspNameType -> P.ModuleName -> Text -> HandlerM ()
       respondWithDeclInOtherModule nameType modName ident = do
+        debugLsp $ "respondWithDeclInOtherModule: " <> show nameType <> " " <> show modName <> " " <> show ident
         declSpans <- getAstDeclarationLocationInModule nameType modName ident
         debugLsp $ "SourceSpans: " <> show declSpans
         forLsp (head declSpans) $ \sourceSpan ->
