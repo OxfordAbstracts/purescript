@@ -11,15 +11,16 @@ import Language.PureScript qualified as P
 import Language.PureScript.AST.SourcePos (nullSourceSpan)
 import Language.PureScript.Lsp.Cache (selectExternPathFromModuleName)
 import Language.PureScript.Lsp.Cache.Query (getAstDeclarationLocationInModule)
+import Language.PureScript.Lsp.Log (debugLsp)
 import Language.PureScript.Lsp.Monad (HandlerM)
 import Language.PureScript.Lsp.NameType (LspNameType (..))
 import Language.PureScript.Lsp.Print (printName)
 import Language.PureScript.Lsp.State (cachedRebuild)
 import Language.PureScript.Lsp.Types (OpenFile (..))
-import Language.PureScript.Lsp.Util (declAtLine, posInSpan, sourcePosToPosition)
+import Language.PureScript.Lsp.Util (declsAtLine, posInSpan, sourcePosToPosition)
 import Language.PureScript.Types (getAnnForType)
 import Protolude hiding (to)
-import Language.PureScript.Lsp.Log (debugLsp)
+import Data.Text qualified as T
 
 definitionHandler :: Server.Handlers HandlerM
 definitionHandler = Server.requestHandler Message.SMethod_TextDocumentDefinition $ \req res -> do
@@ -59,10 +60,9 @@ definitionHandler = Server.requestHandler Message.SMethod_TextDocumentDefinition
                 nameType = getImportRefNameType import'
             debugLsp $ "import: " <> show import'
             respondWithDeclInOtherModule nameType importedModuleName (printName name)
-          _ -> do 
+          _ -> do
             debugLsp $ "respondWithModule importedModuleName: " <> show importedModuleName
             respondWithModule ss importedModuleName
-
 
   forLsp filePathMb \filePath -> do
     cacheOpenMb <- cachedRebuild filePath
@@ -74,20 +74,26 @@ definitionHandler = Server.requestHandler Message.SMethod_TextDocumentDefinition
 
           srcPosLine = fromIntegral _line + 1
 
-          declAtPos =
+          declsAtPos =
             withoutPrim
-              & declAtLine srcPosLine
+              & declsAtLine srcPosLine
 
-
-
-      forLsp declAtPos $ \decl -> do
+      forLsp (head declsAtPos) $ \decl -> do
         case decl of
-          P.ImportDeclaration (ss, _) importedModuleName importType _ -> do 
+          P.ImportDeclaration (ss, _) importedModuleName importType _ -> do
             debugLsp $ "ImportDeclaration iomportedModuleName: " <> show importedModuleName
             case importType of
               P.Implicit -> respondWithModule ss importedModuleName
               P.Explicit imports -> respondWithImports ss importedModuleName imports
               P.Hiding imports -> respondWithImports ss importedModuleName imports
+          P.TypeInstanceDeclaration _ (P.SourceSpan span start end , _) _ _ _ _ (P.Qualified (P.ByModuleName modName) className) _ _ 
+               | posInSpan pos classNameSS -> respondWithDeclInOtherModule (Just TyClassNameType) modName classNameTxt
+            where 
+              
+              classNameSS = P.SourceSpan span start (P.SourcePos (P.sourcePosLine end) (P.sourcePosColumn start + T.length classNameTxt))
+
+              classNameTxt :: Text 
+              classNameTxt = P.runProperName className
           _ -> do
             let respondWithTypeLocation = do
                   let tipes =
@@ -95,11 +101,10 @@ definitionHandler = Server.requestHandler Message.SMethod_TextDocumentDefinition
                           filter (not . isNullSourceTypeSpan) $
                             getTypesAtPos pos decl
 
-                      onOneLine = filter isSingleLine tipes
-                  case onOneLine of
+                  case tipes of
                     [] -> nullRes
                     _ -> do
-                      let smallest = minimumBy (comparing getTypeColumns) onOneLine
+                      let smallest = minimumBy (comparing getTypeRowsAndColumns) tipes
                       case smallest of
                         P.TypeConstructor _ (P.Qualified (P.BySourcePos srcPos) _) | srcPos /= P.SourcePos 0 0 -> posRes filePath srcPos
                         P.TypeConstructor _ (P.Qualified (P.ByModuleName modName) ident) -> do
@@ -116,9 +121,9 @@ definitionHandler = Server.requestHandler Message.SMethod_TextDocumentDefinition
                           _ -> nullRes
                         _ -> nullRes
 
-                exprsAtPos = getExprsAtPos pos decl
+                exprsAtPos = getExprsAtPos pos =<< declsAtPos
             debugLsp $ "exprsAtPos: " <> show (length exprsAtPos)
-            case head exprsAtPos of
+            case smallestExpr exprsAtPos of
               Just expr -> do
                 case expr of
                   P.Var _ (P.Qualified (P.BySourcePos srcPos) _) | srcPos /= P.SourcePos 0 0 -> do
@@ -136,14 +141,33 @@ definitionHandler = Server.requestHandler Message.SMethod_TextDocumentDefinition
                   _ -> respondWithTypeLocation
               _ -> respondWithTypeLocation
 
+smallestExpr :: [P.Expr] -> Maybe P.Expr
+smallestExpr [] = Nothing
+smallestExpr es = Just $ minimumBy (comparing (fromMaybe (maxInt, maxInt) . getExprRowsAndColumns)) es
+
+getExprRowsAndColumns :: P.Expr -> Maybe (Int, Int)
+getExprRowsAndColumns expr =
+  P.exprSourceSpan expr <&> \ss ->
+    let spanRowStart = P.sourcePosLine (P.spanStart ss)
+        spanRowEnd = P.sourcePosLine (P.spanEnd ss)
+        spanColStart = P.sourcePosColumn (P.spanStart ss)
+        spanColEnd = P.sourcePosColumn (P.spanEnd ss)
+     in (spanRowEnd - spanRowStart, spanColEnd - spanColStart)
+
 isNullSourceTypeSpan :: P.SourceType -> Bool
 isNullSourceTypeSpan st = getAnnForType st == (nullSourceSpan, [])
 
 isSingleLine :: P.SourceType -> Bool
 isSingleLine st = P.sourcePosLine (P.spanStart (fst (getAnnForType st))) == P.sourcePosLine (P.spanEnd (fst (getAnnForType st)))
 
+getTypeRowsAndColumns :: P.SourceType -> (Int, Int)
+getTypeRowsAndColumns st = (getTypeRows st, getTypeColumns st)
+
 getTypeColumns :: P.SourceType -> Int
 getTypeColumns st = P.sourcePosColumn (P.spanEnd (fst (getAnnForType st))) - P.sourcePosColumn (P.spanStart (fst (getAnnForType st)))
+
+getTypeRows :: P.SourceType -> Int
+getTypeRows st = P.sourcePosLine (P.spanEnd (fst (getAnnForType st))) - P.sourcePosLine (P.spanStart (fst (getAnnForType st)))
 
 fromPrim :: P.SourceType -> Bool
 fromPrim st = case st of
@@ -205,7 +229,7 @@ getTypesAtPos pos decl = P.everythingOnTypes (<>) getAtPos =<< (view _1 $ P.accu
     getAtPos :: P.SourceType -> [P.SourceType]
     getAtPos st = [st | posInSpan pos (fst $ getAnnForType st)]
 
-findDeclRefAtPos :: Foldable t => Types.Position -> t P.DeclarationRef -> Maybe P.DeclarationRef
+findDeclRefAtPos :: (Foldable t) => Types.Position -> t P.DeclarationRef -> Maybe P.DeclarationRef
 findDeclRefAtPos pos imports = find (posInSpan pos . P.declRefSourceSpan) imports
 
 getImportRefNameType :: P.DeclarationRef -> Maybe LspNameType

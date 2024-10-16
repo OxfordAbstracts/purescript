@@ -78,6 +78,7 @@ getAstDeclarationsStartingWith moduleName' prefix = do
              \INNER JOIN available_srcs on ast_modules.path = available_srcs.path \
              \WHERE (ast_declarations.module_name = :module_name OR ast_declarations.exported) \
              \AND instr(name, :prefix) == 1 \
+             \AND generated = false \
              \ORDER BY name ASC \
              \LIMIT :limit \
              \OFFSET :offset"
@@ -108,6 +109,7 @@ getAstDeclarationsStartingWithAndSearchingModuleNames moduleName' moduleNameCont
              \WHERE (ast_declarations.module_name = :module_name OR ast_declarations.exported) \
              \AND instr(ast_declarations.module_name, :module_name_contains) <> 0 \
              \AND instr(name, :prefix) == 1 \
+             \AND generated = false \
              \ORDER BY name ASC \
              \LIMIT :limit \
              \OFFSET :offset"
@@ -137,6 +139,7 @@ getAstDeclarationsStartingWithOnlyInModule moduleName' prefix = do
              \INNER JOIN available_srcs on ast_modules.path = available_srcs.path \
              \WHERE ast_declarations.module_name = :module_name \
              \AND instr(name, :prefix) == 1 \
+             \AND generated = false \
              \ORDER BY name ASC \
              \LIMIT :limit \
              \OFFSET :offset"

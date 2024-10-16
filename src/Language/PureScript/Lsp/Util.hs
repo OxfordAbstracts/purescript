@@ -154,14 +154,15 @@ declSourceSpanWithExpr d = maybe span (widenSourceSpan span) exprSpan
          in foldl' go Nothing valdeclExpression
       _ -> Nothing
 
-declAtLine :: Int -> [P.Declaration] -> Maybe P.Declaration
-declAtLine l = go . sortBy (comparing declStartLine)
+declsAtLine :: Int -> [P.Declaration] -> [P.Declaration]
+declsAtLine l = go . sortBy (comparing declStartLine)
   where
+    go (d : ds) | declStartLine d == l = d : go ds
     go (d : d' : ds)
-      | declStartLine d <= l && declStartLine d' > l = Just d
+      | declStartLine d <= l && declStartLine d' > l =  d : go (d' : ds)
       | otherwise = go (d' : ds)
-    go [d] | declStartLine d <= l = Just d
-    go _ = Nothing
+    go [d] | declStartLine d <= l = [ d]
+    go _ = []
 
 declStartLine :: P.Declaration -> Int
 declStartLine = P.sourcePosLine . AST.spanStart . P.declSourceSpan

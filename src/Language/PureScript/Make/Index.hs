@@ -5,10 +5,12 @@ module Language.PureScript.Make.Index where
 
 import Codec.Serialise (serialise)
 import Data.Set qualified as Set
+import Data.Text qualified as T
 import Database.SQLite.Simple (Connection, NamedParam ((:=)))
 import Database.SQLite.Simple qualified as SQL
 import Distribution.Compat.Directory (makeAbsolute)
 import Language.PureScript.AST qualified as P
+import Language.PureScript.AST.Declarations qualified as E
 import Language.PureScript.Externs (ExternsFile (efModuleName))
 import Language.PureScript.Externs qualified as P
 import Language.PureScript.Lsp.NameType (externDeclNameType, lspNameType)
@@ -48,16 +50,17 @@ indexAstModule conn m@(P.Module _ss _comments moduleName' decls _exportRefs) ext
         end = P.spanEnd ss
         name = P.declName decl
         nameType = name <&> lspNameType
+        printedType = printDeclarationType decl
     SQL.executeNamed
       conn
       ( SQL.Query
           "INSERT INTO ast_declarations \
-          \         (module_name, name, printed_type, name_type, start_line, end_line, start_col, end_col, lines, cols, exported) \
-          \ VALUES (:module_name, :name, :printed_type, :name_type, :start_line, :end_line, :start_col, :end_col, :lines, :cols, :exported)"
+          \         (module_name, name, printed_type, name_type, start_line, end_line, start_col, end_col, lines, cols, exported, generated) \
+          \ VALUES (:module_name, :name, :printed_type, :name_type, :start_line, :end_line, :start_col, :end_col, :lines, :cols, :exported, :generated)"
       )
       [ ":module_name" := P.runModuleName moduleName',
         ":name" := printName <$> name,
-        ":printed_type" := printDeclarationType decl,
+        ":printed_type" := printedType,
         ":name_type" := nameType,
         ":start_line" := P.sourcePosLine start,
         ":end_line" := P.sourcePosLine end,
@@ -65,7 +68,8 @@ indexAstModule conn m@(P.Module _ss _comments moduleName' decls _exportRefs) ext
         ":end_col" := P.sourcePosColumn end,
         ":lines" := P.sourcePosLine end - P.sourcePosLine start,
         ":cols" := P.sourcePosColumn end - P.sourcePosColumn start,
-        ":exported" := Set.member decl exports
+        ":exported" := Set.member decl exports,
+        ":generated" := "$Dict" `T.isInfixOf` printedType
       ]
   where
     externPath = P.spanName (P.efSourceSpan extern)
@@ -82,8 +86,8 @@ indexAstModuleFromExtern conn extern = liftIO do
   where
     externPath = P.spanName (P.efSourceSpan extern)
 
-indexAstDeclFromExternDecl :: (MonadIO m) => Connection -> P.ModuleName -> [P.ExternsDeclaration] -> P.ExternsDeclaration -> m ()
-indexAstDeclFromExternDecl conn moduleName' moduleDecls externDecl = liftIO do
+indexAstDeclFromExternDecl :: (MonadIO m) => Connection ->  ExternsFile -> P.ExternsDeclaration -> m ()
+indexAstDeclFromExternDecl conn extern externDecl = liftIO do
   let ss = case externDecl of
         P.EDDataConstructor {..}
           | Just typeCtr <- find (isTypeOfName edDataCtorTypeCtor) moduleDecls -> efDeclSourceSpan typeCtr
@@ -96,8 +100,8 @@ indexAstDeclFromExternDecl conn moduleName' moduleDecls externDecl = liftIO do
     conn
     ( SQL.Query
         "INSERT INTO ast_declarations \
-        \         (module_name, name, printed_type, name_type, start_line, end_line, start_col, end_col, lines, cols, exported) \
-        \ VALUES (:module_name, :name, :printed_type, :name_type, :start_line, :end_line, :start_col, :end_col, :lines, :cols, :exported)"
+        \         (module_name, name, printed_type, name_type, start_line, end_line, start_col, end_col, lines, cols, exported, generated) \
+        \ VALUES (:module_name, :name, :printed_type, :name_type, :start_line, :end_line, :start_col, :end_col, :lines, :cols, :exported, :generated)"
     )
     [ ":module_name" := P.runModuleName moduleName',
       ":name" := printEfDeclName externDecl,
@@ -109,12 +113,39 @@ indexAstDeclFromExternDecl conn moduleName' moduleDecls externDecl = liftIO do
       ":end_col" := P.sourcePosColumn end,
       ":lines" := P.sourcePosLine end - P.sourcePosLine start,
       ":cols" := P.sourcePosColumn end - P.sourcePosColumn start,
-      ":exported" := False
+      ":exported" := Set.member declName exportedNames,
+      ":generated" := "$Dict" `T.isInfixOf` printedType
     ]
   where
     isTypeOfName :: P.ProperName 'P.TypeName -> P.ExternsDeclaration -> Bool
     isTypeOfName name P.EDType {..} = edTypeName == name
     isTypeOfName _ _ = False
+
+    moduleName' = efModuleName extern
+
+    moduleDecls = P.efDeclarations extern
+
+    exportedNames :: Set P.Name
+    exportedNames =
+      Set.fromList $
+        P.efExports extern >>= \case
+          E.TypeClassRef _ name -> [P.TyClassName name]
+          E.TypeRef _ name _ -> [P.TyName name]
+          E.ValueRef _ name -> [P.IdentName name]
+          E.TypeOpRef _ name -> [P.TyOpName name]
+          E.ValueOpRef _ name -> [P.ValOpName name]
+          E.TypeInstanceRef _ name _ -> [P.IdentName name]
+          E.ModuleRef _ name -> [P.ModName name]
+          E.ReExportRef _ _ _ -> []
+
+    declName :: P.Name 
+    declName = case externDecl of
+      P.EDType {..} -> P.TyName edTypeName
+      P.EDTypeSynonym {..} -> P.TyName edTypeSynonymName
+      P.EDDataConstructor {..} -> P.DctorName edDataCtorName
+      P.EDValue {..} -> P.IdentName edValueName
+      P.EDClass {..} -> P.TyClassName edClassName
+      P.EDInstance {..} -> P.IdentName edInstanceName
 
 addExternIndexing :: (MonadIO m) => Connection -> P.MakeActions m -> P.MakeActions m
 addExternIndexing conn ma =
@@ -159,10 +190,11 @@ initDb conn = do
   SQL.execute_ conn "pragma journal_mode=wal;"
   SQL.execute_ conn "pragma foreign_keys = ON;"
   SQL.execute_ conn "CREATE TABLE IF NOT EXISTS ast_modules (module_name TEXT, path TEXT, UNIQUE(module_name) on conflict replace, UNIQUE(path) on conflict replace)"
-  SQL.execute_ conn 
-   "CREATE TABLE IF NOT EXISTS ast_declarations \
-   \(module_name TEXT references ast_modules(module_name) ON DELETE CASCADE, name TEXT, name_type TEXT, printed_type TEXT, start_line INTEGER, end_line INTEGER, start_col INTEGER, end_col INTEGER, lines INTEGER, cols INTEGER, exported BOOLEAN, \
-   \UNIQUE(module_name, name_type, name) on conflict replace)"
+  SQL.execute_
+    conn
+    "CREATE TABLE IF NOT EXISTS ast_declarations \
+    \(module_name TEXT references ast_modules(module_name) ON DELETE CASCADE, name TEXT, name_type TEXT, printed_type TEXT, start_line INTEGER, end_line INTEGER, start_col INTEGER, end_col INTEGER, lines INTEGER, cols INTEGER, exported BOOLEAN, generated BOOLEAN, \
+    \UNIQUE(module_name, name_type, name) on conflict replace)"
   SQL.execute_ conn "CREATE TABLE IF NOT EXISTS externs (path TEXT PRIMARY KEY, ef_version TEXT, value BLOB, module_name TEXT, UNIQUE(path) on conflict replace, UNIQUE(module_name) on conflict replace)"
   SQL.execute_ conn "CREATE TABLE IF NOT EXISTS ef_imports (module_name TEXT references externs(module_name) ON DELETE CASCADE, imported_module TEXT, import_type TEXT, imported_as TEXT, value BLOB)"
   SQL.execute_ conn "CREATE TABLE IF NOT EXISTS available_srcs (path TEXT PRIMARY KEY NOT NULL, UNIQUE(path) on conflict replace)"

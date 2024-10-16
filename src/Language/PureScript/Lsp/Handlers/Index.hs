@@ -45,7 +45,7 @@ indexHandler =
       conn <- getDbConn
       indexExtern conn ef
       indexAstModuleFromExtern conn ef
-      for_ (P.efDeclarations ef) (indexAstDeclFromExternDecl conn (P.efModuleName ef) (P.efDeclarations ef))
+      for_ (P.efDeclarations ef) (indexAstDeclFromExternDecl conn ef)
 
 -- \| Finds all the externs inside the output folder and returns the
 -- corresponding module names
