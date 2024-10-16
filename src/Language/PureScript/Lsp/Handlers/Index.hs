@@ -10,18 +10,18 @@ import Language.LSP.Server (MonadLsp, getConfig)
 import Language.LSP.Server qualified as Server
 import Language.PureScript (ExternsFile)
 import Language.PureScript qualified as P
-import Language.PureScript.Lsp.Log (errorLsp)
+import Language.PureScript.Lsp.Handlers.Build (buildForLsp)
+import Language.PureScript.Lsp.Handlers.DeleteOutput (deleteOutput)
+import Language.PureScript.Lsp.Log (errorLsp, logPerfStandard)
 import Language.PureScript.Lsp.Monad (HandlerM)
 import Language.PureScript.Lsp.ServerConfig (ServerConfig (outputPath))
+import Language.PureScript.Lsp.State (getDbConn)
 import Language.PureScript.Lsp.Types (LspEnvironment)
-import Language.PureScript.Make.Index (indexAstDeclFromExternDecl, indexExtern, initDb, indexAstModuleFromExtern)
+import Language.PureScript.Make.Index (indexAstDeclFromExternDecl, indexAstModuleFromExtern, indexExtern, initDb)
 import Language.PureScript.Make.Monad (readExternsFile)
 import Protolude hiding (to)
 import System.Directory (doesFileExist, getDirectoryContents)
 import System.FilePath ((</>))
-import Language.PureScript.Lsp.Handlers.DeleteOutput (deleteOutput)
-import Language.PureScript.Lsp.Handlers.Build (buildForLsp)
-import Language.PureScript.Lsp.State (getDbConn)
 
 indexHandler :: Server.Handlers HandlerM
 indexHandler =
@@ -29,8 +29,8 @@ indexHandler =
     [ Server.requestHandler (Message.SMethod_CustomMethod $ Proxy @"index-fast") $ \_req res -> do
         conn <- getDbConn
         liftIO $ initDb conn
-        externs <- findAvailableExterns
-        for_ externs indexExternAndDecls
+        externs <- logPerfStandard "findAvailableExterns" findAvailableExterns
+        logPerfStandard "insert externs" $ for_ externs indexExternAndDecls
         res $ Right A.Null,
       Server.requestHandler (Message.SMethod_CustomMethod $ Proxy @"index-full") $ \_req res -> do
         conn <- getDbConn
