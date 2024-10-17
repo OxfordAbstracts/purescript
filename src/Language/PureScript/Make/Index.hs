@@ -28,7 +28,7 @@ addAllIndexing conn ma =
 addAstModuleIndexing :: (MonadIO m) => Connection -> P.MakeActions m -> P.MakeActions m
 addAstModuleIndexing conn ma =
   ma
-    { P.codegen = \prevEnv env astM m docs ext -> lift (indexAstModule conn astM ext) <* P.codegen ma prevEnv env astM m docs ext
+    { P.codegen = \prevEnv astM m docs ext -> lift (indexAstModule conn astM ext) <* P.codegen ma prevEnv astM m docs ext
     }
 
 indexAstModule :: (MonadIO m) => Connection -> P.Module -> ExternsFile -> m ()
@@ -150,7 +150,7 @@ indexAstDeclFromExternDecl conn extern externDecl = liftIO do
 addExternIndexing :: (MonadIO m) => Connection -> P.MakeActions m -> P.MakeActions m
 addExternIndexing conn ma =
   ma
-    { P.codegen = \prevEnv env astM m docs ext -> lift (indexExtern conn ext) <* P.codegen ma prevEnv env astM m docs ext
+    { P.codegen = \prevEnv astM m docs ext -> lift (indexExtern conn ext) <* P.codegen ma prevEnv astM m docs ext
     }
 
 indexExtern :: (MonadIO m) => Connection -> ExternsFile -> m ()

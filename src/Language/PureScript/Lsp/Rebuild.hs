@@ -124,5 +124,5 @@ shushProgress ma =
 addRebuildCaching :: TVar Language.PureScript.Lsp.Types.LspState -> Int -> [ExternsFile] -> P.MakeActions P.Make -> P.MakeActions P.Make
 addRebuildCaching stVar maxCache deps ma =
   ma
-    { P.codegen = \prevEnv env astM m docs ext -> lift (liftIO $ cacheRebuild' stVar maxCache ext deps prevEnv astM) <* P.codegen ma prevEnv env astM m docs ext
+    { P.codegen = \prevEnv astM m docs ext -> lift (liftIO $ cacheRebuild' stVar maxCache ext deps prevEnv astM) <* P.codegen ma prevEnv astM m docs ext
     }

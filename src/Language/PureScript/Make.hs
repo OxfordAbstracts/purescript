@@ -153,7 +153,7 @@ rebuildModuleWithProvidedEnv MakeActions {..} exEnv env externs m@(Module _ _ mo
               ++ prettyPrintMultipleErrors defaultPPEOptions errs
         Right d -> d
 
-  evalSupplyT nextVar'' $ codegen env env' mod' renamed docs exts
+  evalSupplyT nextVar'' $ codegen env mod' renamed docs exts
   return exts
 
 -- It may seem more obvious to write `docs <- Docs.convertModule m env' here,
