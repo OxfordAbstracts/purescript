@@ -3,6 +3,7 @@
 
 module Language.PureScript.Lsp.Handlers.Index (indexHandler) where
 
+import Control.Concurrent.Async.Lifted (mapConcurrently, forConcurrently_)
 import Data.Aeson qualified as A
 import Data.Text qualified as T
 import Language.LSP.Protocol.Message qualified as Message
@@ -22,6 +23,7 @@ import Language.PureScript.Make.Monad (readExternsFile)
 import Protolude hiding (to)
 import System.Directory (doesFileExist, getDirectoryContents)
 import System.FilePath ((</>))
+import Control.Monad.Trans.Control (MonadBaseControl)
 
 indexHandler :: Server.Handlers HandlerM
 indexHandler =
@@ -30,7 +32,7 @@ indexHandler =
         conn <- getDbConn
         liftIO $ initDb conn
         externs <- logPerfStandard "findAvailableExterns" findAvailableExterns
-        logPerfStandard "insert externs" $ for_ externs indexExternAndDecls
+        logPerfStandard "insert externs" $ forConcurrently_ externs indexExternAndDecls
         res $ Right A.Null,
       Server.requestHandler (Message.SMethod_CustomMethod $ Proxy @"index-full") $ \_req res -> do
         conn <- getDbConn
@@ -52,6 +54,7 @@ indexHandler =
 findAvailableExterns ::
   forall m.
   ( MonadLsp ServerConfig m,
+    MonadBaseControl IO m,
     MonadReader LspEnvironment m
   ) =>
   m [ExternsFile]
@@ -59,7 +62,7 @@ findAvailableExterns = do
   oDir <- outputPath <$> getConfig
   directories <- liftIO $ getDirectoryContents oDir
   moduleNames <- liftIO $ filterM (containsExterns oDir) directories
-  catMaybes <$> for moduleNames (readExtern oDir)
+  catMaybes <$> mapConcurrently (readExtern oDir) moduleNames
   where
     -- Takes the output directory and a filepath like "Data.Array" and
     -- looks up, whether that folder contains an externs file
