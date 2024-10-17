@@ -16,14 +16,14 @@ import Language.LSP.Protocol.Types qualified as Types
 import Language.LSP.Server (MonadLsp (getLspEnv), mapHandlers)
 import Language.LSP.Server qualified as Server
 import Language.PureScript.DB (mkDbPath)
+import Language.PureScript.Lsp.Cache (updateAvailableSrcs)
 import Language.PureScript.Lsp.Handlers (handlers)
 import Language.PureScript.Lsp.Log (debugLsp, errorLsp, logPerfStandard, warnLsp)
-import Language.PureScript.Lsp.Monad (HandlerM)
-import Language.PureScript.Lsp.ServerConfig (ServerConfig (outputPath, globs), defaultConfig)
-import Language.PureScript.Lsp.State (addRunningRequest, getDbPath, putNewEnv, removeRunningRequest, getPreviousConfig, putPreviousConfig)
+import Language.PureScript.Lsp.Monad (HandlerM, runHandlerM)
+import Language.PureScript.Lsp.ServerConfig (ServerConfig (globs, outputPath), defaultConfig)
+import Language.PureScript.Lsp.State (addRunningRequest, getDbPath, getPreviousConfig, putNewEnv, putPreviousConfig, removeRunningRequest)
 import Language.PureScript.Lsp.Types (LspEnvironment)
 import Protolude hiding (to)
-import Language.PureScript.Lsp.Cache (updateAvailableSrcs)
 
 main :: LspEnvironment -> IO Int
 main lspEnv = do
@@ -50,7 +50,7 @@ serverDefinition lspEnv =
       staticHandlers = const (lspHandlers lspEnv),
       interpretHandler = \serverEnv ->
         Server.Iso
-          ( Server.runLspT serverEnv . flip runReaderT lspEnv
+          ( runHandlerM serverEnv lspEnv
           )
           liftIO,
       options = lspOptions
@@ -115,4 +115,4 @@ lspHandlers lspEnv = mapHandlers goReq goNotification handlers
                 errorLsp $ "Notification failed. Method: " <> methodText <> ". Error: " <> show e
           _ -> pure ()
 
-    runHandler env a = Server.runLspT env $ runReaderT a lspEnv
+    runHandler env = runHandlerM env lspEnv
