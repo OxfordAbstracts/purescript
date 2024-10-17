@@ -157,15 +157,25 @@ declSourceSpanWithExpr d = maybe span (widenSourceSpan span) exprSpan
 declsAtLine :: Int -> [P.Declaration] -> [P.Declaration]
 declsAtLine l = go . sortBy (comparing declStartLine)
   where
-    go (d : ds) | declStartLine d == l = d : go ds
+    go (d : ds) | declStartLine d <= l && declEndLine d >= l = d : go ds
     go (d : d' : ds)
-      | declStartLine d <= l && declStartLine d' > l =  d : go (d' : ds)
+      | declStartLine d <= l && declStartLine d' > l && unsureEndLine d = d : go (d' : ds)
       | otherwise = go (d' : ds)
-    go [d] | declStartLine d <= l = [ d]
+    go [d] | declStartLine d <= l = [d]
     go _ = []
+
+    unsureEndLine = \case 
+      P.ValueDeclaration{}  -> True
+      P.ExternDeclaration{} -> True
+      P.TypeClassDeclaration {} -> True
+      P.TypeInstanceDeclaration {} -> True
+      _ -> True
 
 declStartLine :: P.Declaration -> Int
 declStartLine = P.sourcePosLine . AST.spanStart . P.declSourceSpan
+
+declEndLine :: P.Declaration -> Int
+declEndLine = P.sourcePosLine . AST.spanEnd . P.declSourceSpan
 
 findExprSourceSpan :: P.Expr -> Maybe AST.SourceSpan
 findExprSourceSpan = goExpr
