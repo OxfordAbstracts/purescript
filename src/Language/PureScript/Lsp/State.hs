@@ -4,6 +4,8 @@ module Language.PureScript.Lsp.State
   ( getDbConn,
     cacheRebuild,
     cacheRebuild',
+    updateCachedModule,
+    updateCachedModule',
     cachedRebuild,
     cacheDependencies,
     clearCache,
@@ -64,6 +66,21 @@ cacheRebuild' st maxFiles ef deps prevEnv module' = atomically . modifyTVar st $
     }
   where
     fp = P.spanName $ efSourceSpan ef
+
+updateCachedModule :: (MonadIO m, MonadReader LspEnvironment m) => P.Module -> m ()
+updateCachedModule module' = do
+  st <- lspStateVar <$> ask
+  updateCachedModule' st module'
+
+updateCachedModule' :: (MonadIO m) => TVar LspState -> P.Module -> m ()
+updateCachedModule' st module' = liftIO . atomically $ modifyTVar st $ \x ->
+  x
+    { openFiles =
+        openFiles x <&> \(fp, ofile) ->
+          if ofModuleName ofile == P.getModuleName module'
+            then (fp, ofile {ofModule = module'})
+            else (fp, ofile)
+    }
 
 cachedRebuild :: (MonadIO m, MonadReader LspEnvironment m) => FilePath -> m (Maybe OpenFile)
 cachedRebuild fp = do
@@ -183,7 +200,7 @@ cancelRequest requestId = do
       InR t -> Right t
 
 getDbPath :: (MonadReader LspEnvironment m, MonadIO m) => m FilePath
-getDbPath = do 
+getDbPath = do
   env <- ask
   liftIO $ fst <$> readTVarIO (lspDbConnectionVar env)
 

@@ -19,7 +19,7 @@ import Language.PureScript.Lsp.Cache (selectDependencies)
 import Language.PureScript.Lsp.Log (debugLsp, logPerfStandard, warnLsp)
 import Language.PureScript.Lsp.ReadFile (lspReadFileText)
 import Language.PureScript.Lsp.ServerConfig (ServerConfig (outputPath), getMaxFilesInCache)
-import Language.PureScript.Lsp.State (addExternToExportEnv, addExternsToExportEnv, buildExportEnvCache, cacheRebuild', cachedRebuild, setExportEnvCache, cacheDependencies, getDbConn)
+import Language.PureScript.Lsp.State (addExternToExportEnv, addExternsToExportEnv, buildExportEnvCache, cacheRebuild', cachedRebuild, setExportEnvCache, cacheDependencies, getDbConn, updateCachedModule, updateCachedModule')
 import Language.PureScript.Lsp.Types (LspEnvironment (lspStateVar), LspState, OpenFile (OpenFile))
 import Language.PureScript.Make qualified as P
 import Language.PureScript.Make.Index (addAllIndexing)
@@ -43,6 +43,7 @@ rebuildFile uri = logPerfStandard "Rebuild file " do
     Left parseError ->
       pure $ RebuildError $ CST.toMultipleErrors fp parseError
     Right (pwarnings, m) -> do
+      updateCachedModule m
       let moduleName = P.getModuleName m
       let filePathMap = M.singleton moduleName (Left P.RebuildAlways)
       outputDirectory <- outputPath <$> getConfig
@@ -63,7 +64,7 @@ rebuildFile uri = logPerfStandard "Rebuild file " do
           for_ externsMb (cacheDependencies moduleName)
           res <- logPerfStandard "Rebuild Module with provided env" $ liftIO $ do
             P.runMake (P.defaultOptions {P.optionsCodegenTargets = codegenTargets}) do
-              newExtern <- P.rebuildModuleWithProvidedEnv (makeEnv foreigns externs) exportEnv env externs m Nothing
+              newExtern <- P.rebuildModuleWithProvidedEnv (Just $ updateCachedModule' stVar) (makeEnv foreigns externs) exportEnv env externs m Nothing
               updateCacheDb codegenTargets outputDirectory fp Nothing moduleName
               pure newExtern
           handleRebuildResult fp pwarnings res

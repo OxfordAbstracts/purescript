@@ -23,7 +23,7 @@ import Control.Monad.Supply (evalSupplyT, runSupply, runSupplyT)
 import Control.Monad.Trans.Control (MonadBaseControl (..))
 import Control.Monad.Trans.State (runStateT)
 import Control.Monad.Writer.Class (MonadWriter (..), censor)
-import Control.Monad.Writer.Strict (runWriterT)
+import Control.Monad.Writer.Strict (runWriterT, MonadTrans (lift))
 import Data.Foldable (fold, for_)
 import Data.Function (on)
 import Data.List (foldl', sortOn)
@@ -91,11 +91,12 @@ rebuildModuleWithIndex ::
   m ExternsFile
 rebuildModuleWithIndex act exEnv externs m moduleIndex = do
   let env = foldl' (flip applyExternsFileToEnvironment) initEnvironment externs
-  rebuildModuleWithProvidedEnv act exEnv env externs m moduleIndex
+  rebuildModuleWithProvidedEnv Nothing act exEnv env externs m moduleIndex
 
 rebuildModuleWithProvidedEnv ::
   forall m.
   (MonadError MultipleErrors m, MonadWriter MultipleErrors m) =>
+  Maybe (Module -> m ()) ->
   MakeActions m ->
   Env ->
   Environment ->
@@ -103,12 +104,13 @@ rebuildModuleWithProvidedEnv ::
   Module ->
   Maybe (Int, Int) ->
   m ExternsFile
-rebuildModuleWithProvidedEnv MakeActions {..} exEnv env externs m@(Module _ _ moduleName _ _) moduleIndex = do
+rebuildModuleWithProvidedEnv onDesugared MakeActions {..} exEnv env externs m@(Module _ _ moduleName _ _) moduleIndex = do
   progress $ CompilingModule moduleName moduleIndex
   let withPrim = importPrim m
   lint withPrim
   ((Module ss coms _ elaborated exps, env'), nextVar) <- runSupplyT 0 $ do
     (desugared, (exEnv', usedImports)) <- runStateT (desugar externs withPrim) (exEnv, mempty)
+    for_ onDesugared $ lift . \f -> f desugared
     let modulesExports = (\(_, _, exports) -> exports) <$> exEnv'
     (checked, CheckState {..}) <- runStateT (typeCheckModule modulesExports desugared) $ emptyCheckState env
     let usedImports' =
