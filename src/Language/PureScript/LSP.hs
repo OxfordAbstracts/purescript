@@ -7,13 +7,14 @@
 module Language.PureScript.Lsp (main, serverDefinition) where
 
 import Control.Concurrent.Async.Lifted (AsyncCancelled (AsyncCancelled))
+import Control.Concurrent.Async.Lifted qualified as Lifted
 import Control.Monad.IO.Unlift
 import Data.Aeson qualified as A
 import Data.Aeson.Types qualified as A
 import Data.Text qualified as T
 import Language.LSP.Protocol.Message qualified as LSP
 import Language.LSP.Protocol.Types qualified as Types
-import Language.LSP.Server (MonadLsp (getLspEnv), mapHandlers)
+import Language.LSP.Server (mapHandlers)
 import Language.LSP.Server qualified as Server
 import Language.PureScript.DB (mkDbPath)
 import Language.PureScript.Lsp.Cache (updateAvailableSrcs)
@@ -82,13 +83,12 @@ lspHandlers lspEnv = mapHandlers goReq goNotification handlers
             LSP.IdInt i -> Left i
             LSP.IdString t -> Right t
           methodText = T.pack $ LSP.someMethodToMethodString $ LSP.SomeMethod method
-      env <- getLspEnv
       debugLsp methodText
-      logPerfStandard methodText $ liftIO $ do
-        withAsync (runHandler env $ f msg k) \asyncAct -> do
+      logPerfStandard methodText $ do
+        Lifted.withAsync (f msg k) \asyncAct -> do
           addRunningRequest lspEnv reqId asyncAct
-          result <- waitCatch asyncAct
-          runHandler env case result of
+          result <- Lifted.waitCatch asyncAct
+          case result of
             Left e -> do
               case fromException e of
                 Just AsyncCancelled -> do
@@ -103,16 +103,13 @@ lspHandlers lspEnv = mapHandlers goReq goNotification handlers
     goNotification :: forall (a :: LSP.Method LSP.ClientToServer LSP.Notification). Server.Handler HandlerM a -> Server.Handler HandlerM a
     goNotification f msg@(LSP.TNotificationMessage _ method _) = do
       let methodText = T.pack $ LSP.someMethodToMethodString $ LSP.SomeMethod method
-      env <- getLspEnv
-      liftIO $ withAsync (runHandler env $ f msg) \asyncAct -> do
-        result <- waitCatch asyncAct
+      Lifted.withAsync (f msg) \asyncAct -> do
+        result <- Lifted.waitCatch asyncAct
         case result of
           Left e -> do
-            runHandler env case fromException e of
+            case fromException e of
               Just AsyncCancelled -> do
                 warnLsp $ "Notification cancelled. Method: " <> methodText
               _ -> do
                 errorLsp $ "Notification failed. Method: " <> methodText <> ". Error: " <> show e
           _ -> pure ()
-
-    runHandler env = runHandlerM env lspEnv
