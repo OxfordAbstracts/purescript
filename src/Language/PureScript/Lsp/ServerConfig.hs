@@ -20,10 +20,10 @@ data ServerConfig = ServerConfig
   }
   deriving (Show, Eq, Generic, ToJSON, FromJSON)
 
-defaultConfig :: ServerConfig
-defaultConfig  =
+defaultConfig :: FilePath -> ServerConfig
+defaultConfig outputPath =
   ServerConfig
-    { outputPath = "./output",
+    { outputPath = outputPath,
       globs = ["./src/**/*.purs"],
       inputSrcFromFile = Nothing,
       logLevel = LogAll,

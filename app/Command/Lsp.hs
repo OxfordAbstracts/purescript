@@ -31,7 +31,7 @@ command = Opts.helper <*> subcommands
       maybe (pure ()) setCurrentDirectory dir
       putErrLn $ "Starting server with output path: " <> outputPath
       env <- mkEnv outputPath
-      startServer env
+      startServer outputPath env
 
     serverOptions :: Opts.Parser ServerOptions
     serverOptions =
@@ -39,8 +39,8 @@ command = Opts.helper <*> subcommands
         <$> optional (Opts.strOption (Opts.long "directory" `mappend` Opts.short 'd'))
         <*> Opts.strOption (Opts.long "output-directory" `mappend` Opts.value "output/")
 
-    startServer env = do
-      code <- Lsp.main env
+    startServer outputPath env = do
+      code <- Lsp.main outputPath env
       exitWith
         ( case code of
             0 -> ExitSuccess

@@ -28,7 +28,7 @@ mkEnv :: FilePath -> IO LspEnvironment
 mkEnv outputPath = do
   connection <- newTVarIO =<< mkConnection outputPath
   st <- newTVarIO (LspState mempty P.primEnv mempty)
-  prevConfig <- newTVarIO defaultConfig
+  prevConfig <- newTVarIO $ defaultConfig outputPath
   pure $ LspEnvironment connection st prevConfig
 
 emptyState :: LspState

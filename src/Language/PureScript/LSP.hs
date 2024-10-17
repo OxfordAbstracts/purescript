@@ -26,12 +26,12 @@ import Language.PureScript.Lsp.State (addRunningRequest, getDbPath, getPreviousC
 import Language.PureScript.Lsp.Types (LspEnvironment)
 import Protolude hiding (to)
 
-main :: LspEnvironment -> IO Int
-main lspEnv = do
-  Server.runServer $ serverDefinition lspEnv
+main :: FilePath -> LspEnvironment -> IO Int
+main outputPath lspEnv = do
+  Server.runServer $ serverDefinition outputPath lspEnv
 
-serverDefinition :: LspEnvironment -> Server.ServerDefinition ServerConfig
-serverDefinition lspEnv =
+serverDefinition :: FilePath -> LspEnvironment -> Server.ServerDefinition ServerConfig
+serverDefinition initialOutputPath lspEnv =
   Server.ServerDefinition
     { parseConfig = \_current json -> first T.pack $ A.parseEither A.parseJSON json,
       onConfigChange = \newConfig -> do
@@ -45,7 +45,7 @@ serverDefinition lspEnv =
           debugLsp "Globs changed"
           void updateAvailableSrcs
         putPreviousConfig newConfig,
-      defaultConfig = defaultConfig,
+      defaultConfig = defaultConfig initialOutputPath,
       configSection = "purescript-lsp",
       doInitialize = \env _ -> pure (Right env),
       staticHandlers = const (lspHandlers lspEnv),
