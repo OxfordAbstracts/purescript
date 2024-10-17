@@ -1,8 +1,13 @@
-module Language.PureScript.Lsp.Imports where
+module Language.PureScript.Lsp.Imports
+  ( getMatchingImport,
+    addImportToTextEdit,
+    getIdentModuleQualifier,
+    parseModuleNameFromFile,
+  )
+where
 
 import Control.Lens (set)
 import Control.Monad.Catch (MonadThrow)
-import Data.List (init, last)
 import Data.Maybe as Maybe
 import Data.Text qualified as T
 import Data.Text.Utf16.Rope.Mixed qualified as Rope
@@ -11,6 +16,8 @@ import Language.LSP.Protocol.Types as LSP
 import Language.LSP.Server (MonadLsp)
 import Language.PureScript.AST.Declarations qualified as P
 import Language.PureScript.AST.SourcePos (nullSourceSpan)
+import Language.PureScript.CST qualified as CST
+import Language.PureScript.CST.Monad qualified as CSTM
 import Language.PureScript.Ide.Imports (Import (Import), prettyPrintImportSection, sliceImportSection)
 import Language.PureScript.Lsp.Cache.Query (getAstDeclarationInModule)
 import Language.PureScript.Lsp.Log (errorLsp, warnLsp)
@@ -65,10 +72,20 @@ getImportEdits (CompleteItemData path moduleName' importedModuleName name word (
 
 getIdentModuleQualifier :: Text -> Maybe (P.ModuleName, Text)
 getIdentModuleQualifier word =
-  case T.splitOn "." word of
-    [] -> Nothing
-    [_] -> Nothing
-    xs -> Just (P.ModuleName $ T.intercalate "." $ init xs, last xs)
+  case parseRest (parseOne CST.parseExprP) word of
+    Just (CST.ExprIdent _ (CST.QualifiedName _ (Just modName) ident)) ->
+      Just (modName, CST.getIdent ident)
+    _ -> Nothing
+
+parseOne :: CST.Parser a -> CST.Parser a
+parseOne p = CSTM.token CST.TokLayoutStart *> p <* CSTM.token CST.TokLayoutEnd
+
+parseRest :: CST.Parser a -> Text -> Maybe a
+parseRest p =
+  fmap snd
+    . hush
+    . CST.runTokenParser (p <* CSTM.token CST.TokEof)
+    . CST.lexTopLevel
 
 addDeclarationToImports :: P.ModuleName -> P.ModuleName -> Maybe P.ModuleName -> Text -> Maybe LspNameType -> [Import] -> Maybe ([Import], Maybe P.ModuleName)
 addDeclarationToImports moduleName' importedModuleName wordQualifierMb declName nameType imports
@@ -144,9 +161,9 @@ parseModuleNameFromFile ::
   (MonadThrow m, MonadLsp ServerConfig m, MonadReader LspEnvironment m) =>
   NormalizedUri ->
   m (Maybe P.ModuleName)
-parseModuleNameFromFile = parseImportsFromFile >=> \case 
-  Left err -> do 
-    warnLsp $ "Failed to parse module name from file: " <> err
-    pure Nothing
-  Right (mn, _, _, _) -> pure $ Just mn
-
+parseModuleNameFromFile =
+  parseImportsFromFile >=> \case
+    Left err -> do
+      warnLsp $ "Failed to parse module name from file: " <> err
+      pure Nothing
+    Right (mn, _, _, _) -> pure $ Just mn
