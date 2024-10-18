@@ -1,5 +1,3 @@
-{-# LANGUAGE PackageImports #-}
-
 module Language.PureScript.Lsp.Cache where
 
 import Codec.Serialise (deserialise)
@@ -13,7 +11,7 @@ import Language.PureScript.Externs qualified as P
 import Language.PureScript.Glob (PSCGlobs (..), toInputGlobs, warnFileTypeNotFound)
 import Language.PureScript.Ide.Error (IdeError (GeneralError))
 import Language.PureScript.Lsp.DB qualified as DB
-import Language.PureScript.Lsp.Types (LspEnvironment)
+import Language.PureScript.Lsp.Types (LspEnvironment, ExternDependency)
 import Language.PureScript.Names qualified as P
 import Protolude
 import System.Directory (doesDirectoryExist, doesFileExist, getDirectoryContents, makeAbsolute, canonicalizePath)
@@ -30,14 +28,10 @@ selectAllExterns :: (MonadIO m, MonadReader LspEnvironment m) => m [ExternsFile]
 selectAllExterns = do
   DB.query_ (Query "SELECT value FROM externs") <&> fmap (deserialise . fromOnly)
 
-selectDependenciesMap :: (MonadIO m, MonadReader LspEnvironment m) => P.Module -> m (Map P.ModuleName ExternsFile)
-selectDependenciesMap importedModuleNames =
-  Map.fromList . fmap (\ef -> (efModuleName ef, ef)) <$> selectDependencies importedModuleNames
 
-selectDependencies :: (MonadIO m, MonadReader LspEnvironment m) => P.Module -> m [ExternsFile]
+selectDependencies :: (MonadIO m, MonadReader LspEnvironment m) => P.Module -> m [ExternDependency]
 selectDependencies (P.Module _ _ _ decls _) = do
-  res <- DB.queryNamed (Query query') [":module_names" := A.encode (fmap P.runModuleName importedModuleNames)]
-  pure $ deserialise . fromOnly <$> res
+  DB.queryNamed (Query query') [":module_names" := A.encode (fmap P.runModuleName importedModuleNames)]
   where
     query' =
       unlines
@@ -56,7 +50,7 @@ selectDependencies (P.Module _ _ _ decls _) = do
           "module_names as (select distinct(module_name), level",
           "from topo join ef_imports on topo.imported_module = ef_imports.module_name ",
           "order by level desc)",
-          "select value from externs ",
+          "select value, level from externs ",
           "join module_names on externs.module_name = module_names.module_name ",
           "order by level desc, module_names.module_name desc;"
         ]

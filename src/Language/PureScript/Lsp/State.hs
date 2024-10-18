@@ -11,7 +11,7 @@ module Language.PureScript.Lsp.State
     clearCache,
     clearRebuildCache,
     clearExportCache,
-    setExportEnvCache,
+    mergeExportEnvCache,
     removedCachedRebuild,
     buildExportEnvCache,
     addExternToExportEnv,
@@ -40,7 +40,6 @@ import Language.PureScript.DB (mkConnection)
 import Language.PureScript.Environment qualified as P
 import Language.PureScript.Errors qualified as P
 import Language.PureScript.Externs (ExternsFile (..))
-import Language.PureScript.Externs qualified as P
 import Language.PureScript.Lsp.Log (errorLsp)
 import Language.PureScript.Lsp.ServerConfig (ServerConfig, getMaxFilesInCache)
 import Language.PureScript.Lsp.Types
@@ -53,13 +52,13 @@ getDbConn :: (MonadReader LspEnvironment m, MonadIO m) => m Connection
 getDbConn = liftIO . fmap snd . readTVarIO . lspDbConnectionVar =<< ask
 
 -- | Sets rebuild cache to the given ExternsFile
-cacheRebuild :: (MonadReader LspEnvironment m, MonadLsp ServerConfig m) => ExternsFile -> [ExternsFile] -> P.Environment -> P.Module -> m ()
+cacheRebuild :: (MonadReader LspEnvironment m, MonadLsp ServerConfig m) => ExternsFile -> [ExternDependency] -> P.Environment -> P.Module -> m ()
 cacheRebuild ef deps prevEnv module' = do
   st <- lspStateVar <$> ask
   maxFiles <- getMaxFilesInCache
   liftIO $ cacheRebuild' st maxFiles ef deps prevEnv module'
 
-cacheRebuild' :: TVar LspState -> Int -> ExternsFile -> [P.ExternsFile] -> P.Environment -> P.Module -> IO ()
+cacheRebuild' :: TVar LspState -> Int -> ExternsFile -> [ExternDependency] -> P.Environment -> P.Module -> IO ()
 cacheRebuild' st maxFiles ef deps prevEnv module' = atomically . modifyTVar st $ \x ->
   x
     { openFiles = List.take maxFiles $ (fp, OpenFile (efModuleName ef) ef deps prevEnv module') : filter ((/= fp) . fst) (openFiles x)
@@ -89,7 +88,7 @@ cachedRebuild fp = do
     st' <- readTVar st
     pure $ List.lookup fp $ openFiles st'
 
-cacheDependencies :: (MonadReader LspEnvironment m, MonadLsp ServerConfig m) => P.ModuleName -> [ExternsFile] -> m ()
+cacheDependencies :: (MonadReader LspEnvironment m, MonadLsp ServerConfig m) => P.ModuleName -> [ExternDependency] -> m ()
 cacheDependencies moduleName deps = do
   st <- lspStateVar <$> ask
   liftIO . atomically $ modifyTVar st $ \x ->
@@ -139,8 +138,9 @@ buildExportEnvCache module' externs = do
             writeTVar st $ st' {exportEnv = newEnv}
             pure $ Right newEnv
 
-setExportEnvCache :: (MonadIO m, MonadReader LspEnvironment m) => P.Env -> m ()
-setExportEnvCache env = do
+
+mergeExportEnvCache :: (MonadIO m, MonadReader LspEnvironment m) => P.Env -> m ()
+mergeExportEnvCache env = do
   st <- lspStateVar <$> ask
   liftIO . atomically $ modifyTVar st $ \x -> x {exportEnv = env}
 

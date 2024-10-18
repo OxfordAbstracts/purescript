@@ -5,7 +5,7 @@ module Language.PureScript.Lsp.Types where
 import Control.Concurrent.STM (TVar, newTVarIO)
 import Data.Aeson (FromJSON, ToJSON)
 import Data.Aeson qualified as A
-import Database.SQLite.Simple (Connection)
+import Database.SQLite.Simple (Connection, FromRow (fromRow), ToRow (toRow), field)
 import Language.LSP.Protocol.Types (Range)
 import Language.PureScript.DB (mkConnection)
 import Language.PureScript.Environment qualified as P
@@ -17,6 +17,7 @@ import Protolude
 import Language.PureScript.AST qualified as P
 import Language.PureScript.Lsp.ServerConfig (ServerConfig, defaultConfig)
 import Language.PureScript.Lsp.LogLevel (LspLogLevel)
+import Codec.Serialise (deserialise, serialise)
 
 data LspEnvironment = LspEnvironment
   { lspDbConnectionVar :: TVar (FilePath, Connection),
@@ -51,11 +52,24 @@ data LspState = LspState
 data OpenFile = OpenFile
   { ofModuleName :: P.ModuleName,
     ofExternsFile :: P.ExternsFile,
-    ofDependencies :: [P.ExternsFile],
+    ofDependencies :: [ExternDependency],
     ofStartingEnv :: P.Environment,
     ofModule ::  P.Module
   }
   deriving (Show)
+
+  
+data ExternDependency = ExternDependency
+  { edExtern :: P.ExternsFile,
+    edLevel :: Int
+  } deriving (Show)
+
+instance FromRow ExternDependency where
+  fromRow = ExternDependency <$> (deserialise <$> field) <*> field
+
+instance ToRow ExternDependency where
+  toRow (ExternDependency ef level) = toRow (serialise ef, level)
+
 
 data CompleteItemData = CompleteItemData
   { cidPath :: FilePath,
