@@ -1,18 +1,22 @@
 {-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE DeriveAnyClass #-}
 {-# OPTIONS_GHC -Wno-unused-top-binds #-}
+{-# LANGUAGE NumDecimals #-}
 
 -- {-# OPTIONS_GHC -Wno-unused-top-binds #-}
 
 module Language.PureScript.Lsp.Rebuild (RebuildResult (..), rebuildFile, codegenTargets) where
 
 import Control.Category ((>>>))
-import Control.Concurrent.STM (TVar)
+import Control.Concurrent.Lifted (fork, threadDelay)
+import Control.Concurrent.STM (TChan, TVar, newTChan, readTChan, writeTChan)
 import Control.Monad.Catch (MonadThrow (throwM))
+import Control.Monad.Trans.Control (MonadBaseControl)
+import Control.Concurrent.Async.Lifted (race)
 import Data.Map.Lazy qualified as M
 import Data.Set qualified as Set
-import Language.LSP.Protocol.Types (NormalizedUri, fromNormalizedUri, uriToFilePath)
-import Language.LSP.Server (MonadLsp, getConfig)
+import Language.LSP.Protocol.Types (NormalizedUri, ProgressToken, fromNormalizedUri, uriToFilePath)
+import Language.LSP.Server (MonadLsp, ProgressAmount (ProgressAmount), ProgressCancellable (Cancellable), getConfig, withProgress)
 import Language.PureScript (ExternsFile (efModuleName), primEnv)
 import Language.PureScript.AST qualified as P
 import Language.PureScript.CST qualified as CST
@@ -29,45 +33,64 @@ import Language.PureScript.Make.Index (addAllIndexing)
 import Language.PureScript.Names qualified as P
 import Language.PureScript.Options qualified as P
 import Language.PureScript.Sugar.Names qualified as P
-import Protolude hiding (moduleName)
+import Protolude hiding (moduleName, race, race_, threadDelay)
 
 rebuildFile ::
+  forall m.
   ( MonadThrow m,
     MonadReader Language.PureScript.Lsp.Types.LspEnvironment m,
+    MonadBaseControl IO m,
     MonadLsp ServerConfig m
   ) =>
+  Maybe ProgressToken ->
   NormalizedUri ->
   m RebuildResult
-rebuildFile uri = logPerfStandard "Rebuild file " do
-  fp <- case fromNormalizedUri uri & uriToFilePath of
-    Just x -> pure x
-    Nothing -> throwM $ CouldNotConvertUriToFilePath uri
-  input <- lspReadFileText uri
-  case sequence $ CST.parseFromFile fp input of
-    Left parseError ->
-      pure $ RebuildError $ CST.toMultipleErrors fp parseError
-    Right (pwarnings, m) -> do
-      updateCachedModule m
-      let moduleName = P.getModuleName m
-      let filePathMap = M.singleton moduleName (Left P.RebuildAlways)
-      outputDirectory <- outputPath <$> getConfig
-      conn <- getDbConn
-      stVar <- asks lspStateVar
-      maxCache <- getMaxFilesInCache
-      cachedBuild <- cachedRebuild fp
-      let makeEnv :: Map P.ModuleName FilePath -> [ExternDependency] -> P.MakeActions P.Make
-          makeEnv foreigns externs =
-            P.buildMakeActions outputDirectory filePathMap foreigns False
-              & shushProgress
-              & addAllIndexing conn
-              & addRebuildCaching stVar maxCache externs
-      case cachedBuild of
-        Just open -> do
-          rebuildFromOpenFileCache outputDirectory fp pwarnings stVar makeEnv m open
-        Nothing -> do
-          rebuildWithoutCache moduleName makeEnv outputDirectory fp pwarnings m
+rebuildFile progressToken uri =
+  logPerfStandard "Rebuild file " do
+    withProgress "Rebuilding module" progressToken Cancellable \updateProgress -> do
+      fp <- case fromNormalizedUri uri & uriToFilePath of
+        Just x -> pure x
+        Nothing -> throwM $ CouldNotConvertUriToFilePath uri
+      updateProgress $ ProgressAmount Nothing (Just "Reading file")
+      input <- lspReadFileText uri
+      case sequence $ CST.parseFromFile fp input of
+        Left parseError ->
+          pure $ RebuildError $ CST.toMultipleErrors fp parseError
+        Right (pwarnings, m) -> do
+          updateCachedModule m
+          let moduleName = P.getModuleName m
+          let filePathMap = M.singleton moduleName (Left P.RebuildAlways)
+          outputDirectory <- outputPath <$> getConfig
+          conn <- getDbConn
+          stVar <- asks lspStateVar
+          maxCache <- getMaxFilesInCache
+          cachedBuild <- cachedRebuild fp
+          chan :: TChan (Maybe P.ProgressMessage) <- liftIO . atomically $ newTChan
+          let updateProgressFromChanel :: m ()
+              updateProgressFromChanel = do
+                progressMb <- join . hush <$> race (threadDelay 3.0e9) (liftIO $ atomically $ readTChan chan)
+                for_ progressMb \pm -> do
+                  void $ updateProgress $ ProgressAmount Nothing (Just $ P.renderProgressMessage "Compiling" pm)
+                  updateProgressFromChanel
+
+          void $ fork updateProgressFromChanel
+
+          let makeEnv :: Map P.ModuleName FilePath -> [ExternDependency] -> P.MakeActions P.Make
+              makeEnv foreigns externs =
+                P.buildMakeActions outputDirectory filePathMap foreigns False
+                  & broadcastProgress chan
+                  & addAllIndexing conn
+                  & addRebuildCaching stVar maxCache externs
+          res <- case cachedBuild of
+            Just open -> do
+              rebuildFromOpenFileCache updateProgress outputDirectory fp pwarnings stVar makeEnv m open
+            Nothing -> do
+              rebuildWithoutCache updateProgress moduleName makeEnv outputDirectory fp pwarnings m
+          liftIO . atomically $ writeTChan chan Nothing
+          pure res
   where
-    rebuildFromOpenFileCache outputDirectory fp pwarnings stVar makeEnv m (Language.PureScript.Lsp.Types.OpenFile moduleName _ externDeps env _) = do
+    rebuildFromOpenFileCache updateProgress outputDirectory fp pwarnings stVar makeEnv m (Language.PureScript.Lsp.Types.OpenFile moduleName _ externDeps env _) = do
+      void $ updateProgress $ ProgressAmount Nothing (Just "Rebuilding with cache")
       let externs = fmap edExtern externDeps
       foreigns <- P.inferForeignModules (M.singleton moduleName (Right fp))
       (exportEnv, externsMb) <- logPerfStandard "build export cache" $ buildExportEnvCacheAndHandleErrors (selectDependencies m) m externs
@@ -83,10 +106,11 @@ rebuildFile uri = logPerfStandard "Rebuild file " do
       case fst res of
         Left errs | any couldBeFromNewImports (P.runMultipleErrors errs) -> do
           warnLsp "Module not found error detected, rebuilding without cache"
-          rebuildWithoutCache moduleName makeEnv outputDirectory fp pwarnings m
+          rebuildWithoutCache updateProgress moduleName makeEnv outputDirectory fp pwarnings m
         _ -> handleRebuildResult fp pwarnings res
 
-    rebuildWithoutCache moduleName makeEnv outputDirectory fp pwarnings m = do
+    rebuildWithoutCache updateProgress moduleName makeEnv outputDirectory fp pwarnings m = do
+      void $ updateProgress $ ProgressAmount Nothing (Just "Rebuilding without cache")
       externDeps <- logPerfStandard "Select depenencies" $ selectDependencies m
       let externs = fmap edExtern externDeps
       foreigns <- P.inferForeignModules (M.singleton moduleName (Right fp))
@@ -183,9 +207,12 @@ codegenTargets :: Set P.CodegenTarget
 codegenTargets = Set.fromList [P.JS, P.CoreFn, P.Docs]
 
 -- | Shuts the compiler up about progress messages
-shushProgress :: (Monad m) => P.MakeActions m -> P.MakeActions m
-shushProgress ma =
-  ma {P.progress = \_ -> pure ()}
+-- broadcastProgress :: (MonadLsp ServerConfig m) => TChan P.ProgressMessage -> P.MakeActions P.Make -> m (P.MakeActions P.Make)
+broadcastProgress :: (MonadIO m) => TChan (Maybe P.ProgressMessage) -> P.MakeActions m -> P.MakeActions m
+broadcastProgress chan ma = do
+  ma
+    { P.progress = liftIO . atomically . writeTChan chan . Just
+    }
 
 addRebuildCaching :: TVar Language.PureScript.Lsp.Types.LspState -> Int -> [ExternDependency] -> P.MakeActions P.Make -> P.MakeActions P.Make
 addRebuildCaching stVar maxCache deps ma =
