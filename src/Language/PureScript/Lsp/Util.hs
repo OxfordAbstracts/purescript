@@ -23,6 +23,7 @@ import Language.PureScript.Comments qualified as P
 import Language.PureScript.Externs qualified as P
 import Language.PureScript.Types qualified as P
 import Protolude hiding (to)
+import Language.PureScript.Names qualified as P
 
 posInSpan :: Types.Position -> AST.SourceSpan -> Bool
 posInSpan (Types.Position line col) (AST.SourceSpan _ (AST.SourcePos startLine startCol) (AST.SourcePos endLine endCol)) =
@@ -199,3 +200,10 @@ findExprSourceSpan = goExpr
         (const Nothing)
         (const Nothing)
         (const Nothing)
+
+
+getOperatorValueName :: P.Declaration -> Maybe (P.Qualified P.Name)
+getOperatorValueName = \case 
+  P.FixityDeclaration _ (Left (P.ValueFixity _ n _)) -> Just (either P.IdentName P.DctorName <$> n)
+  P.FixityDeclaration _ (Right (P.TypeFixity _ n _)) -> Just (P.TyName <$> n)
+  _ -> Nothing

@@ -11,13 +11,12 @@ import Database.SQLite.Simple qualified as SQL
 import Distribution.Compat.Directory (makeAbsolute)
 import Language.LSP.Server (MonadLsp)
 import Language.PureScript.AST qualified as P
-import Language.PureScript.AST.Declarations qualified as E
 import Language.PureScript.Externs (ExternsFile (efModuleName))
 import Language.PureScript.Externs qualified as P
-import Language.PureScript.Lsp.NameType (externDeclNameType, lspNameType, LspNameType (DctorNameType))
+import Language.PureScript.Lsp.NameType (LspNameType (DctorNameType), externDeclNameType, lspNameType)
 import Language.PureScript.Lsp.Print (printDeclarationType, printEfDeclName, printEfDeclType, printName)
 import Language.PureScript.Lsp.ServerConfig (ServerConfig)
-import Language.PureScript.Lsp.Util (efDeclSourceSpan)
+import Language.PureScript.Lsp.Util (efDeclSourceSpan, getOperatorValueName)
 import Language.PureScript.Make qualified as P
 import Language.PureScript.Names qualified as P
 import Protolude hiding (moduleName)
@@ -50,7 +49,9 @@ indexAstModule conn (P.Module _ss _comments moduleName' decls _exportRefs) exter
         end = P.spanEnd ss
         nameMb = P.declName decl
         nameType = nameMb <&> lspNameType
-        printedType = printDeclarationType decl
+        printedType = case getOperatorValueName decl >>= disqualifyIfInModule >>= getDeclFromName of
+          Nothing -> printDeclarationType decl
+          Just decl' -> printDeclarationType decl'
     for_ nameMb \name -> do
       let exported = Set.member name exportedNames
       SQL.executeNamed
@@ -74,37 +75,45 @@ indexAstModule conn (P.Module _ss _comments moduleName' decls _exportRefs) exter
           ":generated" := "$Dict" `T.isInfixOf` printedType
         ]
 
-      when exported $ do
-        for_ (declCtrs decl) \ctr ->
-          let (ss', _) = P.dataCtorAnn ctr
-              start' = P.spanStart ss'
-              end' = P.spanEnd ss'
-           in SQL.executeNamed
-                conn
-                ( SQL.Query
-                    "INSERT INTO ast_declarations \
-                    \         (module_name, name, printed_type, name_type, start_line, end_line, start_col, end_col, lines, cols, exported, generated) \
-                    \ VALUES (:module_name, :name, :printed_type, :name_type, :start_line, :end_line, :start_col, :end_col, :lines, :cols, :exported, :generated)"
-                )
-                [ ":module_name" := P.runModuleName moduleName',
-                  ":name" := P.runProperName (P.dataCtorName ctr),
-                  ":printed_type" := printName name,
-                  ":name_type" := DctorNameType,
-                  ":start_line" := P.sourcePosLine start',
-                  ":end_line" := P.sourcePosLine end',
-                  ":start_col" := P.sourcePosColumn start',
-                  ":end_col" := P.sourcePosColumn end',
-                  ":lines" := P.sourcePosLine end - P.sourcePosLine start',
-                  ":cols" := P.sourcePosColumn end - P.sourcePosColumn start',
-                  ":exported" := True,
-                  ":generated" := "$Dict" `T.isInfixOf` printedType
-                ]
+      for_ (declCtrs decl) \ctr ->
+        let (ss', _) = P.dataCtorAnn ctr
+            start' = P.spanStart ss'
+            end' = P.spanEnd ss'
+         in SQL.executeNamed
+              conn
+              ( SQL.Query
+                  "INSERT INTO ast_declarations \
+                  \         (module_name, name, printed_type, name_type, start_line, end_line, start_col, end_col, lines, cols, exported, generated) \
+                  \ VALUES (:module_name, :name, :printed_type, :name_type, :start_line, :end_line, :start_col, :end_col, :lines, :cols, :exported, :generated)"
+              )
+              [ ":module_name" := P.runModuleName moduleName',
+                ":name" := P.runProperName (P.dataCtorName ctr),
+                ":printed_type" := printName name,
+                ":name_type" := DctorNameType,
+                ":start_line" := P.sourcePosLine start',
+                ":end_line" := P.sourcePosLine end',
+                ":start_col" := P.sourcePosColumn start',
+                ":end_col" := P.sourcePosColumn end',
+                ":lines" := P.sourcePosLine end - P.sourcePosLine start',
+                ":cols" := P.sourcePosColumn end - P.sourcePosColumn start',
+                ":exported" := exported,
+                ":generated" := "$Dict" `T.isInfixOf` printedType
+              ]
   where
     externPath = P.spanName (P.efSourceSpan extern)
 
-    declCtrs = \case
-      P.DataDeclaration _ _ _ _ ctors -> ctors
-      _ -> []
+    getDeclFromName :: P.Name -> Maybe P.Declaration
+    getDeclFromName name = find (\decl -> P.declName decl == Just name) decls
+
+    disqualifyIfInModule :: P.Qualified P.Name -> Maybe P.Name
+    disqualifyIfInModule (P.Qualified (P.ByModuleName moduleName) name) | moduleName == moduleName' = Just name
+    disqualifyIfInModule (P.Qualified (P.BySourcePos _) name) = Just name
+    disqualifyIfInModule _ = Nothing
+
+declCtrs :: P.Declaration -> [P.DataConstructorDeclaration]
+declCtrs = \case
+  P.DataDeclaration _ _ _ _ ctors -> ctors
+  _ -> []
 
 indexAstModuleFromExtern :: (MonadIO m) => Connection -> ExternsFile -> m ()
 indexAstModuleFromExtern conn extern = liftIO do
@@ -172,14 +181,14 @@ getExportedNames :: ExternsFile -> Set P.Name
 getExportedNames extern =
   Set.fromList $
     P.efExports extern >>= \case
-      E.TypeClassRef _ name -> [P.TyClassName name]
-      E.TypeRef _ name ctrs -> [P.TyName name] <> fmap P.DctorName (fold ctrs)
-      E.ValueRef _ name -> [P.IdentName name]
-      E.TypeOpRef _ name -> [P.TyOpName name]
-      E.ValueOpRef _ name -> [P.ValOpName name]
-      E.TypeInstanceRef _ name _ -> [P.IdentName name]
-      E.ModuleRef _ name -> [P.ModName name]
-      E.ReExportRef _ _ _ -> []
+      P.TypeClassRef _ name -> [P.TyClassName name]
+      P.TypeRef _ name ctrs -> [P.TyName name] <> fmap P.DctorName (fold ctrs)
+      P.ValueRef _ name -> [P.IdentName name]
+      P.TypeOpRef _ name -> [P.TyOpName name]
+      P.ValueOpRef _ name -> [P.ValOpName name]
+      P.TypeInstanceRef _ name _ -> [P.IdentName name]
+      P.ModuleRef _ name -> [P.ModName name]
+      P.ReExportRef _ _ _ -> []
 
 addExternIndexing :: (MonadIO m) => Connection -> P.MakeActions m -> P.MakeActions m
 addExternIndexing conn ma =
