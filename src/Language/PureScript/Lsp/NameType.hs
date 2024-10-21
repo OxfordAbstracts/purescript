@@ -7,6 +7,7 @@ import Database.SQLite.Simple.ToField (ToField (toField))
 import Language.PureScript.Names
 import Protolude
 import Language.PureScript.Externs (ExternsDeclaration(..))
+import Data.Aeson qualified as A
 
 data LspNameType
   = IdentNameType
@@ -16,7 +17,7 @@ data LspNameType
   | DctorNameType
   | TyClassNameType
   | ModNameType
-  deriving (Show, Read, Eq, Generic)
+  deriving (Show, Read, Eq, Generic, A.ToJSON, A.FromJSON)
 
 instance ToField LspNameType where
   toField = toField . (show :: LspNameType -> Text)

@@ -8,19 +8,21 @@ where
 
 import Control.Lens (set)
 import Control.Monad.Catch (MonadThrow)
+import Data.List (nub)
 import Data.Maybe as Maybe
 import Data.Text qualified as T
 import Data.Text.Utf16.Rope.Mixed qualified as Rope
 import Language.LSP.Protocol.Lens qualified as LSP
 import Language.LSP.Protocol.Types as LSP
 import Language.LSP.Server (MonadLsp)
+import Language.PureScript (DeclarationRef)
 import Language.PureScript.AST.Declarations qualified as P
 import Language.PureScript.AST.SourcePos (nullSourceSpan)
 import Language.PureScript.CST qualified as CST
 import Language.PureScript.CST.Monad qualified as CSTM
 import Language.PureScript.Ide.Imports (Import (Import), prettyPrintImportSection, sliceImportSection)
 import Language.PureScript.Lsp.Cache.Query (getAstDeclarationInModule)
-import Language.PureScript.Lsp.Log (errorLsp, warnLsp)
+import Language.PureScript.Lsp.Log (debugLsp, errorLsp, warnLsp)
 import Language.PureScript.Lsp.NameType (LspNameType (..))
 import Language.PureScript.Lsp.ReadFile (lspReadFileRope)
 import Language.PureScript.Lsp.ServerConfig (ServerConfig)
@@ -45,20 +47,22 @@ addImportToTextEdit completionItem completeItemData = do
   pure $ set LSP.additionalTextEdits importEdits completionItem
 
 getImportEdits :: (MonadLsp ServerConfig m, MonadReader LspEnvironment m, MonadThrow m) => CompleteItemData -> m (Maybe [TextEdit])
-getImportEdits (CompleteItemData path moduleName' importedModuleName name word (Range wordStart _)) = do
+getImportEdits cid@(CompleteItemData path moduleName' importedModuleName name nameType word (Range wordStart _)) = do
+  debugLsp $ "CompletionItemData: " <> show cid
+  debugLsp $ "wordQualifierMb: " <> show (getIdentModuleQualifier word)
   parseRes <- parseImportsFromFile (filePathToNormalizedUri path)
   case parseRes of
     Left err -> do
       errorLsp $ "In " <> T.pack path <> " failed to parse imports from file: " <> err
       pure Nothing
     Right (_mn, before, imports, _after) -> do
-      declMb <- getAstDeclarationInModule importedModuleName name
+      declMb <- getAstDeclarationInModule importedModuleName name nameType
       case declMb of
         Nothing -> do
-          errorLsp $ "In " <> T.pack path <> " failed to get declaration from module: " <> name
+          errorLsp $ "In " <> T.pack path <> " failed to get declaration from module: " <> show (importedModuleName, name, nameType)
           pure Nothing
-        Just (declName, nameType) -> do
-          case addDeclarationToImports moduleName' importedModuleName wordQualifierMb declName nameType imports of
+        Just (declName, declType) -> do
+          case addDeclarationToImports moduleName' importedModuleName wordQualifierMb declName declType nameType imports of
             Nothing -> pure Nothing
             Just (newImports, moduleQualifier) -> do
               let importEdits = importsToTextEdit before newImports
@@ -87,16 +91,13 @@ parseRest p =
     . CST.runTokenParser (p <* CSTM.token CST.TokEof)
     . CST.lexTopLevel
 
-addDeclarationToImports :: P.ModuleName -> P.ModuleName -> Maybe P.ModuleName -> Text -> Maybe LspNameType -> [Import] -> Maybe ([Import], Maybe P.ModuleName)
-addDeclarationToImports moduleName' importedModuleName wordQualifierMb declName nameType imports
+addDeclarationToImports :: P.ModuleName -> P.ModuleName -> Maybe P.ModuleName -> Text -> Text -> Maybe LspNameType -> [Import] -> Maybe ([Import], Maybe P.ModuleName)
+addDeclarationToImports moduleName' importedModuleName wordQualifierMb declName declType nameType imports
   | importingSelf = Nothing
   | Just existing <- alreadyImportedModuleMb,
     Just ref <- refMb = case existing of
       Import _ (P.Explicit refs') mName
-        | wordQualifierMb == mName ->
-            if ref `notElem` refs'
-              then Just (Import importedModuleName (P.Explicit (refs' <> [ref])) Nothing : withoutOldImport, mName)
-              else Nothing
+        | wordQualifierMb == mName -> Just (Import importedModuleName (P.Explicit (insertImportRef ref refs')) Nothing : withoutOldImport, mName)
         | otherwise -> Just (imports, mName)
       Import _ P.Implicit mName -> Just (imports, mName)
       Import _ (P.Hiding refs') mName
@@ -122,7 +123,7 @@ addDeclarationToImports moduleName' importedModuleName wordQualifierMb declName 
         ValOpNameType -> Just $ P.ValueOpRef nullSourceSpan (P.OpName declName)
         TyNameType -> Just $ P.TypeRef nullSourceSpan (P.ProperName declName) Nothing
         TyOpNameType -> Just $ P.TypeOpRef nullSourceSpan (P.OpName declName)
-        DctorNameType -> Nothing
+        DctorNameType -> Just $ P.TypeRef nullSourceSpan (P.ProperName declType) (Just [P.ProperName declName])
         TyClassNameType -> Just $ P.TypeClassRef nullSourceSpan (P.ProperName declName)
         ModNameType -> Just $ P.ModuleRef nullSourceSpan (P.ModuleName declName)
 
@@ -130,6 +131,14 @@ addDeclarationToImports moduleName' importedModuleName wordQualifierMb declName 
       find (\(Import mn' _ _) -> mn' == importedModuleName) imports
 
     importingSelf = moduleName' == importedModuleName
+
+insertImportRef :: DeclarationRef -> [DeclarationRef] -> [DeclarationRef]
+insertImportRef (P.TypeRef _ ty ctrs) ((P.TypeRef ss ty' ctrs') : refs)
+  | ty == ty' = P.TypeRef ss ty (nub <$> liftA2 (<>) ctrs ctrs') : refs
+insertImportRef ref (ref' : refs)
+  | ref == ref' = refs
+  | otherwise = ref' : insertImportRef ref refs
+insertImportRef ref [] = [ref]
 
 importsToTextEdit :: [Text] -> [Import] -> TextEdit
 importsToTextEdit before imports =

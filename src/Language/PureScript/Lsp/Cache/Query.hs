@@ -18,14 +18,16 @@ import Protolude
 ------------ AST -------------------------------------------------------------------------------------------------------
 ------------------------------------------------------------------------------------------------------------------------
 
-getAstDeclarationInModule :: (MonadIO m, MonadReader LspEnvironment m) => P.ModuleName -> Text -> m (Maybe (Text, Maybe LspNameType))
-getAstDeclarationInModule moduleName' name = do
+getAstDeclarationInModule :: (MonadIO m, MonadReader LspEnvironment m) => P.ModuleName -> Text -> Maybe LspNameType -> m (Maybe (Text, Text))
+getAstDeclarationInModule moduleName' name nameType = do
   decls <-
     DB.queryNamed
-      "SELECT name, name_type FROM ast_declarations WHERE module_name = :module_name AND name = :name"
+      "SELECT name, printed_type FROM ast_declarations WHERE module_name = :module_name AND name = :name AND name_type IS :name_type"
       [ ":module_name" := P.runModuleName moduleName',
-        ":name" := name
+        ":name" := name,
+        ":name_type" := nameType
       ]
+
   pure $ listToMaybe decls
 
 getAstDeclarationLocationInModule :: (MonadIO m, MonadReader LspEnvironment m) => Maybe LspNameType -> P.ModuleName -> Text -> m [P.SourceSpan]
@@ -73,7 +75,7 @@ getAstDeclarationsStartingWith moduleName' prefix = do
     ( SQL.Query $
         "SELECT ast_declarations.name, "
           <> printedTypeTruncated typeLen
-          <> "ast_declarations.module_name FROM ast_declarations \
+          <> "ast_declarations.module_name, ast_declarations.name_type FROM ast_declarations \
              \INNER JOIN ast_modules on ast_declarations.module_name = ast_modules.module_name \
              \INNER JOIN available_srcs on ast_modules.path = available_srcs.path \
              \WHERE (ast_declarations.module_name = :module_name OR ast_declarations.exported) \
@@ -103,7 +105,7 @@ getAstDeclarationsStartingWithAndSearchingModuleNames moduleName' moduleNameCont
     ( SQL.Query $
         "SELECT ast_declarations.name, "
           <> printedTypeTruncated typeLen
-          <> "ast_declarations.module_name FROM ast_declarations \
+          <> "ast_declarations.module_name, ast_declarations.name_type FROM ast_declarations \
              \INNER JOIN ast_modules on ast_declarations.module_name = ast_modules.module_name \
              \INNER JOIN available_srcs on ast_modules.path = available_srcs.path \
              \WHERE (ast_declarations.module_name = :module_name OR ast_declarations.exported) \
@@ -134,7 +136,7 @@ getAstDeclarationsStartingWithOnlyInModule moduleName' prefix = do
     ( SQL.Query $
         "SELECT ast_declarations.name, "
           <> printedTypeTruncated typeLen
-          <> "ast_declarations.module_name FROM ast_declarations \
+          <> "ast_declarations.module_name, ast_declarations.name_type FROM ast_declarations \
              \INNER JOIN ast_modules on ast_declarations.module_name = ast_modules.module_name \
              \INNER JOIN available_srcs on ast_modules.path = available_srcs.path \
              \WHERE ast_declarations.module_name = :module_name \
@@ -167,9 +169,10 @@ printedTypeTruncated typeLen =
 data CompletionResult = CompletionResult
   { crName :: Text,
     crType :: Text,
-    crModule :: P.ModuleName
+    crModule :: P.ModuleName,
+    crNameType :: Maybe LspNameType
   }
   deriving (Show, Generic)
 
 instance SQL.FromRow CompletionResult where
-  fromRow = CompletionResult <$> SQL.field <*> SQL.field <*> (P.ModuleName <$> SQL.field)
+  fromRow = CompletionResult <$> SQL.field <*> SQL.field <*> (P.ModuleName <$> SQL.field) <*> SQL.field 

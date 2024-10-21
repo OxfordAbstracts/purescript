@@ -14,7 +14,7 @@ import Language.LSP.Server qualified as Server
 import Language.LSP.VFS qualified as VFS
 import Language.PureScript qualified as P
 import Language.PureScript.Ide.Imports (Import (..))
-import Language.PureScript.Lsp.Cache.Query (CompletionResult (crModule, crName, crType), getAstDeclarationsStartingWith, getAstDeclarationsStartingWithAndSearchingModuleNames, getAstDeclarationsStartingWithOnlyInModule)
+import Language.PureScript.Lsp.Cache.Query (CompletionResult (crModule, crName, crType, crNameType), getAstDeclarationsStartingWith, getAstDeclarationsStartingWithAndSearchingModuleNames, getAstDeclarationsStartingWithOnlyInModule)
 import Language.PureScript.Lsp.Docs (readDeclarationDocsAsMarkdown)
 import Language.PureScript.Lsp.Imports (addImportToTextEdit, getIdentModuleQualifier, getMatchingImport, parseModuleNameFromFile)
 import Language.PureScript.Lsp.Log (logPerfStandard, debugLsp)
@@ -93,14 +93,14 @@ completionAndResolveHandlers =
                                   _additionalTextEdits = Nothing, --  Maybe [Types.TextEdit]
                                   _commitCharacters = Nothing, --  Maybe [Text]
                                   _command = Nothing, --  Maybe Types.Command
-                                  _data_ = Just $ A.toJSON $ Just $ CompleteItemData filePath mName (crModule cr) label word range
+                                  _data_ = Just $ A.toJSON $ Just $ CompleteItemData filePath mName (crModule cr) label (crNameType cr) word range
                                 },
       Server.requestHandler Message.SMethod_CompletionItemResolve $ \req res -> do
         let completionItem = req ^. LSP.params
             result = completionItem ^. LSP.data_ & decodeCompleteItemData
 
         case result of
-          A.Success (Just cid@(CompleteItemData _filePath _mName declModule label _ _)) -> do
+          A.Success (Just cid@(CompleteItemData _filePath _mName declModule label _ _ _)) -> do
             docsMb <- readDeclarationDocsAsMarkdown declModule label
             withImports <- addImportToTextEdit completionItem cid
             let addDocs :: Types.CompletionItem -> Types.CompletionItem

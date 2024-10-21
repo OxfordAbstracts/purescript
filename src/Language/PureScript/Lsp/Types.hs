@@ -18,6 +18,7 @@ import Language.PureScript.AST qualified as P
 import Language.PureScript.Lsp.ServerConfig (ServerConfig, defaultConfig)
 import Language.PureScript.Lsp.LogLevel (LspLogLevel)
 import Codec.Serialise (deserialise, serialise)
+import Language.PureScript.Lsp.NameType (LspNameType)
 
 data LspEnvironment = LspEnvironment
   { lspDbConnectionVar :: TVar (FilePath, Connection),
@@ -76,6 +77,7 @@ data CompleteItemData = CompleteItemData
     cidModuleName :: P.ModuleName,
     cidImportedModuleName :: P.ModuleName,
     cidName :: Text,
+    cidNameType :: Maybe LspNameType,
     cidWord :: Text,
     wordRange :: Range
   }
