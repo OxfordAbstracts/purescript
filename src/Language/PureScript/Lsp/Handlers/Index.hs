@@ -24,8 +24,6 @@ import Protolude hiding (to)
 import System.Directory (doesFileExist, getDirectoryContents)
 import System.FilePath ((</>))
 import Control.Monad.Trans.Control (MonadBaseControl)
-import Language.LSP.Protocol.Lens qualified as LSP
-import Control.Lens ((^.))
 
 indexHandler :: Server.Handlers HandlerM
 indexHandler =
@@ -36,12 +34,11 @@ indexHandler =
         externs <- logPerfStandard "findAvailableExterns" findAvailableExterns
         logPerfStandard "insert externs" $ forConcurrently_ externs indexExternAndDecls
         res $ Right A.Null,
-      Server.requestHandler (Message.SMethod_CustomMethod $ Proxy @"index-full") $ \req res -> do
-        let progressToken = cast $ req ^. LSP.id
+      Server.requestHandler (Message.SMethod_CustomMethod $ Proxy @"index-full") $ \_req res -> do
         conn <- getDbConn
         liftIO $ initDb conn
         deleteOutput
-        diags <- buildForLsp progressToken
+        diags <- buildForLsp 
         res $ Right $ A.toJSON diags
     ]
   where
