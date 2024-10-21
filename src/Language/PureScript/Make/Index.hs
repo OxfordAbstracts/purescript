@@ -50,7 +50,7 @@ indexAstModule conn (P.Module _ss _comments moduleName' decls _exportRefs) exter
         nameMb = P.declName decl
         nameType = nameMb <&> lspNameType
         printedType = case getOperatorValueName decl >>= disqualifyIfInModule >>= getDeclFromName of
-          Nothing -> printDeclarationType decl
+          Nothing -> printDeclarationType decl -- TODO add check for operators in other modules
           Just decl' -> printDeclarationType decl'
     for_ nameMb \name -> do
       let exported = Set.member name exportedNames

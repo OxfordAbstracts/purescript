@@ -6,6 +6,7 @@ import Control.Lens ((^.))
 import Control.Lens.Getter (to)
 import Control.Lens.Setter (set)
 import Data.Aeson qualified as A
+import Data.Text qualified as T
 import Language.LSP.Protocol.Lens qualified as LSP
 import Language.LSP.Protocol.Message qualified as Message
 import Language.LSP.Protocol.Types qualified as LSP
@@ -14,11 +15,12 @@ import Language.LSP.Server qualified as Server
 import Language.LSP.VFS qualified as VFS
 import Language.PureScript qualified as P
 import Language.PureScript.Ide.Imports (Import (..))
-import Language.PureScript.Lsp.Cache.Query (CompletionResult (crModule, crName, crType, crNameType), getAstDeclarationsStartingWith, getAstDeclarationsStartingWithAndSearchingModuleNames, getAstDeclarationsStartingWithOnlyInModule)
+import Language.PureScript.Lsp.Cache.Query (CompletionResult (crModule, crName, crNameType, crType), getAstDeclarationsStartingWith, getAstDeclarationsStartingWithAndSearchingModuleNames, getAstDeclarationsStartingWithOnlyInModule)
 import Language.PureScript.Lsp.Docs (readDeclarationDocsAsMarkdown)
 import Language.PureScript.Lsp.Imports (addImportToTextEdit, getIdentModuleQualifier, getMatchingImport, parseModuleNameFromFile)
-import Language.PureScript.Lsp.Log (logPerfStandard, debugLsp)
+import Language.PureScript.Lsp.Log (debugLsp, logPerfStandard)
 import Language.PureScript.Lsp.Monad (HandlerM)
+import Language.PureScript.Lsp.NameType (LspNameType (..))
 import Language.PureScript.Lsp.ServerConfig (getMaxCompletions)
 import Language.PureScript.Lsp.Types (CompleteItemData (CompleteItemData), decodeCompleteItemData)
 import Language.PureScript.Lsp.Util (getSymbolAt)
@@ -56,11 +58,11 @@ completionAndResolveHandlers =
               limit <- getMaxCompletions
               matchingImport <- maybe (pure Nothing) (getMatchingImport uri . fst) withQualifier
               decls <- logPerfStandard "get completion declarations" case (matchingImport, withQualifier) of
-                (Just (Import importModuleName _ _), _) -> do 
+                (Just (Import importModuleName _ _), _) -> do
                   getAstDeclarationsStartingWithOnlyInModule importModuleName wordWithoutQual
-                (_, Just (wordModuleName, _)) -> do 
+                (_, Just (wordModuleName, _)) -> do
                   getAstDeclarationsStartingWithAndSearchingModuleNames mName wordModuleName wordWithoutQual
-                _ ->  do
+                _ -> do
                   getAstDeclarationsStartingWith mName wordWithoutQual
               res $
                 Right $
@@ -69,14 +71,26 @@ completionAndResolveHandlers =
                       Types.CompletionList (length decls >= limit) Nothing $
                         decls <&> \cr ->
                           let label = crName cr
-                            in Types.CompletionItem
+                              nameType = crNameType cr
+                              declModName = crModule cr
+                              
+                           in Types.CompletionItem
                                 { _label = label,
                                   _labelDetails =
                                     Just $
                                       Types.CompletionItemLabelDetails
                                         (Just $ " " <> crType cr)
-                                        (Just $ P.runModuleName (crModule cr)),
-                                  _kind = Nothing, --  Maybe Types.CompletionItemKind TODO: add kind
+                                        (Just $ P.runModuleName declModName),
+                                  _kind =
+                                    nameType <&> \case
+                                      IdentNameType | "->" `T.isInfixOf` crType cr -> Types.CompletionItemKind_Function
+                                      IdentNameType -> Types.CompletionItemKind_Value
+                                      TyNameType -> Types.CompletionItemKind_Class
+                                      DctorNameType -> Types.CompletionItemKind_Constructor
+                                      TyClassNameType -> Types.CompletionItemKind_Interface
+                                      ValOpNameType -> Types.CompletionItemKind_Operator
+                                      TyOpNameType -> Types.CompletionItemKind_TypeParameter
+                                      ModNameType -> Types.CompletionItemKind_Module,
                                   _tags = Nothing,
                                   _detail = Nothing,
                                   _documentation = Nothing,
@@ -87,13 +101,12 @@ completionAndResolveHandlers =
                                   _insertText = Nothing, --  Maybe Text
                                   _insertTextFormat = Nothing, --  Maybe Types.InsertTextFormat
                                   _insertTextMode = Nothing, --  Maybe Types.InsertTextMode
-                                  _textEdit = Nothing, --  Maybe
-                                  --                (Types.TextEdit Types.|? Types.InsertReplaceEdit)
+                                  _textEdit = Just $ Types.InL $ Types.TextEdit range label,
                                   _textEditText = Nothing, --  Maybe Text
                                   _additionalTextEdits = Nothing, --  Maybe [Types.TextEdit]
                                   _commitCharacters = Nothing, --  Maybe [Text]
                                   _command = Nothing, --  Maybe Types.Command
-                                  _data_ = Just $ A.toJSON $ Just $ CompleteItemData filePath mName (crModule cr) label (crNameType cr) word range
+                                  _data_ = Just $ A.toJSON $ Just $ CompleteItemData filePath mName declModName label nameType word range
                                 },
       Server.requestHandler Message.SMethod_CompletionItemResolve $ \req res -> do
         let completionItem = req ^. LSP.params
