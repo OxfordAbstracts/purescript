@@ -62,6 +62,7 @@ getImportEdits cid@(CompleteItemData path moduleName' importedModuleName name na
           errorLsp $ "In " <> T.pack path <> " failed to get declaration from module: " <> show (importedModuleName, name, nameType)
           pure Nothing
         Just (declName, declType) -> do
+          debugLsp $ "Got declaration: " <> show (declName, declType)
           case addDeclarationToImports moduleName' importedModuleName wordQualifierMb declName declType nameType imports of
             Nothing -> pure Nothing
             Just (newImports, moduleQualifier) -> do
@@ -91,7 +92,18 @@ parseRest p =
     . CST.runTokenParser (p <* CSTM.token CST.TokEof)
     . CST.lexTopLevel
 
-addDeclarationToImports :: P.ModuleName -> P.ModuleName -> Maybe P.ModuleName -> Text -> Text -> Maybe LspNameType -> [Import] -> Maybe ([Import], Maybe P.ModuleName)
+addDeclarationToImports ::
+  P.ModuleName ->
+  P.ModuleName ->
+  Maybe P.ModuleName ->
+  Text ->
+  Text ->
+  Maybe LspNameType ->
+  [Import] ->
+  Maybe
+    ( [Import],
+      Maybe P.ModuleName
+    )
 addDeclarationToImports moduleName' importedModuleName wordQualifierMb declName declType nameType imports
   | importingSelf = Nothing
   | Just existing <- alreadyImportedModuleMb,
@@ -136,7 +148,7 @@ insertImportRef :: DeclarationRef -> [DeclarationRef] -> [DeclarationRef]
 insertImportRef (P.TypeRef _ ty ctrs) ((P.TypeRef ss ty' ctrs') : refs)
   | ty == ty' = P.TypeRef ss ty (nub <$> liftA2 (<>) ctrs ctrs') : refs
 insertImportRef ref (ref' : refs)
-  | ref == ref' = refs
+  | ref == ref' = ref' : refs
   | otherwise = ref' : insertImportRef ref refs
 insertImportRef ref [] = [ref]
 
