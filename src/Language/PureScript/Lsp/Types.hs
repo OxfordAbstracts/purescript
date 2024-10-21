@@ -77,7 +77,7 @@ data CompleteItemData = CompleteItemData
     cidModuleName :: P.ModuleName,
     cidImportedModuleName :: P.ModuleName,
     cidName :: Text,
-    cidNameType :: Maybe LspNameType,
+    cidNameType :: LspNameType,
     cidWord :: Text,
     wordRange :: Range
   }

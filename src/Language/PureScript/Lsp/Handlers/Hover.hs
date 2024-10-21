@@ -85,7 +85,7 @@ hoverHandler = Server.requestHandler Message.SMethod_TextDocumentHover $ \req re
               decls
                 & declsAtLine srcPosLine
 
-        debugLsp $ "declsAtPos: " <> show declsAtPos
+        debugLsp $ "declsAtPos: " <> show (length declsAtPos)
 
         forLsp (head declsAtPos) $ \decl -> do
           case decl of

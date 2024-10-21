@@ -62,7 +62,6 @@ getImportEdits cid@(CompleteItemData path moduleName' importedModuleName name na
           errorLsp $ "In " <> T.pack path <> " failed to get declaration from module: " <> show (importedModuleName, name, nameType)
           pure Nothing
         Just (declName, declType) -> do
-          debugLsp $ "Got declaration: " <> show (declName, declType)
           case addDeclarationToImports moduleName' importedModuleName wordQualifierMb declName declType nameType imports of
             Nothing -> pure Nothing
             Just (newImports, moduleQualifier) -> do
@@ -98,24 +97,23 @@ addDeclarationToImports ::
   Maybe P.ModuleName ->
   Text ->
   Text ->
-  Maybe LspNameType ->
+  LspNameType ->
   [Import] ->
   Maybe
-    ( [Import], -- new imports 
+    ( [Import], -- new imports
       Maybe P.ModuleName -- module qualifier
     )
 addDeclarationToImports moduleName' importedModuleName wordQualifierMb declName declType nameType imports
   | importingSelf = Nothing
-  | Just existing <- alreadyImportedModuleMb,
-    Just ref <- refMb = case existing of
+  | Just existing <- alreadyImportedModuleMb  = case existing of
       Import _ (P.Explicit refs') mName
-        | wordQualifierMb == mName -> Just (Import importedModuleName (P.Explicit (insertImportRef ref refs')) Nothing : withoutOldImport, mName)
+        | wordQualifierMb == mName -> Just (Import importedModuleName (P.Explicit (insertImportRef newRef refs')) Nothing : withoutOldImport, mName)
         | otherwise -> Just (imports, mName)
       Import _ P.Implicit mName -> Just (imports, mName)
       Import _ (P.Hiding refs') mName
         | wordQualifierMb == mName ->
-            if ref `elem` refs'
-              then Just (Import importedModuleName (P.Hiding (filter (/= ref) refs')) Nothing : withoutOldImport, mName)
+            if newRef `elem` refs'
+              then Just (Import importedModuleName (P.Hiding (filter (/= newRef) refs')) Nothing : withoutOldImport, mName)
               else Nothing
         | otherwise -> Just (imports, mName)
   | isJust wordQualifierMb = Just (Import importedModuleName P.Implicit wordQualifierMb : imports, wordQualifierMb)
@@ -126,18 +124,18 @@ addDeclarationToImports moduleName' importedModuleName wordQualifierMb declName 
     withoutOldImport = maybe identity (\im -> filter (/= im)) alreadyImportedModuleMb imports
 
     refs :: [P.DeclarationRef]
-    refs = toList refMb
+    refs = pure newRef
 
-    refMb :: Maybe P.DeclarationRef
-    refMb =
-      nameType >>= \case
-        IdentNameType -> Just $ P.ValueRef nullSourceSpan (P.Ident declName)
-        ValOpNameType -> Just $ P.ValueOpRef nullSourceSpan (P.OpName declName)
-        TyNameType -> Just $ P.TypeRef nullSourceSpan (P.ProperName declName) Nothing
-        TyOpNameType -> Just $ P.TypeOpRef nullSourceSpan (P.OpName declName)
-        DctorNameType -> Just $ P.TypeRef nullSourceSpan (P.ProperName declType) (Just [P.ProperName declName])
-        TyClassNameType -> Just $ P.TypeClassRef nullSourceSpan (P.ProperName declName)
-        ModNameType -> Just $ P.ModuleRef nullSourceSpan (P.ModuleName declName)
+    newRef :: P.DeclarationRef
+    newRef =
+      case nameType of
+        IdentNameType -> P.ValueRef nullSourceSpan (P.Ident declName)
+        ValOpNameType -> P.ValueOpRef nullSourceSpan (P.OpName declName)
+        TyNameType -> P.TypeRef nullSourceSpan (P.ProperName declName) Nothing
+        TyOpNameType -> P.TypeOpRef nullSourceSpan (P.OpName declName)
+        DctorNameType -> P.TypeRef nullSourceSpan (P.ProperName declType) (Just [P.ProperName declName])
+        TyClassNameType -> P.TypeClassRef nullSourceSpan (P.ProperName declName)
+        ModNameType -> P.ModuleRef nullSourceSpan (P.ModuleName declName)
 
     alreadyImportedModuleMb =
       find (\(Import mn' _ _) -> mn' == importedModuleName) imports

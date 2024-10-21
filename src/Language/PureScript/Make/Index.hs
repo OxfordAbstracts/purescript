@@ -48,12 +48,13 @@ indexAstModule conn (P.Module _ss _comments moduleName' decls _exportRefs) exter
         start = P.spanStart ss
         end = P.spanEnd ss
         nameMb = P.declName decl
-        nameType = nameMb <&> lspNameType
         printedType = case getOperatorValueName decl >>= disqualifyIfInModule >>= getDeclFromName of
           Nothing -> printDeclarationType decl -- TODO add check for operators in other modules
           Just decl' -> printDeclarationType decl'
     for_ nameMb \name -> do
-      let exported = Set.member name exportedNames
+      let 
+          exported = Set.member name exportedNames
+          nameType = lspNameType name
       SQL.executeNamed
         conn
         ( SQL.Query

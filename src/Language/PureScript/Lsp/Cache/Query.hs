@@ -19,7 +19,7 @@ import Language.PureScript.Lsp.Log (debugLsp)
 ------------ AST -------------------------------------------------------------------------------------------------------
 ------------------------------------------------------------------------------------------------------------------------
 
-getAstDeclarationInModule :: (MonadIO m, MonadReader LspEnvironment m) => P.ModuleName -> Text -> Maybe LspNameType -> m (Maybe (Text, Text))
+getAstDeclarationInModule :: (MonadIO m, MonadReader LspEnvironment m) => P.ModuleName -> Text -> LspNameType -> m (Maybe (Text, Text))
 getAstDeclarationInModule moduleName' name nameType = do
   decls <-
     DB.queryNamed
@@ -172,7 +172,7 @@ data CompletionResult = CompletionResult
   { crName :: Text,
     crType :: Text,
     crModule :: P.ModuleName,
-    crNameType :: Maybe LspNameType
+    crNameType :: LspNameType
   }
   deriving (Show, Generic)
 

@@ -16,7 +16,7 @@ import Language.LSP.VFS qualified as VFS
 import Language.PureScript qualified as P
 import Language.PureScript.Ide.Imports (Import (..))
 import Language.PureScript.Lsp.Cache.Query (CompletionResult (crModule, crName, crNameType, crType), getAstDeclarationsStartingWith, getAstDeclarationsStartingWithAndSearchingModuleNames, getAstDeclarationsStartingWithOnlyInModule)
-import Language.PureScript.Lsp.Docs (readDeclarationDocsAsMarkdown)
+import Language.PureScript.Lsp.Docs (readDeclarationDocsWithNameType)
 import Language.PureScript.Lsp.Imports (addImportToTextEdit, getIdentModuleQualifier, getMatchingImport, parseModuleNameFromFile)
 import Language.PureScript.Lsp.Log (debugLsp, logPerfStandard)
 import Language.PureScript.Lsp.Monad (HandlerM)
@@ -73,7 +73,6 @@ completionAndResolveHandlers =
                           let label = crName cr
                               nameType = crNameType cr
                               declModName = crModule cr
-                              
                            in Types.CompletionItem
                                 { _label = label,
                                   _labelDetails =
@@ -82,7 +81,7 @@ completionAndResolveHandlers =
                                         (Just $ " " <> crType cr)
                                         (Just $ P.runModuleName declModName),
                                   _kind =
-                                    nameType <&> \case
+                                    Just case nameType of
                                       IdentNameType | "->" `T.isInfixOf` crType cr -> Types.CompletionItemKind_Function
                                       IdentNameType -> Types.CompletionItemKind_Value
                                       TyNameType -> Types.CompletionItemKind_Class
@@ -113,8 +112,9 @@ completionAndResolveHandlers =
             result = completionItem ^. LSP.data_ & decodeCompleteItemData
 
         case result of
-          A.Success (Just cid@(CompleteItemData _filePath _mName declModule label _ _ _)) -> do
-            docsMb <- readDeclarationDocsAsMarkdown declModule label
+          A.Success (Just cid@(CompleteItemData _filePath _mName declModule label nameType _ _)) -> do
+            docsMb <- readDeclarationDocsWithNameType declModule nameType label
+            debugLsp $ "docs found for " <> show (declModule, label) <> show (isJust docsMb)
             withImports <- addImportToTextEdit completionItem cid
             let addDocs :: Types.CompletionItem -> Types.CompletionItem
                 addDocs =
