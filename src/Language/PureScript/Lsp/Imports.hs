@@ -101,8 +101,8 @@ addDeclarationToImports ::
   Maybe LspNameType ->
   [Import] ->
   Maybe
-    ( [Import],
-      Maybe P.ModuleName
+    ( [Import], -- new imports 
+      Maybe P.ModuleName -- module qualifier
     )
 addDeclarationToImports moduleName' importedModuleName wordQualifierMb declName declType nameType imports
   | importingSelf = Nothing

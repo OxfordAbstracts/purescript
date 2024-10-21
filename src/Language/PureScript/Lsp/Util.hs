@@ -40,18 +40,30 @@ getDeclarationAtPos :: Types.Position -> [P.Declaration] -> Maybe P.Declaration
 getDeclarationAtPos pos = find (posInSpan pos . fst . declSourceAnn)
 
 getWordAt :: Rope -> Types.Position -> (Types.Range, Text)
-getWordAt file pos@(Types.Position {..}) =
+getWordAt = getByPredAt isWordBreak
+
+isWordBreak :: Char -> Bool
+isWordBreak = not . (isAlphaNum ||^ (== '_') ||^ (== '.'))
+
+getSymbolAt :: Rope -> Types.Position -> (Types.Range, Text)
+getSymbolAt = getByPredAt isSymbolBreak 
+
+isSymbolBreak :: Char -> Bool
+isSymbolBreak = isSpace ||^ (== '(') ||^ (== ')') ||^ (== '{') ||^ (== '}') ||^ (== '[') ||^ (== ']') ||^ (== ',') 
+
+getByPredAt :: (Char -> Bool) -> Rope -> Types.Position -> (Types.Range, Text)
+getByPredAt charPred file pos@(Types.Position {..}) =
   if Rope.lengthInLines file < fromIntegral _line || _line < 0
     then (Types.Range pos pos, "")
     else
       let (_, after) = splitAtLine (fromIntegral _line) file
           (ropeLine, _) = splitAtLine 1 after
           line' = Rope.toText ropeLine
-          (wordStartCol, wordEndCol, _word) = getWordOnLine line' _character
+          (wordStartCol, wordEndCol, _word) = getOnLine charPred line' _character
        in (Types.Range (Types.Position _line $ fromIntegral wordStartCol) (Types.Position _line $ fromIntegral wordEndCol), _word)
 
-getWordOnLine :: Text -> UInt -> (Int, Int, Text)
-getWordOnLine line' col =
+getOnLine :: (Char -> Bool) -> Text -> UInt -> (Int, Int, Text)
+getOnLine charPred line' col =
   if T.length line' < fromIntegral col || col < 0
     then (fromIntegral col, fromIntegral col, "")
     else
@@ -62,17 +74,14 @@ getWordOnLine line' col =
     getNextWs :: Int -> Text -> Int
     getNextWs idx txt | idx >= T.length txt = idx
     getNextWs idx txt = case T.index txt idx of
-      ch | isWordBreak ch -> idx
+      ch | charPred ch -> idx
       _ -> getNextWs (idx + 1) txt
 
     getPrevWs :: Int -> Text -> Int
     getPrevWs 0 _ = 0
     getPrevWs idx txt = case T.index txt idx of
-      ch | isWordBreak ch -> idx + 1
+      ch | charPred ch -> idx + 1
       _ -> getPrevWs (idx - 1) txt
-
-    isWordBreak :: Char -> Bool
-    isWordBreak = not . (isAlphaNum ||^ (== '_') ||^ (== '.'))
 
 data ExternsDeclarationCategory
   = EDCType

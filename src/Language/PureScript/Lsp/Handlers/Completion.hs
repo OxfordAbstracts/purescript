@@ -21,7 +21,7 @@ import Language.PureScript.Lsp.Log (logPerfStandard, debugLsp)
 import Language.PureScript.Lsp.Monad (HandlerM)
 import Language.PureScript.Lsp.ServerConfig (getMaxCompletions)
 import Language.PureScript.Lsp.Types (CompleteItemData (CompleteItemData), decodeCompleteItemData)
-import Language.PureScript.Lsp.Util (getWordAt)
+import Language.PureScript.Lsp.Util (getSymbolAt)
 import Protolude hiding (to)
 
 completionAndResolveHandlers :: Server.Handlers HandlerM
@@ -46,7 +46,7 @@ completionAndResolveHandlers =
         forLsp filePathMb \filePath -> do
           vfMb <- Server.getVirtualFile uri
           forLsp vfMb \vf -> do
-            let (range, word) = getWordAt (VFS._file_text vf) pos
+            let (range, word) = getSymbolAt (VFS._file_text vf) pos
             mNameMb <- parseModuleNameFromFile uri
             debugLsp $ "word: " <> show word
             forLsp mNameMb \mName -> do
