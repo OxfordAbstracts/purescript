@@ -16,31 +16,41 @@ import Language.PureScript.Make.Index (initDb)
 import Protolude hiding (to)
 import System.IO.UTF8 (readUTF8FilesT)
 import Language.PureScript.Lsp.State (clearCache, getDbConn)
-import Language.LSP.Server (getConfig)
+import Language.LSP.Server (getConfig, withIndefiniteProgress, ProgressCancellable (Cancellable))
 import Language.PureScript.Lsp.ServerConfig (ServerConfig(outputPath))
+import Language.LSP.Protocol.Lens qualified as LSP
+import Control.Lens ((^.))
 
 buildHandler :: Server.Handlers HandlerM
 buildHandler =
-  Server.requestHandler (Message.SMethod_CustomMethod $ Proxy @"build") $ \_req res -> do
-    diags <- buildForLsp
+  Server.requestHandler (Message.SMethod_CustomMethod $ Proxy @"build") $ \req res -> do
+    let progressToken = cast $ req ^. LSP.id
+    diags <- buildForLsp progressToken
     res $ Right $ A.toJSON diags
 
-buildForLsp :: HandlerM [Types.Diagnostic]
-buildForLsp = do
-  clearCache
-  outDir <-  outputPath <$> getConfig
-  conn <- getDbConn
-  liftIO $ initDb conn
-  input <- updateAvailableSrcs
-  moduleFiles <- liftIO $ readUTF8FilesT input
-  (result, warnings) <-
-    liftIO $
-      compile
-        (P.Options False False codegenTargets)
-        moduleFiles
-        conn
-        outDir
-        False
-  pure $
-    (errorMessageDiagnostic Types.DiagnosticSeverity_Error <$> either P.runMultipleErrors (const []) result)
-      <> (errorMessageDiagnostic Types.DiagnosticSeverity_Warning <$> P.runMultipleErrors warnings)
+    where 
+
+-- Either get progress to work or remove it
+buildForLsp :: Maybe Types.ProgressToken -> HandlerM [Types.Diagnostic]
+buildForLsp  id = do
+  withIndefiniteProgress "Rebuilding all files" id Cancellable $ \updateProgress -> do 
+    clearCache
+    outDir <-  outputPath <$> getConfig
+    conn <- getDbConn
+    liftIO $ initDb conn
+    updateProgress "Updating available sources"
+    input <- updateAvailableSrcs
+    updateProgress "Reading module files"
+    moduleFiles <- liftIO $ readUTF8FilesT input
+    updateProgress "Compiling"
+    (result, warnings) <-
+      liftIO $
+        compile
+          (P.Options False False codegenTargets)
+          moduleFiles
+          conn
+          outDir
+          False
+    pure $
+      (errorMessageDiagnostic Types.DiagnosticSeverity_Error <$> either P.runMultipleErrors (const []) result)
+        <> (errorMessageDiagnostic Types.DiagnosticSeverity_Warning <$> P.runMultipleErrors warnings)

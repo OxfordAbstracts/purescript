@@ -7,6 +7,7 @@
 module Language.PureScript.Lsp.Handlers where
 
 import Control.Lens ((^.))
+import Data.Aeson qualified as A
 import Language.LSP.Protocol.Lens qualified as LSP
 import Language.LSP.Protocol.Message qualified as Message
 import Language.LSP.Protocol.Types (Uri)
@@ -20,13 +21,12 @@ import Language.PureScript.Lsp.Handlers.Definition (definitionHandler)
 import Language.PureScript.Lsp.Handlers.DeleteOutput (deleteOutputHandler)
 import Language.PureScript.Lsp.Handlers.Diagnostic (diagnosticAndCodeActionHandlers)
 import Language.PureScript.Lsp.Handlers.Hover (hoverHandler)
+import Language.PureScript.Lsp.Handlers.Index (indexHandler)
 import Language.PureScript.Lsp.Monad (HandlerM)
 import Language.PureScript.Lsp.ServerConfig (setTraceValue)
-import Language.PureScript.Lsp.State (cancelRequest, removedCachedRebuild, clearCache, clearExportCache, clearRebuildCache, getDbConn)
+import Language.PureScript.Lsp.State (cancelRequest, clearCache, clearExportCache, clearRebuildCache, getDbConn, removedCachedRebuild)
+import Language.PureScript.Make.Index (dropTables, initDb)
 import Protolude hiding (to)
-import Data.Aeson qualified as A
-import Language.PureScript.Lsp.Handlers.Index (indexHandler)
-import Language.PureScript.Make.Index (initDb, dropTables)
 
 handlers :: Server.Handlers HandlerM
 handlers =
@@ -66,7 +66,7 @@ handlers =
             setTraceValue $ msg ^. LSP.params . LSP.value, -- probably no need to do this
           Server.notificationHandler Message.SMethod_CancelRequest $ \msg -> do
             let reqId = msg ^. LSP.params . LSP.id
-            cancelRequest reqId, 
+            cancelRequest reqId,
           Server.requestHandler (Message.SMethod_CustomMethod $ Proxy @"clear-cache") $ \_req res -> do
             clearCache
             res $ Right A.Null,
@@ -84,6 +84,7 @@ handlers =
             conn <- getDbConn
             liftIO $ dropTables conn
             res $ Right A.Null
+
         ]
 
 sendInfoMsg :: (Server.MonadLsp config f) => Text -> f ()

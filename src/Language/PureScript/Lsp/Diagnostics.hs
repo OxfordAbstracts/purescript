@@ -2,13 +2,11 @@ module Language.PureScript.Lsp.Diagnostics where
 
 import Control.Lens ((^.))
 import Control.Monad.Catch (MonadThrow)
-import Control.Monad.Trans.Control (MonadBaseControl)
 import Data.Aeson qualified as A
 import Data.List.NonEmpty qualified as NEL
 import Data.Text qualified as T
 import Language.LSP.Protocol.Lens qualified as LSP
 import Language.LSP.Protocol.Types (Diagnostic, Uri)
-import Language.LSP.Protocol.Types qualified as LSP
 import Language.LSP.Protocol.Types qualified as Types
 import Language.LSP.Server (MonadLsp)
 import Language.PureScript qualified as P
@@ -28,16 +26,14 @@ getFileDiagnotics ::
     LSP.HasUri a2 Uri,
     MonadLsp ServerConfig m,
     MonadThrow m,
-    MonadReader LspEnvironment m,
-    MonadBaseControl IO m
+    MonadReader LspEnvironment m
   ) =>
-  Maybe LSP.ProgressToken ->
   s ->
   m [Diagnostic]
-getFileDiagnotics progressToken msg = do
+getFileDiagnotics msg = do
   let uri :: Types.NormalizedUri
       uri = getMsgUri msg & Types.toNormalizedUri
-  res <- rebuildFile progressToken uri
+  res <- rebuildFile uri
   pure $ getResultDiagnostics res
 
 getMsgUri :: (LSP.HasParams s a1, LSP.HasTextDocument a1 a2, LSP.HasUri a2 a3) => s -> a3

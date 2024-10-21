@@ -18,12 +18,14 @@ import Language.PureScript.Lsp.Monad (HandlerM)
 import Language.PureScript.Lsp.ServerConfig (ServerConfig (outputPath))
 import Language.PureScript.Lsp.State (getDbConn)
 import Language.PureScript.Lsp.Types (LspEnvironment)
-import Language.PureScript.Make.Index (indexAstDeclFromExternDecl, indexAstModuleFromExtern, indexExtern, initDb)
+import Language.PureScript.Make.Index (indexAstDeclFromExternDecl, indexAstModuleFromExtern, indexExtern, initDb, getExportedNames)
 import Language.PureScript.Make.Monad (readExternsFile)
 import Protolude hiding (to)
 import System.Directory (doesFileExist, getDirectoryContents)
 import System.FilePath ((</>))
 import Control.Monad.Trans.Control (MonadBaseControl)
+import Language.LSP.Protocol.Lens qualified as LSP
+import Control.Lens ((^.))
 
 indexHandler :: Server.Handlers HandlerM
 indexHandler =
@@ -34,11 +36,12 @@ indexHandler =
         externs <- logPerfStandard "findAvailableExterns" findAvailableExterns
         logPerfStandard "insert externs" $ forConcurrently_ externs indexExternAndDecls
         res $ Right A.Null,
-      Server.requestHandler (Message.SMethod_CustomMethod $ Proxy @"index-full") $ \_req res -> do
+      Server.requestHandler (Message.SMethod_CustomMethod $ Proxy @"index-full") $ \req res -> do
+        let progressToken = cast $ req ^. LSP.id
         conn <- getDbConn
         liftIO $ initDb conn
         deleteOutput
-        diags <- buildForLsp
+        diags <- buildForLsp progressToken
         res $ Right $ A.toJSON diags
     ]
   where
@@ -47,7 +50,7 @@ indexHandler =
       conn <- getDbConn
       indexExtern conn ef
       indexAstModuleFromExtern conn ef
-      for_ (P.efDeclarations ef) (indexAstDeclFromExternDecl conn ef)
+      for_ (P.efDeclarations ef) (indexAstDeclFromExternDecl conn ef (getExportedNames ef))
 
 -- \| Finds all the externs inside the output folder and returns the
 -- corresponding module names
