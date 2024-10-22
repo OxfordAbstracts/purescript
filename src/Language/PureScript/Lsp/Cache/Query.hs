@@ -31,7 +31,7 @@ getAstDeclarationInModule moduleName' name nameType = do
 
   pure $ listToMaybe decls
 
-getAstDeclarationLocationInModule :: (MonadIO m, MonadReader LspEnvironment m) => Maybe LspNameType -> P.ModuleName -> Text -> m [P.SourceSpan]
+getAstDeclarationLocationInModule :: (MonadIO m, MonadReader LspEnvironment m) =>  LspNameType -> P.ModuleName -> Text -> m [P.SourceSpan]
 getAstDeclarationLocationInModule lspNameType moduleName' name = do
   decls :: [([Char], Int, Int, Int, Int)] <-
     DB.queryNamed

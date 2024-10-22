@@ -70,7 +70,7 @@ errorMessageDiagnostic severity msg@((ErrorMessage _hints _)) =
         (Just $ Types.InR $ errorCode msg)
         (Just $ Types.CodeDescription $ Types.Uri $ errorDocUri msg)
         (T.pack <$> spanName)
-        (T.pack $ render $ prettyPrintSingleError noColorPPEOptions msg)
+        (T.pack $ render $ prettyPrintSingleError noColorPPEOptions $ Errors.withoutPosition $ Errors.withoutModule msg)
         Nothing
         Nothing
         (Just $ A.toJSON textEdits)

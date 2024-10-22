@@ -341,6 +341,7 @@ library
     Language.PureScript.Linter.Imports
     Language.PureScript.Linter.Wildcards
     Language.PureScript.Lsp
+    Language.PureScript.Lsp.AtPosition
     Language.PureScript.Lsp.DB
     Language.PureScript.Lsp.Docs
     Language.PureScript.Lsp.Imports

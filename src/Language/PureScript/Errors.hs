@@ -2042,6 +2042,12 @@ withoutPosition (ErrorMessage hints se) = ErrorMessage (filter go hints) se
   where
   go (PositionedError _) = False
   go _ = True
+  
+withoutModule :: ErrorMessage -> ErrorMessage
+withoutModule (ErrorMessage hints se) = ErrorMessage (filter go hints) se
+  where
+  go (ErrorInModule _) = False
+  go _ = True
 
 positionedError :: SourceSpan -> ErrorMessageHint
 positionedError = PositionedError . pure
