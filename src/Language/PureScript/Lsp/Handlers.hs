@@ -20,15 +20,14 @@ import Language.PureScript.Lsp.Handlers.Completion (completionAndResolveHandlers
 import Language.PureScript.Lsp.Handlers.Definition (definitionHandler)
 import Language.PureScript.Lsp.Handlers.DeleteOutput (deleteOutputHandler)
 import Language.PureScript.Lsp.Handlers.Diagnostic (diagnosticAndCodeActionHandlers)
+import Language.PureScript.Lsp.Handlers.Format (formatHandler)
 import Language.PureScript.Lsp.Handlers.Hover (hoverHandler)
 import Language.PureScript.Lsp.Handlers.Index (indexHandler)
 import Language.PureScript.Lsp.Monad (HandlerM)
-import Language.PureScript.Lsp.ReadFile (lspReadFileText)
 import Language.PureScript.Lsp.ServerConfig (setTraceValue)
 import Language.PureScript.Lsp.State (cancelRequest, clearCache, clearExportCache, clearRebuildCache, getDbConn, removedCachedRebuild)
 import Language.PureScript.Make.Index (dropTables, initDb)
-import Protolude hiding (to)
-import System.Process (readProcess)
+import Protolude
 
 handlers :: Server.Handlers HandlerM
 handlers =
@@ -39,6 +38,7 @@ handlers =
       definitionHandler,
       deleteOutputHandler,
       diagnosticAndCodeActionHandlers,
+      formatHandler,
       hoverHandler,
       indexHandler
     ]
@@ -69,7 +69,6 @@ handlers =
           Server.notificationHandler Message.SMethod_CancelRequest $ \msg -> do
             let reqId = msg ^. LSP.params . LSP.id
             cancelRequest reqId,
-
           Server.requestHandler (Message.SMethod_CustomMethod $ Proxy @"clear-cache") $ \_req res -> do
             clearCache
             res $ Right A.Null,

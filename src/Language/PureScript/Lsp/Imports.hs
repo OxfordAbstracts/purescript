@@ -3,6 +3,8 @@ module Language.PureScript.Lsp.Imports
     addImportToTextEdit,
     getIdentModuleQualifier,
     parseModuleNameFromFile,
+    parseImportsFromFile,
+    printImports,
   )
 where
 
@@ -175,6 +177,10 @@ parseImportsFromFile ::
 parseImportsFromFile fp = do
   rope <- lspReadFileRope fp
   pure $ sliceImportSection (Rope.lines rope)
+
+
+printImports :: (P.ModuleName, [Text], [Import], [Text]) -> Text 
+printImports (_mn, before, imports, after) = T.unlines $ before <> prettyPrintImportSection imports <> after
 
 parseModuleNameFromFile ::
   (MonadThrow m, MonadLsp ServerConfig m, MonadReader LspEnvironment m) =>
