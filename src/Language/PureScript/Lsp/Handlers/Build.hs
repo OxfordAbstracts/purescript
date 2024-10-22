@@ -10,7 +10,7 @@ import Language.LSP.Server qualified as Server
 import Language.PureScript qualified as P
 import Language.PureScript.Compile (compile)
 import Language.PureScript.Lsp.Cache (updateAvailableSrcs)
-import Language.PureScript.Lsp.Diagnostics (errorMessageDiagnostic)
+import Language.PureScript.Lsp.Diagnostics (errorMessageDiagnostic, addJsonEdits)
 import Language.PureScript.Lsp.Monad (HandlerM)
 import Language.PureScript.Lsp.Rebuild (codegenTargets)
 import Language.PureScript.Lsp.ServerConfig (ServerConfig (outputPath))
@@ -46,6 +46,6 @@ buildForLsp = do
         conn
         outDir
         False
-  pure $
+  pure $ addJsonEdits $
     (errorMessageDiagnostic Types.DiagnosticSeverity_Error <$> either P.runMultipleErrors (const []) result)
       <> (errorMessageDiagnostic Types.DiagnosticSeverity_Warning <$> P.runMultipleErrors warnings)
