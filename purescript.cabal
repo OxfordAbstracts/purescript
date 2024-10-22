@@ -354,6 +354,7 @@ library
     Language.PureScript.Lsp.Handlers.Definition
     Language.PureScript.Lsp.Handlers.DeleteOutput
     Language.PureScript.Lsp.Handlers.Diagnostic
+    Language.PureScript.Lsp.Handlers.Format
     Language.PureScript.Lsp.Handlers.Hover
     Language.PureScript.Lsp.Handlers.Index
     Language.PureScript.Lsp.Log
