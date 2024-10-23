@@ -63,8 +63,8 @@ getImportEdits cid@(CompleteItemData path moduleName' importedModuleName name na
         Nothing -> do
           errorLsp $ "In " <> T.pack path <> " failed to get declaration from module: " <> show (importedModuleName, name, nameType)
           pure Nothing
-        Just (declName, declType) -> do
-          case addDeclarationToImports moduleName' importedModuleName wordQualifierMb declName declType nameType imports of
+        Just (declName, ctrType) -> do
+          case addDeclarationToImports moduleName' importedModuleName wordQualifierMb declName ctrType nameType imports of
             Nothing -> pure Nothing
             Just (newImports, moduleQualifier) -> do
               let importEdits = importsToTextEdit before newImports
@@ -98,14 +98,14 @@ addDeclarationToImports ::
   P.ModuleName ->
   Maybe P.ModuleName ->
   Text ->
-  Text ->
+  Maybe Text ->
   LspNameType ->
   [Import] ->
   Maybe
     ( [Import], -- new imports
       Maybe P.ModuleName -- module qualifier
     )
-addDeclarationToImports moduleName' importedModuleName wordQualifierMb declName declType nameType imports
+addDeclarationToImports moduleName' importedModuleName wordQualifierMb declName ctrType nameType imports
   | importingSelf = Nothing
   | Just existing <- alreadyImportedModuleMb  = case existing of
       Import _ (P.Explicit refs') mName
@@ -135,7 +135,7 @@ addDeclarationToImports moduleName' importedModuleName wordQualifierMb declName 
         ValOpNameType -> P.ValueOpRef nullSourceSpan (P.OpName declName)
         TyNameType -> P.TypeRef nullSourceSpan (P.ProperName declName) Nothing
         TyOpNameType -> P.TypeOpRef nullSourceSpan (P.OpName declName)
-        DctorNameType -> P.TypeRef nullSourceSpan (P.ProperName declType) (Just [P.ProperName declName])
+        DctorNameType -> P.TypeRef nullSourceSpan (P.ProperName $ fromMaybe "Ctr type not found" ctrType) (Just [P.ProperName declName])
         TyClassNameType -> P.TypeClassRef nullSourceSpan (P.ProperName declName)
         ModNameType -> P.ModuleRef nullSourceSpan (P.ModuleName declName)
 

@@ -1,5 +1,4 @@
 {-# LANGUAGE BlockArguments #-}
-{-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE LambdaCase #-}
 
 module Language.PureScript.Lsp.Print where
@@ -27,6 +26,50 @@ printDeclarationTypeMb decl =
   (head :: [Text] -> Maybe Text) $
     accumTypes (pure . T.pack . P.prettyPrintType maxBound) ^. _1 $
       decl
+
+printType :: P.Type a -> Text
+printType = T.pack . P.prettyPrintType maxBound
+
+printCtrType :: P.SourcePos -> P.ProperName 'P.TypeName -> P.DataConstructorDeclaration -> Text
+printCtrType pos tyName = printType . getCtrType pos tyName
+
+getCtrType :: P.SourcePos -> P.ProperName 'P.TypeName -> P.DataConstructorDeclaration -> P.Type ()
+getCtrType pos tyName ctr = foldr addCtrField (P.TypeConstructor () $ P.Qualified (P.BySourcePos pos) tyName) (P.dataCtorFields ctr)
+
+addCtrField :: (P.Ident, P.SourceType) -> P.Type () -> P.Type ()
+addCtrField (_ident, ty) acc = ty `arrow` acc
+
+printDataDeclType :: P.ProperName 'P.TypeName -> [(Text, Maybe P.SourceType)] -> Text
+printDataDeclType tyName = printType . getDataDeclType tyName
+
+getDataDeclType :: P.ProperName 'P.TypeName -> [(Text, Maybe P.SourceType)] -> P.Type ()
+getDataDeclType tyName args = P.KindedType () tipe kind
+  where
+    tipe :: P.Type ()
+    tipe = foldr addDataDeclArgType (P.TypeVar () $ P.runProperName tyName) args
+
+    kind = foldr addDataDeclArgKind (P.TypeVar () "Type") args
+
+addDataDeclArgType :: (Text, Maybe P.SourceType) -> P.Type () -> P.Type ()
+addDataDeclArgType (ident, _) acc = P.TypeApp () acc (P.TypeVar () ident)
+
+addDataDeclArgKind :: (Text, Maybe P.SourceType) -> P.Type () -> P.Type ()
+addDataDeclArgKind (_ident, tyMb) acc = ty `arrow` acc
+  where
+    ty :: P.Type ()
+    ty = maybe (P.TypeVar () "Type") void tyMb
+
+arrow :: P.Type a -> P.Type () -> P.Type ()
+arrow l r = P.BinaryNoParensType () arrowSymbol (void l) r
+
+arrowSymbol :: P.Type ()
+arrowSymbol = P.TypeOp () (mkQual (P.OpName "->"))
+
+mkQual :: a -> P.Qualified a
+mkQual = P.Qualified (P.BySourcePos nullSourcePos)
+
+nullSourcePos :: P.SourcePos
+nullSourcePos = P.SourcePos 0 0
 
 printName :: P.Name -> Text
 printName = \case

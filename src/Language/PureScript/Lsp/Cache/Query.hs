@@ -19,11 +19,11 @@ import Language.PureScript.Lsp.Log (debugLsp)
 ------------ AST -------------------------------------------------------------------------------------------------------
 ------------------------------------------------------------------------------------------------------------------------
 
-getAstDeclarationInModule :: (MonadIO m, MonadReader LspEnvironment m) => P.ModuleName -> Text -> LspNameType -> m (Maybe (Text, Text))
+getAstDeclarationInModule :: (MonadIO m, MonadReader LspEnvironment m) => P.ModuleName -> Text -> LspNameType -> m (Maybe (Text, Maybe Text))
 getAstDeclarationInModule moduleName' name nameType = do
   decls <-
     DB.queryNamed
-      "SELECT name, printed_type FROM ast_declarations WHERE module_name = :module_name AND name = :name AND name_type IS :name_type"
+      "SELECT name, ctr_type FROM ast_declarations WHERE module_name = :module_name AND name = :name AND name_type IS :name_type"
       [ ":module_name" := P.runModuleName moduleName',
         ":name" := name,
         ":name_type" := nameType

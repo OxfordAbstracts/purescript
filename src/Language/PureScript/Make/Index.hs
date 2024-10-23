@@ -14,7 +14,7 @@ import Language.PureScript.AST qualified as P
 import Language.PureScript.Externs (ExternsFile (efModuleName))
 import Language.PureScript.Externs qualified as P
 import Language.PureScript.Lsp.NameType (LspNameType (DctorNameType), externDeclNameType, lspNameType)
-import Language.PureScript.Lsp.Print (printDeclarationType, printEfDeclName, printEfDeclType, printName)
+import Language.PureScript.Lsp.Print (printCtrType, printDataDeclType, printDeclarationType, printEfDeclName, printEfDeclType, printName, printType)
 import Language.PureScript.Lsp.ServerConfig (ServerConfig)
 import Language.PureScript.Lsp.Util (efDeclSourceSpan, getOperatorValueName)
 import Language.PureScript.Make qualified as P
@@ -49,12 +49,19 @@ indexAstModule conn (P.Module _ss _comments moduleName' decls _exportRefs) exter
         end = P.spanEnd ss
         nameMb = P.declName decl
         printedType = case getOperatorValueName decl >>= disqualifyIfInModule >>= getDeclFromName of
-          Nothing -> printDeclarationType decl -- TODO add check for operators in other modules
           Just decl' -> printDeclarationType decl'
+          Nothing -> case decl of
+            P.TypeDeclaration declData -> printType $ P.tydeclType declData
+            P.DataDeclaration _ _ tyName args _ -> printDataDeclType tyName args
+            _ -> printDeclarationType decl
     for_ nameMb \name -> do
-      let 
-          exported = Set.member name exportedNames
+      let exported = Set.member name exportedNames
           nameType = lspNameType name
+          printedName = printName name
+      when (printName name == "Tuple") $ do 
+        putErrLn $ ("Tuple: " :: Text) <> show decl
+        putErrLn $ ("type: " :: Text) <> printedType
+
       SQL.executeNamed
         conn
         ( SQL.Query
@@ -63,7 +70,7 @@ indexAstModule conn (P.Module _ss _comments moduleName' decls _exportRefs) exter
             \ VALUES (:module_name, :name, :printed_type, :name_type, :start_line, :end_line, :start_col, :end_col, :lines, :cols, :exported, :generated)"
         )
         [ ":module_name" := P.runModuleName moduleName',
-          ":name" := printName name,
+          ":name" := printedName,
           ":printed_type" := printedType,
           ":name_type" := nameType,
           ":start_line" := P.sourcePosLine start,
@@ -75,22 +82,26 @@ indexAstModule conn (P.Module _ss _comments moduleName' decls _exportRefs) exter
           ":exported" := exported,
           ":generated" := "$Dict" `T.isInfixOf` printedType
         ]
+      for_ (declCtrs decl) $
+        \(sa, tyName, ctrs) ->
+          for_ ctrs $ \ctr -> do
+            let (ss', _) = P.dataCtorAnn ctr
+                start' = P.spanStart ss'
+                end' = P.spanEnd ss'
+                ctrPrintedType = printCtrType (P.spanStart $ fst sa) tyName ctr
 
-      for_ (declCtrs decl) \ctr ->
-        let (ss', _) = P.dataCtorAnn ctr
-            start' = P.spanStart ss'
-            end' = P.spanEnd ss'
-         in SQL.executeNamed
+            SQL.executeNamed
               conn
               ( SQL.Query
                   "INSERT INTO ast_declarations \
-                  \         (module_name, name, printed_type, name_type, start_line, end_line, start_col, end_col, lines, cols, exported, generated) \
-                  \ VALUES (:module_name, :name, :printed_type, :name_type, :start_line, :end_line, :start_col, :end_col, :lines, :cols, :exported, :generated)"
+                  \         (module_name, name, printed_type, name_type, ctr_type, start_line, end_line, start_col, end_col, lines, cols, exported, generated) \
+                  \ VALUES (:module_name, :name, :printed_type, :name_type, :ctr_type, :start_line, :end_line, :start_col, :end_col, :lines, :cols, :exported, :generated)"
               )
               [ ":module_name" := P.runModuleName moduleName',
                 ":name" := P.runProperName (P.dataCtorName ctr),
-                ":printed_type" := printName name,
+                ":printed_type" := ctrPrintedType,
                 ":name_type" := DctorNameType,
+                ":ctr_type" := printedName,
                 ":start_line" := P.sourcePosLine start',
                 ":end_line" := P.sourcePosLine end',
                 ":start_col" := P.sourcePosColumn start',
@@ -111,10 +122,10 @@ indexAstModule conn (P.Module _ss _comments moduleName' decls _exportRefs) exter
     disqualifyIfInModule (P.Qualified (P.BySourcePos _) name) = Just name
     disqualifyIfInModule _ = Nothing
 
-declCtrs :: P.Declaration -> [P.DataConstructorDeclaration]
+declCtrs :: P.Declaration -> Maybe (P.SourceAnn, P.ProperName 'P.TypeName, [P.DataConstructorDeclaration])
 declCtrs = \case
-  P.DataDeclaration _ _ _ _ ctors -> ctors
-  _ -> []
+  P.DataDeclaration sa _ n _ ctors -> Just (sa, n, ctors)
+  _ -> Nothing
 
 indexAstModuleFromExtern :: (MonadIO m) => Connection -> ExternsFile -> m ()
 indexAstModuleFromExtern conn extern = liftIO do
@@ -237,7 +248,7 @@ initDb conn = do
   SQL.execute_
     conn
     "CREATE TABLE IF NOT EXISTS ast_declarations \
-    \(module_name TEXT references ast_modules(module_name) ON DELETE CASCADE, name TEXT, name_type TEXT, printed_type TEXT, start_line INTEGER, end_line INTEGER, start_col INTEGER, end_col INTEGER, lines INTEGER, cols INTEGER, exported BOOLEAN, generated BOOLEAN, \
+    \(module_name TEXT references ast_modules(module_name) ON DELETE CASCADE, name TEXT, name_type TEXT, ctr_type TEXT, printed_type TEXT, start_line INTEGER, end_line INTEGER, start_col INTEGER, end_col INTEGER, lines INTEGER, cols INTEGER, exported BOOLEAN, generated BOOLEAN, \
     \UNIQUE(module_name, name_type, name) on conflict replace)"
   SQL.execute_ conn "CREATE TABLE IF NOT EXISTS externs (path TEXT PRIMARY KEY, ef_version TEXT, value BLOB, module_name TEXT, UNIQUE(path) on conflict replace, UNIQUE(module_name) on conflict replace)"
   SQL.execute_ conn "CREATE TABLE IF NOT EXISTS ef_imports (module_name TEXT references externs(module_name) ON DELETE CASCADE, imported_module TEXT, import_type TEXT, imported_as TEXT, value BLOB)"
@@ -249,6 +260,8 @@ addDbIndexes :: Connection -> IO ()
 addDbIndexes conn = do
   SQL.execute_ conn "CREATE INDEX IF NOT EXISTS ast_declarations_module_name ON ast_declarations (module_name)"
   SQL.execute_ conn "CREATE INDEX IF NOT EXISTS ast_declarations_name ON ast_declarations (name)"
+  SQL.execute_ conn "CREATE INDEX IF NOT EXISTS ast_declarations_name_type ON ast_declarations (name_type)"
+  SQL.execute_ conn "CREATE INDEX IF NOT EXISTS ast_declarations_ctr_type ON ast_declarations (ctr_type)"
   SQL.execute_ conn "CREATE INDEX IF NOT EXISTS ast_declarations_start_line ON ast_declarations (start_line)"
   SQL.execute_ conn "CREATE INDEX IF NOT EXISTS ast_declarations_end_line ON ast_declarations (end_line)"
   SQL.execute_ conn "CREATE INDEX IF NOT EXISTS externs_path ON externs (path)"
