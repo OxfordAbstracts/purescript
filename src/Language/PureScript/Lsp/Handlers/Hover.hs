@@ -15,9 +15,9 @@ import Language.PureScript.AST.Declarations (Expr (..))
 import Language.PureScript.Docs.Convert.Single (convertComments)
 import Language.PureScript.Docs.Types qualified as Docs
 import Language.PureScript.Ide.Error (prettyPrintTypeSingleLine)
+import Language.PureScript.Lsp.AtPosition (findDeclRefAtPos, fromPrim, getDeclTypesAtPos, getEverythingAtPos, getExprsAtPos, getImportRefNameType, getTypeRowsAndColumns, getTypedValuesAtPos, isNullSourceTypeSpan, isPrimImport, smallestExpr, spanToRange)
 import Language.PureScript.Lsp.Cache.Query (getAstDeclarationTypeInModule)
 import Language.PureScript.Lsp.Docs (readDeclarationDocsWithNameType, readModuleDocs)
-import Language.PureScript.Lsp.AtPosition (findDeclRefAtPos, fromPrim, getExprsAtPos, getImportRefNameType, getTypeRowsAndColumns, getTypedValuesAtPos, getTypesAtPos, isNullSourceTypeSpan, isPrimImport, smallestExpr, spanToRange)
 import Language.PureScript.Lsp.Log (debugLsp)
 import Language.PureScript.Lsp.Monad (HandlerM)
 import Language.PureScript.Lsp.NameType (LspNameType (..))
@@ -76,77 +76,6 @@ hoverHandler = Server.requestHandler Message.SMethod_TextDocumentHover $ \req re
             respondWithDeclInModule ss nameType importedModuleName (printName name)
           _ -> respondWithModule ss importedModuleName
 
-      handleDecls :: [P.Declaration] -> HandlerM ()
-      handleDecls decls = do
-        let srcPosLine = fromIntegral _line + 1
-
-            declsAtPos =
-              decls
-                & declsAtLine srcPosLine
-
-        debugLsp $ "declsAtPos: " <> show (length declsAtPos)
-
-        forLsp (head declsAtPos) $ \decl -> do
-          case decl of
-            P.ImportDeclaration (ss, _) importedModuleName importType _ -> do
-              case importType of
-                P.Implicit -> respondWithModule ss importedModuleName
-                P.Explicit imports -> respondWithImports ss importedModuleName imports
-                P.Hiding imports -> respondWithImports ss importedModuleName imports
-            P.TypeInstanceDeclaration _ (P.SourceSpan span start end, _) _ _ _ constraints (P.Qualified (P.ByModuleName modName) className) _args body
-              | posInSpan pos classNameSS -> respondWithDeclInModule classNameSS TyClassNameType modName classNameTxt
-              | Just (P.Constraint (ss, _) (P.Qualified (P.ByModuleName conModName) conClassName) _ _ _) <- find (posInSpan pos . fst . P.constraintAnn) constraints -> do
-                  respondWithDeclInModule ss TyClassNameType conModName $ P.runProperName conClassName
-              | P.ExplicitInstance members <- body, not $ null $ declsAtLine srcPosLine members  -> do
-                  handleDecls members
-              where
-                classNameSS = P.SourceSpan span start (P.SourcePos (P.sourcePosLine end) (P.sourcePosColumn start + T.length classNameTxt))
-
-                classNameTxt :: Text
-                classNameTxt = P.runProperName className
-            _ -> do
-              let exprsAtPos = getExprsAtPos pos =<< declsAtPos
-                  findTypedExpr :: [Expr] -> Maybe (P.SourceType, Maybe P.SourceSpan)
-                  findTypedExpr ((P.TypedValue _ e t) : _) = Just (t, P.exprSourceSpan e)
-                  findTypedExpr (_ : es) = findTypedExpr es
-                  findTypedExpr [] = Nothing
-
-              debugLsp $ "exprsAtPos: " <> show (length exprsAtPos)
-
-              case smallestExpr exprsAtPos of
-                Just expr -> do
-                  case expr of
-                    P.Var ss (P.Qualified (P.ByModuleName modName) ident) -> do
-                      respondWithDeclInModule ss IdentNameType modName (P.runIdent ident)
-                    P.Op ss (P.Qualified (P.ByModuleName modName) ident) -> do
-                      respondWithDeclInModule ss ValOpNameType modName (P.runOpName ident)
-                    P.Constructor ss (P.Qualified (P.ByModuleName modName) ident) -> do
-                      respondWithDeclInModule ss DctorNameType modName (P.runProperName ident)
-                    _ -> forLsp (findTypedExpr $ getTypedValuesAtPos pos decl) (respondWithSourceType expr)
-                _ -> do
-                  let tipes =
-                        filter (not . fromPrim) $
-                          filter (not . isNullSourceTypeSpan) $
-                            getTypesAtPos pos decl
-
-                  debugLsp $ "tipes: " <> show (length tipes)
-
-                  case tipes of
-                    [] -> nullRes
-                    _ -> do
-                      let smallest = minimumBy (comparing getTypeRowsAndColumns) tipes
-                      debugLsp $ "smallest: " <> show smallest
-                      case smallest of
-                        P.TypeConstructor (ss, _) (P.Qualified (P.ByModuleName modName) ident) -> do
-                          respondWithDeclInModule ss TyNameType modName $ P.runProperName ident
-                        P.TypeOp (ss, _) (P.Qualified (P.ByModuleName modName) ident) -> do
-                          respondWithDeclInModule ss TyOpNameType modName $ P.runOpName ident
-                        P.ConstrainedType (ss, _) c _ -> case P.constraintClass c of
-                          (P.Qualified (P.ByModuleName modName) ident) -> do
-                            respondWithDeclInModule ss TyClassNameType modName $ P.runProperName ident
-                          _ -> nullRes
-                        _ -> nullRes
-
   forLsp filePathMb \filePath -> do
     cacheOpenMb <- cachedRebuild filePath
     forLsp cacheOpenMb \OpenFile {..} -> do
@@ -155,8 +84,82 @@ hoverHandler = Server.requestHandler Message.SMethod_TextDocumentHover $ \req re
               & P.getModuleDeclarations
               & filter (not . isPrimImport)
 
-      handleDecls withoutPrim
+      let everything = getEverythingAtPos pos (P.getModuleDeclarations ofModule)
+      case everything of 
+        EverythingAtPos { apTypes = types } | not $ null types -> do 
+          let ty = minimumBy (comparing getTypeRowsAndColumns) types
+          respondWith
 
+-- handleDecls :: [P.Declaration] -> HandlerM ()
+-- handleDecls decls = do
+--   let srcPosLine = fromIntegral _line + 1
+
+--       declsAtPos =
+--         decls
+--           & declsAtLine srcPosLine
+
+--   debugLsp $ "declsAtPos: " <> show (length declsAtPos)
+
+--   forLsp (head declsAtPos) $ \decl -> do
+--     case decl of
+--       P.ImportDeclaration (ss, _) importedModuleName importType _ -> do
+--         case importType of
+--           P.Implicit -> respondWithModule ss importedModuleName
+--           P.Explicit imports -> respondWithImports ss importedModuleName imports
+--           P.Hiding imports -> respondWithImports ss importedModuleName imports
+--       P.TypeInstanceDeclaration _ (P.SourceSpan span start end, _) _ _ _ constraints (P.Qualified (P.ByModuleName modName) className) _args body
+--         | posInSpan pos classNameSS -> respondWithDeclInModule classNameSS TyClassNameType modName classNameTxt
+--         | Just (P.Constraint (ss, _) (P.Qualified (P.ByModuleName conModName) conClassName) _ _ _) <- find (posInSpan pos . fst . P.constraintAnn) constraints -> do
+--             respondWithDeclInModule ss TyClassNameType conModName $ P.runProperName conClassName
+--         | P.ExplicitInstance members <- body, not $ null $ declsAtLine srcPosLine members  -> do
+--             handleDecls members
+--         where
+--           classNameSS = P.SourceSpan span start (P.SourcePos (P.sourcePosLine end) (P.sourcePosColumn start + T.length classNameTxt))
+
+--           classNameTxt :: Text
+--           classNameTxt = P.runProperName className
+--       _ -> do
+--         let exprsAtPos = getExprsAtPos pos =<< declsAtPos
+--             findTypedExpr :: [Expr] -> Maybe (P.SourceType, Maybe P.SourceSpan)
+--             findTypedExpr ((P.TypedValue _ e t) : _) = Just (t, P.exprSourceSpan e)
+--             findTypedExpr (_ : es) = findTypedExpr es
+--             findTypedExpr [] = Nothing
+
+--         debugLsp $ "exprsAtPos: " <> show (length exprsAtPos)
+
+--         case smallestExpr exprsAtPos of
+--           Just expr -> do
+--             case expr of
+--               P.Var ss (P.Qualified (P.ByModuleName modName) ident) -> do
+--                 respondWithDeclInModule ss IdentNameType modName (P.runIdent ident)
+--               P.Op ss (P.Qualified (P.ByModuleName modName) ident) -> do
+--                 respondWithDeclInModule ss ValOpNameType modName (P.runOpName ident)
+--               P.Constructor ss (P.Qualified (P.ByModuleName modName) ident) -> do
+--                 respondWithDeclInModule ss DctorNameType modName (P.runProperName ident)
+--               _ -> forLsp (findTypedExpr $ getTypedValuesAtPos pos decl) (respondWithSourceType expr)
+--           _ -> do
+--             let tipes =
+--                   filter (not . fromPrim) $
+--                     filter (not . isNullSourceTypeSpan) $
+--                       getDeclTypesAtPos pos decl
+
+--             debugLsp $ "tipes: " <> show (length tipes)
+
+--             case tipes of
+--               [] -> nullRes
+--               _ -> do
+--                 let smallest = minimumBy (comparing getTypeRowsAndColumns) tipes
+--                 debugLsp $ "smallest: " <> show smallest
+--                 case smallest of
+--                   P.TypeConstructor (ss, _) (P.Qualified (P.ByModuleName modName) ident) -> do
+--                     respondWithDeclInModule ss TyNameType modName $ P.runProperName ident
+--                   P.TypeOp (ss, _) (P.Qualified (P.ByModuleName modName) ident) -> do
+--                     respondWithDeclInModule ss TyOpNameType modName $ P.runOpName ident
+--                   P.ConstrainedType (ss, _) c _ -> case P.constraintClass c of
+--                     (P.Qualified (P.ByModuleName modName) ident) -> do
+--                       respondWithDeclInModule ss TyClassNameType modName $ P.runProperName ident
+--                     _ -> nullRes
+--                   _ -> nullRes
 pursTypeStr :: Text -> Maybe Text -> [P.Comment] -> Text
 pursTypeStr word type' comments =
   "```purescript\n"

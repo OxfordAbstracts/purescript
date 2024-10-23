@@ -4,13 +4,15 @@
 
 module Language.PureScript.Lsp.AtPosition where
 
-import Control.Lens (Field1 (_1), view, At)
-import Data.Text qualified as T
-import Language.LSP.Protocol.Types qualified as Types
+import Control.Lens (At, Field1 (_1), Field2 (_2), Field3 (_3), un, view)
 -- import Language.PureScript.Lsp.Monad (m)
 
+import Data.List qualified as List
+import Data.Text qualified as T
+import Language.LSP.Protocol.Types qualified as Types
 import Language.LSP.Server (MonadLsp)
 import Language.PureScript qualified as P
+import Language.PureScript.AST.Declarations (declSourceSpan)
 import Language.PureScript.AST.SourcePos (nullSourceSpan)
 import Language.PureScript.Lsp.Log (debugLsp)
 import Language.PureScript.Lsp.NameType (LspNameType (..))
@@ -18,41 +20,214 @@ import Language.PureScript.Lsp.ServerConfig (ServerConfig)
 import Language.PureScript.Lsp.State (cachedRebuild)
 import Language.PureScript.Lsp.Types (LspEnvironment, OpenFile (..))
 import Language.PureScript.Lsp.Util (declsAtLine, posInSpan, sourcePosToPosition)
+import Language.PureScript.Traversals (defS)
 import Language.PureScript.Types (getAnnForType)
 import Protolude
-import Language.PureScript.AST.Declarations (declSourceSpan)
 
-data AtPosition = AtPosition
+data AtPos
+  = APExpr P.SourceSpan Bool P.Expr
+  | APBinder P.SourceSpan Bool P.Binder
+  | APCaseAlternative P.SourceSpan P.CaseAlternative
+  | APDoNotationElement P.SourceSpan Bool P.DoNotationElement
+  | APGuard P.SourceSpan P.Guard
+  | APType P.SourceType
+  | APImport P.SourceSpan P.ModuleName P.ImportDeclarationType (Maybe P.DeclarationRef)
+  | APDecl P.Declaration
+
+getSmallestAtPos :: EverythingAtPos -> Maybe AtPos
+getSmallestAtPos = \case
+  EverythingAtPos {apImport = Just import'} ->
+    Just $ uncurry4 APImport import'
+  EverythingAtPos {apTypes = types}
+    | not . null $ types ->
+        Just $ APType $ minimumBy (comparing getTypeRowsAndColumns) types
+  EverythingAtPos {apBinders = binders}
+    | not . null $ binders ->
+        Just $ uncurry3 APBinder $ minimumBy (comparing (spanSize . view _1)) binders
+  EverythingAtPos {apExprs = exprs}
+    | not . null $ exprs ->
+        Just $ uncurry3 APExpr $ minimumBy (comparing (spanSize . view _1)) exprs
+  EverythingAtPos {apCaseAlternatives = caseAlts}
+    | not . null $ caseAlts ->
+        Just $ uncurry APCaseAlternative $ minimumBy (comparing (spanSize . view _1)) caseAlts
+  EverythingAtPos {apDoNotationElements = doNotElems}
+    | not . null $ doNotElems ->
+        Just $ uncurry3 APDoNotationElement $ minimumBy (comparing (spanSize . view _1)) doNotElems
+  EverythingAtPos {apGuards = guards}
+    | not . null $ guards ->
+        Just $ uncurry APGuard $ minimumBy (comparing (spanSize . view _1)) guards
+  EverythingAtPos {apDecls = decls}
+    | not . null $ decls ->
+        Just $ APDecl $ minimumBy (comparing (spanSize . declSourceSpan)) decls
+  EverythingAtPos {apDeclTopLevel = Just decl} ->
+    Just $ APDecl decl
+  _ -> Nothing
+
+uncurry3 :: (a -> b -> c -> d) -> (a, b, c) -> d
+uncurry3 f (a, b, c) = f a b c
+
+uncurry4 :: (a -> b -> c -> d -> e) -> (a, b, c, d) -> e
+uncurry4 f (a, b, c, d) = f a b c d
+
+spanSize :: P.SourceSpan -> (Int, Int)
+spanSize (P.SourceSpan _ start end) = (P.sourcePosLine end - P.sourcePosLine start, P.sourcePosColumn end - P.sourcePosColumn start)
+
+data EverythingAtPos = EverythingAtPos
   { apDeclTopLevel :: Maybe P.Declaration,
     apDecls :: [P.Declaration],
-    apExprs :: [P.Expr],
-    apBinders :: [P.Binder],
-    apCaseAlternatives :: [P.CaseAlternative],
-    apDoNotationElements :: [P.DoNotationElement],
-    apGuards :: [P.Guard],
+    apExprs :: [(P.SourceSpan, Bool, P.Expr)],
+    apBinders :: [(P.SourceSpan, Bool, P.Binder)],
+    apCaseAlternatives :: [(P.SourceSpan, P.CaseAlternative)],
+    apDoNotationElements :: [(P.SourceSpan, Bool, P.DoNotationElement)],
+    apGuards :: [(P.SourceSpan, P.Guard)],
     apTypes :: [P.SourceType],
-    apImport :: Maybe (P.SourceSpan, P.ModuleName, Maybe P.DeclarationRef)
-  } deriving (Show)
-
-nullAtPosition :: AtPosition
-nullAtPosition = AtPosition Nothing [] [] [] [] [] [] [] Nothing
-
-topLevelDeclAtPosition :: P.Declaration -> AtPosition
-topLevelDeclAtPosition decl = nullAtPosition { apDeclTopLevel = Just decl }
+    apImport :: Maybe (P.SourceSpan, P.ModuleName, P.ImportDeclarationType, Maybe P.DeclarationRef)
+  }
+  deriving (Show)
 
 
--- getAtPosition :: [P.Declaration] -> Types.Position -> AtPosition
--- getAtPosition decls pos@(Types.Position {..}) = case head $ declsAtLine (fromIntegral _line + 1) decls of
---   Nothing -> nullAtPosition
---   Just decl -> execS
---     where
---       (handleDecl, _, _ , _, _, _) = P.everywhereWithContextOnValuesM (declSourceSpan)
+nullEverythingAtPos :: EverythingAtPos
+nullEverythingAtPos = EverythingAtPos Nothing [] [] [] [] [] [] [] Nothing
 
--- getBindersAtPos :: Types.Position -> P.Declaration -> [P.Binder]
--- getBindersAtPos pos decl
+withSpansOnly :: EverythingAtPos -> EverythingAtPos
+withSpansOnly EverythingAtPos {..} =
+  EverythingAtPos
+    apDeclTopLevel
+    apDecls
+    (filter (view _2) apExprs)
+    (filter (view _2) apBinders)
+    []
+    (filter (view _2) apDoNotationElements)
+    []
+    apTypes
+    apImport
 
--- ()
--- importDecl = case decl of
+withTypedValuesOnly :: EverythingAtPos -> EverythingAtPos
+withTypedValuesOnly EverythingAtPos {..} =
+  EverythingAtPos
+    apDeclTopLevel
+    apDecls
+    (filter (isJust . exprTypes . view _3) apExprs)
+    []
+    []
+    []
+    []
+    apTypes
+    apImport
+  where
+    (declTypes, exprTypes, binderTypes, _, _) = 
+        P.accumTypes (const $ Just ())
+
+
+getEverythingAtPos :: [P.Declaration] -> Types.Position -> EverythingAtPos
+getEverythingAtPos decls pos@(Types.Position {..}) = case head $ declsAtLine (fromIntegral _line + 1) decls of
+  Nothing -> nullEverythingAtPos
+  Just (P.ImportDeclaration (ss, _) importedModuleName importType _) ->
+    nullEverythingAtPos {apImport = Just (ss, importedModuleName, importType, ref)}
+    where
+      ref = findDeclRefAtPos pos case importType of
+        P.Implicit -> []
+        P.Explicit refs -> refs
+        P.Hiding refs -> refs
+  Just topDecl -> execState (handleDecl topDecl) nullEverythingAtPos
+    where
+      (handleDecl, _, _, _, _, _) = P.everywhereWithContextOnValuesM (declSourceSpan topDecl) onDecl onExpr onBinder onCaseAlternative onDoNotationElement onGuard
+
+      onDecl :: P.SourceSpan -> P.Declaration -> StateT EverythingAtPos Identity (P.SourceSpan, P.Declaration)
+      onDecl _ decl = do
+        let ss = declSourceSpan decl
+        when (posInSpan pos ss) do
+          modify $ addDecl decl
+        addTypesSt $ declTypes decl
+        pure (ss, decl)
+
+      onExpr ss expr = do
+        let ssMb = P.exprSourceSpan expr
+            ss' = fromMaybe ss ssMb
+        when (posInSpan pos ss) do
+          modify $ addExpr ss (isJust ssMb) expr
+        addTypesSt $ exprTypes expr
+        pure (ss', expr)
+
+      onBinder ss binder = do
+        let ssMb = binderSourceSpan binder
+            ss' = fromMaybe ss ssMb
+        when (posInSpan pos ss) do
+          modify $ addBinder ss (isJust ssMb) binder
+        addTypesSt $ binderTypes binder
+        pure (ss', binder)
+
+      onCaseAlternative :: P.SourceSpan -> P.CaseAlternative -> StateT EverythingAtPos Identity (P.SourceSpan, P.CaseAlternative)
+      onCaseAlternative ss caseAlt = do
+        when (posInSpan pos ss) do
+          modify $ addCaseAlternative ss caseAlt
+        addTypesSt $ caseAltTypes caseAlt
+        pure (ss, caseAlt)
+
+      onDoNotationElement :: P.SourceSpan -> P.DoNotationElement -> StateT EverythingAtPos Identity (P.SourceSpan, P.DoNotationElement)
+      onDoNotationElement ss doNotationElement = do
+        let ssMb = doNotationElementSpan doNotationElement
+            ss' = fromMaybe ss ssMb
+        when (posInSpan pos ss) do
+          modify $ addDoNotationElement ss' (isJust ssMb) doNotationElement
+        addTypesSt $ doNotTypes doNotationElement
+        pure (ss, doNotationElement)
+
+      onGuard :: P.SourceSpan -> P.Guard -> StateT EverythingAtPos Identity (P.SourceSpan, P.Guard)
+      onGuard ss guard' = do
+        when (posInSpan pos ss) do
+          modify (addGuard ss guard')
+        pure (ss, guard')
+
+      binderSourceSpan :: P.Binder -> Maybe P.SourceSpan
+      binderSourceSpan = \case
+        P.NullBinder -> Nothing
+        P.LiteralBinder ss _ -> Just ss
+        P.VarBinder ss _ -> Just ss
+        P.ConstructorBinder ss _ _ -> Just ss
+        P.NamedBinder ss _ _ -> Just ss
+        P.PositionedBinder ss _ _ -> Just ss
+        P.TypedBinder ss _ -> Just (fst $ getAnnForType ss)
+        P.OpBinder ss _ -> Just ss
+        P.BinaryNoParensBinder {} -> Nothing
+        P.ParensInBinder {} -> Nothing
+
+      doNotationElementSpan :: P.DoNotationElement -> Maybe P.SourceSpan
+      doNotationElementSpan = \case
+        P.PositionedDoNotationElement ss _ _ -> Just ss
+        _ -> Nothing
+
+      (declTypes, exprTypes, binderTypes, caseAltTypes, doNotTypes) = P.accumTypes (getTypesAtPos pos)
+
+topLevelDeclEverythingAtPos :: P.Declaration -> EverythingAtPos
+topLevelDeclEverythingAtPos decl = nullEverythingAtPos {apDeclTopLevel = Just decl}
+
+addDecl :: P.Declaration -> EverythingAtPos -> EverythingAtPos
+addDecl decl atPos = atPos {apDecls = decl : apDecls atPos}
+
+addExpr :: P.SourceSpan -> Bool -> P.Expr -> EverythingAtPos -> EverythingAtPos
+addExpr ss hasOwnSs expr atPos = atPos {apExprs = (ss, hasOwnSs, expr) : apExprs atPos}
+
+addBinder :: P.SourceSpan -> Bool -> P.Binder -> EverythingAtPos -> EverythingAtPos
+addBinder ss hasOwnSs binder atPos = atPos {apBinders = (ss, hasOwnSs, binder) : apBinders atPos}
+
+addCaseAlternative :: P.SourceSpan -> P.CaseAlternative -> EverythingAtPos -> EverythingAtPos
+addCaseAlternative ss binder atPos = atPos {apCaseAlternatives = (ss, binder) : apCaseAlternatives atPos}
+
+addDoNotationElement :: P.SourceSpan -> Bool -> P.DoNotationElement -> EverythingAtPos -> EverythingAtPos
+addDoNotationElement ss hasOwnSs doNotationElement atPos =
+  atPos {apDoNotationElements = (ss, hasOwnSs, doNotationElement) : apDoNotationElements atPos}
+
+addGuard :: P.SourceSpan -> P.Guard -> EverythingAtPos -> EverythingAtPos
+addGuard ss guard' atPos = atPos {apGuards = (ss, guard') : apGuards atPos}
+
+addTypes :: [P.SourceType] -> EverythingAtPos -> EverythingAtPos
+addTypes tys atPos = atPos {apTypes = tys <> apTypes atPos}
+
+addTypesSt :: (MonadState EverythingAtPos m) => [P.SourceType] -> m ()
+addTypesSt tys = modify (addTypes tys)
+
+-- getDeclTypesAtPos :: Types.Position -> P.Declaration -> [P.SourceType]
 
 atPosition ::
   forall m.
@@ -112,7 +287,7 @@ atPosition nullRes handleDecl handleImportRef handleModule handleExprInModule fi
                   let tipes =
                         filter (not . fromPrim) $
                           filter (not . isNullSourceTypeSpan) $
-                            getTypesAtPos pos decl
+                            getDeclTypesAtPos pos decl
 
                   case tipes of
                     [] -> nullRes
@@ -236,11 +411,17 @@ getTypedValuesAtPos pos declaration = execState (goDecl declaration) []
         _ -> pure ()
       pure expr
 
-getTypesAtPos :: Types.Position -> P.Declaration -> [P.SourceType]
-getTypesAtPos pos decl = P.everythingOnTypes (<>) getAtPos =<< (view _1 $ P.accumTypes getAtPos) decl
+getDeclTypesAtPos :: Types.Position -> P.Declaration -> [P.SourceType]
+getDeclTypesAtPos pos decl = getTypesAtPos pos =<< (view _1 $ P.accumTypes getAtPos) decl
   where
     getAtPos :: P.SourceType -> [P.SourceType]
     getAtPos st = [st | posInSpan pos (fst $ getAnnForType st)]
+
+getTypesAtPos :: Types.Position -> P.SourceType -> [P.SourceType]
+getTypesAtPos pos st = P.everythingOnTypes (<>) getAtPos st
+  where
+    getAtPos :: P.SourceType -> [P.SourceType]
+    getAtPos st' = [st' | posInSpan pos (fst $ getAnnForType st')]
 
 findDeclRefAtPos :: (Foldable t) => Types.Position -> t P.DeclarationRef -> Maybe P.DeclarationRef
 findDeclRefAtPos pos imports = find (posInSpan pos . P.declRefSourceSpan) imports
