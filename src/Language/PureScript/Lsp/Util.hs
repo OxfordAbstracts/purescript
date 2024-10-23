@@ -179,7 +179,7 @@ declsAtLine l = go . sortBy (comparing declStartLine)
       P.ExternDeclaration{} -> True
       P.TypeClassDeclaration {} -> True
       P.TypeInstanceDeclaration {} -> True
-      _ -> True
+      _ -> False
 
 declStartLine :: P.Declaration -> Int
 declStartLine = P.sourcePosLine . AST.spanStart . P.declSourceSpan

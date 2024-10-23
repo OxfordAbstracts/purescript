@@ -20,7 +20,7 @@ import Language.PureScript.Lsp.Docs (readDeclarationDocsWithNameType)
 import Language.PureScript.Lsp.Imports (addImportToTextEdit, getIdentModuleQualifier, getMatchingImport, parseModuleNameFromFile)
 import Language.PureScript.Lsp.Log (debugLsp, logPerfStandard)
 import Language.PureScript.Lsp.Monad (HandlerM)
-import Language.PureScript.Lsp.NameType (LspNameType (..), readableType)
+import Language.PureScript.Lsp.NameType (LspNameType (..), readableType, readableTypeIn)
 import Language.PureScript.Lsp.ServerConfig (getMaxCompletions)
 import Language.PureScript.Lsp.Types (CompleteItemData (CompleteItemData), decodeCompleteItemData)
 import Language.PureScript.Lsp.Util (getSymbolAt)
@@ -79,7 +79,7 @@ completionAndResolveHandlers =
                                     Just $
                                       Types.CompletionItemLabelDetails
                                         (Just $ " " <> crType cr)
-                                        (Just $ readableType (crNameType cr) <> " in " <> P.runModuleName declModName),
+                                        (Just $ readableTypeIn (crNameType cr) <> P.runModuleName declModName),
                                   _kind =
                                     Just case nameType of
                                       IdentNameType | "->" `T.isInfixOf` crType cr -> Types.CompletionItemKind_Function
@@ -114,16 +114,15 @@ completionAndResolveHandlers =
         case result of
           A.Success (Just cid@(CompleteItemData _filePath _mName declModule label nameType _ _)) -> do
             docsMb <- readDeclarationDocsWithNameType declModule nameType label
-            debugLsp $ "docs found for " <> show (declModule, label) <> show (isJust docsMb)
             withImports <- addImportToTextEdit completionItem cid
             let setDocs docs = set LSP.documentation (Just $ Types.InR $ Types.MarkupContent Types.MarkupKind_Markdown docs)
 
                 addDocs :: Types.CompletionItem -> Types.CompletionItem
                 addDocs =
                   docsMb & maybe
-                    (setDocs $ readableType nameType)
+                    (setDocs $ readableType nameType <> " in " <> P.runModuleName declModule)
                     \docs ->
-                      setDocs (readableType nameType <> "\n\n" <> docs)
+                      setDocs (readableType nameType <> " in " <> P.runModuleName declModule <> "\n\n" <> docs)
             res $
               Right $
                 withImports

@@ -2,12 +2,12 @@
 
 module Language.PureScript.Lsp.NameType where
 
+import Data.Aeson qualified as A
 import Database.SQLite.Simple.FromField (FromField (fromField))
 import Database.SQLite.Simple.ToField (ToField (toField))
+import Language.PureScript.Externs (ExternsDeclaration (..))
 import Language.PureScript.Names
 import Protolude
-import Language.PureScript.Externs (ExternsDeclaration(..))
-import Data.Aeson qualified as A
 
 data LspNameType
   = IdentNameType
@@ -19,7 +19,6 @@ data LspNameType
   | ModNameType
   deriving (Show, Read, Eq, Generic, A.ToJSON, A.FromJSON)
 
-
 readableType :: LspNameType -> Text
 readableType = \case
   IdentNameType -> "Value"
@@ -29,6 +28,11 @@ readableType = \case
   DctorNameType -> "Constructor"
   TyClassNameType -> "Type Class"
   ModNameType -> "Module"
+
+readableTypeIn :: LspNameType -> Text
+readableTypeIn = \case
+  IdentNameType -> ""
+  lnt -> readableType lnt <> " in "
 
 instance ToField LspNameType where
   toField = toField . (show :: LspNameType -> Text)

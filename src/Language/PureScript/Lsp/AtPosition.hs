@@ -1,8 +1,10 @@
 {-# LANGUAGE BlockArguments #-}
+{-# LANGUAGE DeriveAnyClass #-}
+{-# OPTIONS_GHC -Wno-unused-imports #-}
 
 module Language.PureScript.Lsp.AtPosition where
 
-import Control.Lens (Field1 (_1), view)
+import Control.Lens (Field1 (_1), view, At)
 import Data.Text qualified as T
 import Language.LSP.Protocol.Types qualified as Types
 -- import Language.PureScript.Lsp.Monad (m)
@@ -18,30 +20,39 @@ import Language.PureScript.Lsp.Types (LspEnvironment, OpenFile (..))
 import Language.PureScript.Lsp.Util (declsAtLine, posInSpan, sourcePosToPosition)
 import Language.PureScript.Types (getAnnForType)
 import Protolude
+import Language.PureScript.AST.Declarations (declSourceSpan)
 
--- data AtPosition = AtPosition
---   { apExpr :: [P.Expr],
---     apBinders :: [P.Binder],
---     apType :: [P.SourceType],
---     apDecl :: Maybe P.Declaration,
---     apImport :: Maybe (P.SourceSpan, P.DeclarationRef),
---     apModuleImport :: Maybe (P.SourceSpan, P.ModuleName)
---   }
+data AtPosition = AtPosition
+  { apDeclTopLevel :: Maybe P.Declaration,
+    apDecls :: [P.Declaration],
+    apExprs :: [P.Expr],
+    apBinders :: [P.Binder],
+    apCaseAlternatives :: [P.CaseAlternative],
+    apDoNotationElements :: [P.DoNotationElement],
+    apGuards :: [P.Guard],
+    apTypes :: [P.SourceType],
+    apImport :: Maybe (P.SourceSpan, P.ModuleName, Maybe P.DeclarationRef)
+  } deriving (Show)
 
+nullAtPosition :: AtPosition
+nullAtPosition = AtPosition Nothing [] [] [] [] [] [] [] Nothing
 
--- nullAtPosition :: AtPosition
--- nullAtPosition = AtPosition [] [] [] Nothing Nothing Nothing
+topLevelDeclAtPosition :: P.Declaration -> AtPosition
+topLevelDeclAtPosition decl = nullAtPosition { apDeclTopLevel = Just decl }
+
 
 -- getAtPosition :: [P.Declaration] -> Types.Position -> AtPosition
--- getAtPosition decls pos@(Types.Position{..}) = case head $ declsAtLine (fromIntegral _line + 1) decls of 
---     Nothing -> nullAtPosition
---     Just decl -> AtPosition
---       { apExpr = getExprsAtPos pos decl,
---         apType = getTypesAtPos pos decl,
---         apDecl = Just decl,
---         apImport = findDeclRefAtPos pos (P.getModuleImports decl) <&> \import' -> (P.declRefSourceSpan import', import'),
---         apModuleImport = find (posInSpan pos . fst) (P.getModuleImports decl) 
---       }
+-- getAtPosition decls pos@(Types.Position {..}) = case head $ declsAtLine (fromIntegral _line + 1) decls of
+--   Nothing -> nullAtPosition
+--   Just decl -> execS
+--     where
+--       (handleDecl, _, _ , _, _, _) = P.everywhereWithContextOnValuesM (declSourceSpan)
+
+-- getBindersAtPos :: Types.Position -> P.Declaration -> [P.Binder]
+-- getBindersAtPos pos decl
+
+-- ()
+-- importDecl = case decl of
 
 atPosition ::
   forall m.
@@ -244,4 +255,3 @@ getImportRefNameType = \case
   P.ModuleRef _ _ -> ModNameType
   P.ReExportRef _ _ _ -> ModNameType
   P.TypeInstanceRef _ _ _ -> IdentNameType
-
