@@ -1,7 +1,5 @@
 {-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE DeriveAnyClass #-}
-{-# LANGUAGE NumDecimals #-}
-{-# LANGUAGE NumericUnderscores #-}
 {-# OPTIONS_GHC -Wno-unused-top-binds #-}
 
 -- {-# OPTIONS_GHC -Wno-unused-top-binds #-}
@@ -71,8 +69,6 @@ rebuildFile uri =
           Nothing -> do
             rebuildWithoutCache moduleName makeEnv outputDirectory fp pwarnings m
   where
-    -- liftIO . atomically $ writeTChan chan Nothing
-
     rebuildFromOpenFileCache outputDirectory fp pwarnings stVar makeEnv m (Language.PureScript.Lsp.Types.OpenFile moduleName _ externDeps env _) = do
       let externs = fmap edExtern externDeps
       foreigns <- P.inferForeignModules (M.singleton moduleName (Right fp))
@@ -115,6 +111,8 @@ couldBeFromNewImports :: P.ErrorMessage -> Bool
 couldBeFromNewImports =
   P.unwrapErrorMessage >>> \case
     P.ModuleNotFound {} -> True
+    P.UnknownImport {} -> True
+    P.UnknownImportDataConstructor {} -> True
     P.UnknownName qName | (P.ModName _) <- P.disqualify qName -> True
     _ -> False
 
