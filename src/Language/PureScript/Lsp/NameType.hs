@@ -19,6 +19,17 @@ data LspNameType
   | ModNameType
   deriving (Show, Read, Eq, Generic, A.ToJSON, A.FromJSON)
 
+
+readableType :: LspNameType -> Text
+readableType = \case
+  IdentNameType -> "Value"
+  ValOpNameType -> "Operator"
+  TyNameType -> "Type"
+  TyOpNameType -> "Type Operator"
+  DctorNameType -> "Constructor"
+  TyClassNameType -> "Type Class"
+  ModNameType -> "Module"
+
 instance ToField LspNameType where
   toField = toField . (show :: LspNameType -> Text)
 

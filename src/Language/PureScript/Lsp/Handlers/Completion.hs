@@ -20,7 +20,7 @@ import Language.PureScript.Lsp.Docs (readDeclarationDocsWithNameType)
 import Language.PureScript.Lsp.Imports (addImportToTextEdit, getIdentModuleQualifier, getMatchingImport, parseModuleNameFromFile)
 import Language.PureScript.Lsp.Log (debugLsp, logPerfStandard)
 import Language.PureScript.Lsp.Monad (HandlerM)
-import Language.PureScript.Lsp.NameType (LspNameType (..))
+import Language.PureScript.Lsp.NameType (LspNameType (..), readableType)
 import Language.PureScript.Lsp.ServerConfig (getMaxCompletions)
 import Language.PureScript.Lsp.Types (CompleteItemData (CompleteItemData), decodeCompleteItemData)
 import Language.PureScript.Lsp.Util (getSymbolAt)
@@ -79,7 +79,7 @@ completionAndResolveHandlers =
                                     Just $
                                       Types.CompletionItemLabelDetails
                                         (Just $ " " <> crType cr)
-                                        (Just $ P.runModuleName declModName),
+                                        (Just $ readableType (crNameType cr) <> " in " <> P.runModuleName declModName),
                                   _kind =
                                     Just case nameType of
                                       IdentNameType | "->" `T.isInfixOf` crType cr -> Types.CompletionItemKind_Function
@@ -116,12 +116,14 @@ completionAndResolveHandlers =
             docsMb <- readDeclarationDocsWithNameType declModule nameType label
             debugLsp $ "docs found for " <> show (declModule, label) <> show (isJust docsMb)
             withImports <- addImportToTextEdit completionItem cid
-            let addDocs :: Types.CompletionItem -> Types.CompletionItem
+            let setDocs docs = set LSP.documentation (Just $ Types.InR $ Types.MarkupContent Types.MarkupKind_Markdown docs)
+
+                addDocs :: Types.CompletionItem -> Types.CompletionItem
                 addDocs =
                   docsMb & maybe
-                    identity
+                    (setDocs $ readableType nameType)
                     \docs ->
-                      set LSP.documentation (Just $ Types.InR $ Types.MarkupContent Types.MarkupKind_Markdown docs)
+                      setDocs (readableType nameType <> "\n\n" <> docs)
             res $
               Right $
                 withImports
