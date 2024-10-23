@@ -58,9 +58,6 @@ indexAstModule conn (P.Module _ss _comments moduleName' decls _exportRefs) exter
       let exported = Set.member name exportedNames
           nameType = lspNameType name
           printedName = printName name
-      when (printName name == "Tuple") $ do 
-        putErrLn $ ("Tuple: " :: Text) <> show decl
-        putErrLn $ ("type: " :: Text) <> printedType
 
       SQL.executeNamed
         conn
