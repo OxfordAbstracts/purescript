@@ -9,6 +9,7 @@ import Control.Lens (At, Field1 (_1), Field2 (_2), Field3 (_3), un, view)
 
 import Data.List qualified as List
 import Data.Text qualified as T
+import GHC.IO (unsafePerformIO)
 import Language.LSP.Protocol.Types qualified as Types
 import Language.LSP.Server (MonadLsp)
 import Language.PureScript qualified as P
@@ -40,7 +41,7 @@ getSmallestAtPos = \case
     Just $ uncurry4 APImport import'
   EverythingAtPos {apTypes = types}
     | not . null $ types ->
-        Just $ APType $ minimumBy (comparing getTypeRowsAndColumns) types
+        Just $ APType $ minimumBy (comparing getTypeLinesAndColumns) types
   EverythingAtPos {apBinders = binders}
     | not . null $ binders ->
         Just $ uncurry3 APBinder $ minimumBy (comparing (spanSize . view _1)) binders
@@ -59,8 +60,6 @@ getSmallestAtPos = \case
   EverythingAtPos {apDecls = decls}
     | not . null $ decls ->
         Just $ APDecl $ minimumBy (comparing (spanSize . declSourceSpan)) decls
-  EverythingAtPos {apDeclTopLevel = Just decl} ->
-    Just $ APDecl decl
   _ -> Nothing
 
 uncurry3 :: (a -> b -> c -> d) -> (a, b, c) -> d
@@ -73,8 +72,7 @@ spanSize :: P.SourceSpan -> (Int, Int)
 spanSize (P.SourceSpan _ start end) = (P.sourcePosLine end - P.sourcePosLine start, P.sourcePosColumn end - P.sourcePosColumn start)
 
 data EverythingAtPos = EverythingAtPos
-  { apDeclTopLevel :: Maybe P.Declaration,
-    apDecls :: [P.Declaration],
+  { apDecls :: [P.Declaration],
     apExprs :: [(P.SourceSpan, Bool, P.Expr)],
     apBinders :: [(P.SourceSpan, Bool, P.Binder)],
     apCaseAlternatives :: [(P.SourceSpan, P.CaseAlternative)],
@@ -85,14 +83,12 @@ data EverythingAtPos = EverythingAtPos
   }
   deriving (Show)
 
-
 nullEverythingAtPos :: EverythingAtPos
-nullEverythingAtPos = EverythingAtPos Nothing [] [] [] [] [] [] [] Nothing
+nullEverythingAtPos = EverythingAtPos [] [] [] [] [] [] [] Nothing
 
 withSpansOnly :: EverythingAtPos -> EverythingAtPos
 withSpansOnly EverythingAtPos {..} =
   EverythingAtPos
-    apDeclTopLevel
     apDecls
     (filter (view _2) apExprs)
     (filter (view _2) apBinders)
@@ -105,102 +101,105 @@ withSpansOnly EverythingAtPos {..} =
 withTypedValuesOnly :: EverythingAtPos -> EverythingAtPos
 withTypedValuesOnly EverythingAtPos {..} =
   EverythingAtPos
-    apDeclTopLevel
     apDecls
     (filter (isJust . exprTypes . view _3) apExprs)
-    []
+    (filter (isJust . binderTypes . view _3) apBinders)
     []
     []
     []
     apTypes
     apImport
   where
-    (declTypes, exprTypes, binderTypes, _, _) = 
-        P.accumTypes (const $ Just ())
-
+    (_, exprTypes, binderTypes, _, _) =
+      P.accumTypes (const $ Just ())
 
 getEverythingAtPos :: [P.Declaration] -> Types.Position -> EverythingAtPos
-getEverythingAtPos decls pos@(Types.Position {..}) = case head $ declsAtLine (fromIntegral _line + 1) decls of
-  Nothing -> nullEverythingAtPos
-  Just (P.ImportDeclaration (ss, _) importedModuleName importType _) ->
-    nullEverythingAtPos {apImport = Just (ss, importedModuleName, importType, ref)}
-    where
-      ref = findDeclRefAtPos pos case importType of
-        P.Implicit -> []
-        P.Explicit refs -> refs
-        P.Hiding refs -> refs
-  Just topDecl -> execState (handleDecl topDecl) nullEverythingAtPos
-    where
-      (handleDecl, _, _, _, _, _) = P.everywhereWithContextOnValuesM (declSourceSpan topDecl) onDecl onExpr onBinder onCaseAlternative onDoNotationElement onGuard
+getEverythingAtPos decls pos@(Types.Position {..}) =
+  case head $ declsAtLine (fromIntegral _line + 1) $ filter (not . isPrimImport) decls of
+    Nothing -> nullEverythingAtPos
+    Just (P.ImportDeclaration (ss, _) importedModuleName importType _) ->
+      nullEverythingAtPos {apImport = Just (maybe ss P.declRefSourceSpan ref, importedModuleName, importType, ref)}
+      where
+        ref = findDeclRefAtPos pos case importType of
+          P.Implicit -> []
+          P.Explicit refs -> refs
+          P.Hiding refs -> refs
+    Just topDecl -> execState (handleDecl topDecl) nullEverythingAtPos {apDecls = [topDecl]}
+      where
+        (handleDecl, _, _, _, _, _) = P.everywhereWithContextOnValuesM (declSourceSpan topDecl) onDecl onExpr onBinder onCaseAlternative onDoNotationElement onGuard
 
-      onDecl :: P.SourceSpan -> P.Declaration -> StateT EverythingAtPos Identity (P.SourceSpan, P.Declaration)
-      onDecl _ decl = do
-        let ss = declSourceSpan decl
-        when (posInSpan pos ss) do
-          modify $ addDecl decl
-        addTypesSt $ declTypes decl
-        pure (ss, decl)
+        onDecl :: P.SourceSpan -> P.Declaration -> StateT EverythingAtPos Identity (P.SourceSpan, P.Declaration)
+        onDecl _ decl = do
+          let ss = declSourceSpan decl
+          when (posInSpan pos ss) do
+            modify $ addDecl decl
+          addTypesSt $ declTypes decl
+          pure (ss, decl)
 
-      onExpr ss expr = do
-        let ssMb = P.exprSourceSpan expr
-            ss' = fromMaybe ss ssMb
-        when (posInSpan pos ss) do
-          modify $ addExpr ss (isJust ssMb) expr
-        addTypesSt $ exprTypes expr
-        pure (ss', expr)
+        onExpr ss expr = do
+          let ssMb = P.exprSourceSpan expr
+              ss' = fromMaybe ss ssMb
+          when (posInSpan pos ss' && not (isPlaceholder expr)) do
+            modify $ addExpr ss' (isJust ssMb) expr
+          addTypesSt $ exprTypes expr
+          pure (ss', expr)
 
-      onBinder ss binder = do
-        let ssMb = binderSourceSpan binder
-            ss' = fromMaybe ss ssMb
-        when (posInSpan pos ss) do
-          modify $ addBinder ss (isJust ssMb) binder
-        addTypesSt $ binderTypes binder
-        pure (ss', binder)
+        onBinder ss binder = do
+          let ssMb = binderSourceSpan binder
+              ss' = fromMaybe ss ssMb
+          when (posInSpan pos ss') do
+            modify $ addBinder ss' (isJust ssMb) binder
+          addTypesSt $ binderTypes binder
+          pure (ss', binder)
 
-      onCaseAlternative :: P.SourceSpan -> P.CaseAlternative -> StateT EverythingAtPos Identity (P.SourceSpan, P.CaseAlternative)
-      onCaseAlternative ss caseAlt = do
-        when (posInSpan pos ss) do
-          modify $ addCaseAlternative ss caseAlt
-        addTypesSt $ caseAltTypes caseAlt
-        pure (ss, caseAlt)
+        onCaseAlternative :: P.SourceSpan -> P.CaseAlternative -> StateT EverythingAtPos Identity (P.SourceSpan, P.CaseAlternative)
+        onCaseAlternative ss caseAlt = do
+          when (posInSpan pos ss) do
+            modify $ addCaseAlternative ss caseAlt
+          addTypesSt $ caseAltTypes caseAlt
+          pure (ss, caseAlt)
 
-      onDoNotationElement :: P.SourceSpan -> P.DoNotationElement -> StateT EverythingAtPos Identity (P.SourceSpan, P.DoNotationElement)
-      onDoNotationElement ss doNotationElement = do
-        let ssMb = doNotationElementSpan doNotationElement
-            ss' = fromMaybe ss ssMb
-        when (posInSpan pos ss) do
-          modify $ addDoNotationElement ss' (isJust ssMb) doNotationElement
-        addTypesSt $ doNotTypes doNotationElement
-        pure (ss, doNotationElement)
+        onDoNotationElement :: P.SourceSpan -> P.DoNotationElement -> StateT EverythingAtPos Identity (P.SourceSpan, P.DoNotationElement)
+        onDoNotationElement ss doNotationElement = do
+          let ssMb = doNotationElementSpan doNotationElement
+              ss' = fromMaybe ss ssMb
+          when (posInSpan pos ss') do
+            modify $ addDoNotationElement ss' (isJust ssMb) doNotationElement
+          addTypesSt $ doNotTypes doNotationElement
+          pure (ss', doNotationElement)
 
-      onGuard :: P.SourceSpan -> P.Guard -> StateT EverythingAtPos Identity (P.SourceSpan, P.Guard)
-      onGuard ss guard' = do
-        when (posInSpan pos ss) do
-          modify (addGuard ss guard')
-        pure (ss, guard')
+        onGuard :: P.SourceSpan -> P.Guard -> StateT EverythingAtPos Identity (P.SourceSpan, P.Guard)
+        onGuard ss guard' = do
+          when (posInSpan pos ss) do
+            modify (addGuard ss guard')
+          pure (ss, guard')
 
-      binderSourceSpan :: P.Binder -> Maybe P.SourceSpan
-      binderSourceSpan = \case
-        P.NullBinder -> Nothing
-        P.LiteralBinder ss _ -> Just ss
-        P.VarBinder ss _ -> Just ss
-        P.ConstructorBinder ss _ _ -> Just ss
-        P.NamedBinder ss _ _ -> Just ss
-        P.PositionedBinder ss _ _ -> Just ss
-        P.TypedBinder ss _ -> Just (fst $ getAnnForType ss)
-        P.OpBinder ss _ -> Just ss
-        P.BinaryNoParensBinder {} -> Nothing
-        P.ParensInBinder {} -> Nothing
+        binderSourceSpan :: P.Binder -> Maybe P.SourceSpan
+        binderSourceSpan = \case
+          P.NullBinder -> Nothing
+          P.LiteralBinder ss _ -> Just ss
+          P.VarBinder ss _ -> Just ss
+          P.ConstructorBinder ss _ _ -> Just ss
+          P.NamedBinder ss _ _ -> Just ss
+          P.PositionedBinder ss _ _ -> Just ss
+          P.TypedBinder ss _ -> Just (fst $ getAnnForType ss)
+          P.OpBinder ss _ -> Just ss
+          P.BinaryNoParensBinder {} -> Nothing
+          P.ParensInBinder {} -> Nothing
 
-      doNotationElementSpan :: P.DoNotationElement -> Maybe P.SourceSpan
-      doNotationElementSpan = \case
-        P.PositionedDoNotationElement ss _ _ -> Just ss
-        _ -> Nothing
+        doNotationElementSpan :: P.DoNotationElement -> Maybe P.SourceSpan
+        doNotationElementSpan = \case
+          P.PositionedDoNotationElement ss _ _ -> Just ss
+          _ -> Nothing
 
-      (declTypes, exprTypes, binderTypes, caseAltTypes, doNotTypes) = P.accumTypes (getTypesAtPos pos)
+        (declTypes, exprTypes, binderTypes, caseAltTypes, doNotTypes) = P.accumTypes (getTypesAtPos pos)
 
-topLevelDeclEverythingAtPos :: P.Declaration -> EverythingAtPos
-topLevelDeclEverythingAtPos decl = nullEverythingAtPos {apDeclTopLevel = Just decl}
+        isPlaceholder :: P.Expr -> Bool
+        isPlaceholder = \case
+          P.TypeClassDictionary {} -> True
+          P.DeferredDictionary {} -> True
+          P.DerivedInstancePlaceholder {} -> True
+          _ -> False
 
 addDecl :: P.Declaration -> EverythingAtPos -> EverythingAtPos
 addDecl decl atPos = atPos {apDecls = decl : apDecls atPos}
@@ -292,7 +291,7 @@ atPosition nullRes handleDecl handleImportRef handleModule handleExprInModule fi
                   case tipes of
                     [] -> nullRes
                     _ -> do
-                      let smallest = minimumBy (comparing getTypeRowsAndColumns) tipes
+                      let smallest = minimumBy (comparing getTypeLinesAndColumns) tipes
                       case smallest of
                         P.TypeConstructor _ (P.Qualified (P.BySourcePos srcPos) _) | srcPos /= P.SourcePos 0 0 -> handleExprInModule filePath srcPos
                         P.TypeConstructor _ (P.Qualified (P.ByModuleName modName) ident) -> do
@@ -331,16 +330,16 @@ atPosition nullRes handleDecl handleImportRef handleModule handleExprInModule fi
 
 smallestExpr :: [P.Expr] -> Maybe P.Expr
 smallestExpr [] = Nothing
-smallestExpr es = Just $ minimumBy (comparing (fromMaybe (maxInt, maxInt) . getExprRowsAndColumns)) es
+smallestExpr es = Just $ minimumBy (comparing (fromMaybe (maxInt, maxInt) . getExprLinesAndColumns)) es
 
-getExprRowsAndColumns :: P.Expr -> Maybe (Int, Int)
-getExprRowsAndColumns expr =
+getExprLinesAndColumns :: P.Expr -> Maybe (Int, Int)
+getExprLinesAndColumns expr =
   P.exprSourceSpan expr <&> \ss ->
-    let spanRowStart = P.sourcePosLine (P.spanStart ss)
-        spanRowEnd = P.sourcePosLine (P.spanEnd ss)
+    let spanLineStart = P.sourcePosLine (P.spanStart ss)
+        spanLineEnd = P.sourcePosLine (P.spanEnd ss)
         spanColStart = P.sourcePosColumn (P.spanStart ss)
         spanColEnd = P.sourcePosColumn (P.spanEnd ss)
-     in (spanRowEnd - spanRowStart, spanColEnd - spanColStart)
+     in (spanLineEnd - spanLineStart, spanColEnd - spanColStart)
 
 isNullSourceTypeSpan :: P.SourceType -> Bool
 isNullSourceTypeSpan st = getAnnForType st == (nullSourceSpan, [])
@@ -348,14 +347,14 @@ isNullSourceTypeSpan st = getAnnForType st == (nullSourceSpan, [])
 isSingleLine :: P.SourceType -> Bool
 isSingleLine st = P.sourcePosLine (P.spanStart (fst (getAnnForType st))) == P.sourcePosLine (P.spanEnd (fst (getAnnForType st)))
 
-getTypeRowsAndColumns :: P.SourceType -> (Int, Int)
-getTypeRowsAndColumns st = (getTypeRows st, getTypeColumns st)
+getTypeLinesAndColumns :: P.SourceType -> (Int, Int)
+getTypeLinesAndColumns st = (getTypeLines st, getTypeColumns st)
 
 getTypeColumns :: P.SourceType -> Int
 getTypeColumns st = P.sourcePosColumn (P.spanEnd (fst (getAnnForType st))) - P.sourcePosColumn (P.spanStart (fst (getAnnForType st)))
 
-getTypeRows :: P.SourceType -> Int
-getTypeRows st = P.sourcePosLine (P.spanEnd (fst (getAnnForType st))) - P.sourcePosLine (P.spanStart (fst (getAnnForType st)))
+getTypeLines :: P.SourceType -> Int
+getTypeLines st = P.sourcePosLine (P.spanEnd (fst (getAnnForType st))) - P.sourcePosLine (P.spanStart (fst (getAnnForType st)))
 
 fromPrim :: P.SourceType -> Bool
 fromPrim st = case st of
@@ -436,3 +435,114 @@ getImportRefNameType = \case
   P.ModuleRef _ _ -> ModNameType
   P.ReExportRef _ _ _ -> ModNameType
   P.TypeInstanceRef _ _ _ -> IdentNameType
+
+-- t =
+--   EverythingAtPos = Nothing,
+--       apDecls =
+--         [ ValueDeclaration
+--             ( ValueDeclarationData
+--                 { valdeclSourceAnn =
+--                     ( SourceSpan
+--                         { spanStart = SourcePos {sourcePosLine = 62, sourcePosColumn = 1},
+--                           spanEnd = SourcePos {sourcePosLine = 62, sourcePosColumn = 15}
+--                         },
+--                       []
+--                     ),
+--                   valdeclIdent = Ident "zzzzz",
+--                   valdeclName = Public,
+--                   valdeclBinders = [],
+--                   valdeclExpression =
+--                     [ GuardedExpr
+--                         []
+--                         ( TypedValue
+--                             True
+--                             ( PositionedValue
+--                                 ( SourceSpan
+--                                     { spanStart = SourcePos {sourcePosLine = 62, sourcePosColumn = 9},
+--                                       spanEnd = SourcePos {sourcePosLine = 62, sourcePosColumn = 15}
+--                                     }
+--                                 )
+--                                 []
+--                                 ( Literal
+--                                     ( SourceSpan
+--                                         { spanStart = SourcePos {sourcePosLine = 62, sourcePosColumn = 9},
+--                                           spanEnd = SourcePos {sourcePosLine = 62, sourcePosColumn = 15}
+--                                         }
+--                                     )
+--                                     (NumericLiteral (Left 333333))
+--                                 )
+--                             )
+--                             (TypeConstructor (SourceSpan {spanName = "", spanStart = SourcePos {sourcePosLine = 0, sourcePosColumn = 0}, spanEnd = SourcePos {sourcePosLine = 0, sourcePosColumn = 0}}, []) (Qualified (ByModuleName (ModuleName "Prim")) (ProperName {runProperName = "Int"})))
+--                         )
+--                     ]
+--                 }
+--             )
+--         ],
+--       apExprs =
+--         [ ( SourceSpan
+--               { spanStart = SourcePos {sourcePosLine = 62, sourcePosColumn = 9},
+--                 spanEnd = SourcePos {sourcePosLine = 62, sourcePosColumn = 15}
+--               },
+--             True,
+--             Literal
+--               ( SourceSpan
+--                   { spanStart = SourcePos {sourcePosLine = 62, sourcePosColumn = 9},
+--                     spanEnd = SourcePos {sourcePosLine = 62, sourcePosColumn = 15}
+--                   }
+--               )
+--               (NumericLiteral (Left 333333))
+--           ),
+--           ( SourceSpan
+--               { spanStart = SourcePos {sourcePosLine = 62, sourcePosColumn = 1},
+--                 spanEnd = SourcePos {sourcePosLine = 62, sourcePosColumn = 15}
+--               },
+--             True,
+--             PositionedValue
+--               ( SourceSpan
+--                   { spanStart = SourcePos {sourcePosLine = 62, sourcePosColumn = 9},
+--                     spanEnd = SourcePos {sourcePosLine = 62, sourcePosColumn = 15}
+--                   }
+--               )
+--               []
+--               ( Literal
+--                   ( SourceSpan
+--                       { spanStart = SourcePos {sourcePosLine = 62, sourcePosColumn = 9},
+--                         spanEnd = SourcePos {sourcePosLine = 62, sourcePosColumn = 15}
+--                       }
+--                   )
+--                   (NumericLiteral (Left 333333))
+--               )
+--           ),
+--           ( SourceSpan
+--               { spanStart = SourcePos {sourcePosLine = 62, sourcePosColumn = 1},
+--                 spanEnd = SourcePos {sourcePosLine = 62, sourcePosColumn = 15}
+--               },
+--             False,
+--             P.TypedValue
+--               True
+--               ( PositionedValue
+--                   ( SourceSpan
+--                       { spanStart = SourcePos {sourcePosLine = 62, sourcePosColumn = 9},
+--                         spanEnd = SourcePos {sourcePosLine = 62, sourcePosColumn = 15}
+--                       }
+--                   )
+--                   []
+--                   ( Literal
+--                       ( SourceSpan
+--                           { spanStart = SourcePos {sourcePosLine = 62, sourcePosColumn = 9},
+--                             spanEnd = SourcePos {sourcePosLine = 62, sourcePosColumn = 15}
+--                           }
+--                       )
+--                       (NumericLiteral (Left 333333))
+--                   )
+--               )
+--               (TypeConstructor (SourceSpan {spanName = "", spanStart = SourcePos {sourcePosLine = 0, sourcePosColumn = 0}, spanEnd = SourcePos {sourcePosLine = 0, sourcePosColumn = 0}}, []) (Qualified (ByModuleName (ModuleName "Prim")) (ProperName {runProperName = "Int"})))
+--           )
+--         ],
+--       apBinders = [],
+--       apCaseAlternatives = [],
+--       apDoNotationElements = [],
+--       apGuards = [],
+--       apTypes = [],
+--       apImport = Nothing
+--     }

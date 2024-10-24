@@ -1,21 +1,26 @@
 {-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# OPTIONS_GHC -Wno-unused-imports #-}
+{-# OPTIONS_GHC -Wno-unused-record-wildcards #-}
+{-# OPTIONS_GHC -Wno-unused-local-binds #-}
 
 module Language.PureScript.Lsp.Handlers.Hover where
 
-import Control.Lens ((^.))
+import Control.Lens (Field1 (_1), Field2 (_2), Field3 (_3), (^.))
+import Control.Lens.Combinators (view)
+import Data.List (last)
 import Data.Text qualified as T
+import Language.Haskell.TH qualified as P
 import Language.LSP.Protocol.Lens qualified as LSP
 import Language.LSP.Protocol.Message qualified as Message
 import Language.LSP.Protocol.Types qualified as Types
 import Language.LSP.Server qualified as Server
 import Language.PureScript qualified as P
-import Language.PureScript.AST.Declarations (Expr (..))
 import Language.PureScript.Docs.Convert.Single (convertComments)
 import Language.PureScript.Docs.Types qualified as Docs
 import Language.PureScript.Ide.Error (prettyPrintTypeSingleLine)
-import Language.PureScript.Lsp.AtPosition (findDeclRefAtPos, fromPrim, getDeclTypesAtPos, getEverythingAtPos, getExprsAtPos, getImportRefNameType, getTypeRowsAndColumns, getTypedValuesAtPos, isNullSourceTypeSpan, isPrimImport, smallestExpr, spanToRange)
+import Language.PureScript.Lsp.AtPosition (EverythingAtPos (..), getEverythingAtPos, getImportRefNameType, spanSize, spanToRange)
 import Language.PureScript.Lsp.Cache.Query (getAstDeclarationTypeInModule)
 import Language.PureScript.Lsp.Docs (readDeclarationDocsWithNameType, readModuleDocs)
 import Language.PureScript.Lsp.Log (debugLsp)
@@ -24,7 +29,6 @@ import Language.PureScript.Lsp.NameType (LspNameType (..))
 import Language.PureScript.Lsp.Print (printName)
 import Language.PureScript.Lsp.State (cachedRebuild)
 import Language.PureScript.Lsp.Types (OpenFile (..))
-import Language.PureScript.Lsp.Util (declsAtLine, posInSpan)
 import Protolude hiding (to)
 import Text.PrettyPrint.Boxes (render)
 
@@ -33,7 +37,7 @@ hoverHandler = Server.requestHandler Message.SMethod_TextDocumentHover $ \req re
   let Types.HoverParams docIdent pos@(Types.Position {..}) _prog = req ^. LSP.params
       filePathMb = Types.uriToFilePath $ docIdent ^. LSP.uri
 
-      nullRes = res $ Right $ Types.InR Types.Null
+      nullRes = res $ Right $ Types.InL $ Types.Hover (Types.InR $ Types.InR []) Nothing
 
       markdownRes md range = res $ Right $ Types.InL $ Types.Hover (Types.InL $ Types.MarkupContent Types.MarkupKind_Markdown md) range
 
@@ -50,16 +54,26 @@ hoverHandler = Server.requestHandler Message.SMethod_TextDocumentHover $ \req re
             forLsp (head tipes) \tipe ->
               markdownRes tipe (Just $ spanToRange ss)
 
-      respondWithSourceType :: P.Expr -> (P.SourceType, Maybe P.SourceSpan) -> HandlerM ()
-      respondWithSourceType expr (tipe, sa) = do
-        let word = case expr of
-              P.Var _ (P.Qualified _ ident) -> P.runIdent ident
-              P.Op _ (P.Qualified _ ident) -> P.runOpName ident
-              P.Constructor _ (P.Qualified _ ident) -> P.runProperName ident
-              _ -> T.pack $ render $ P.prettyPrintValue 3 expr
-            printedType = prettyPrintTypeSingleLine tipe
+      respondWithSourceType :: P.SourceType -> HandlerM ()
+      respondWithSourceType tipe = do
+        let printedType = prettyPrintTypeSingleLine tipe
+        markdownRes (pursTypeStr "_" (Just printedType) []) (Just $ spanToRange $ fst $ P.getAnnForType tipe)
 
-        markdownRes (pursTypeStr word (Just printedType) []) (spanToRange <$> sa)
+      respondWithExprDebug :: Text -> P.SourceSpan -> P.Expr -> HandlerM ()
+      respondWithExprDebug label ss expr = do
+        let printedExpr = ellipsis 2000 $ show expr
+        markdownRes (label <> ": \n" <> pursMd printedExpr) (Just $ spanToRange ss)
+
+      respondWithExpr2Debug :: Text -> Text -> P.SourceSpan -> P.Expr -> P.Expr -> HandlerM ()
+      respondWithExpr2Debug label label' ss expr expr' = do
+        let printedExpr = ellipsis 2000 $ show expr
+            printedExpr' = ellipsis 2000 $ show expr'
+        markdownRes (label <> ": \n" <> pursMd printedExpr <> "\n\n" <> label' <> ": \n" <> printedExpr') (Just $ spanToRange ss)
+
+      respondWithTypedExpr :: P.SourceSpan -> P.Expr -> P.SourceType -> HandlerM ()
+      respondWithTypedExpr ss expr tipe = do
+        let printedType = prettyPrintTypeSingleLine tipe
+        markdownRes (pursTypeStr (dispayExprOnHover expr) (Just printedType) []) (Just $ spanToRange ss)
 
       respondWithModule :: P.SourceSpan -> P.ModuleName -> HandlerM ()
       respondWithModule ss modName = do
@@ -68,98 +82,82 @@ hoverHandler = Server.requestHandler Message.SMethod_TextDocumentHover $ \req re
           Just docs | Just comments <- Docs.modComments docs -> markdownRes comments (Just $ spanToRange ss)
           _ -> nullRes
 
-      respondWithImports ss importedModuleName imports = do
-        case findDeclRefAtPos pos imports of
-          Just import' -> do
-            let name = P.declRefName import'
-                nameType = getImportRefNameType import'
-            respondWithDeclInModule ss nameType importedModuleName (printName name)
-          _ -> respondWithModule ss importedModuleName
+      respondWithImport :: P.SourceSpan -> P.ModuleName -> Maybe P.DeclarationRef -> HandlerM ()
+      respondWithImport ss importedModuleName (Just ref) = do
+        let name = P.declRefName ref
+            nameType = getImportRefNameType ref
+        respondWithDeclInModule ss nameType importedModuleName (printName name)
+      respondWithImport ss importedModuleName _ = respondWithModule ss importedModuleName
 
   forLsp filePathMb \filePath -> do
     cacheOpenMb <- cachedRebuild filePath
     forLsp cacheOpenMb \OpenFile {..} -> do
-      let withoutPrim =
-            ofModule
-              & P.getModuleDeclarations
-              & filter (not . isPrimImport)
+      let everything = getEverythingAtPos (P.getModuleDeclarations ofModule) pos
+      debugLsp $ "pos: " <> show pos
 
-      let everything = getEverythingAtPos pos (P.getModuleDeclarations ofModule)
-      case everything of 
-        EverythingAtPos { apTypes = types } | not $ null types -> do 
-          let ty = minimumBy (comparing getTypeRowsAndColumns) types
-          respondWith
+      case apImport everything of
+        Just (ss, importedModuleName, _, ref) -> do
+          debugLsp $ "Import: " <> show importedModuleName
+          respondWithImport ss importedModuleName ref
+        _ -> do 
+          let exprs = apExprs everything
+          noResponse <-
+            exprs & whileM \case
+              (ss, True, P.Var _ (P.Qualified (P.ByModuleName modName) ident)) -> do
+                debugLsp $ "Var: " <> show ident
+                respondWithDeclInModule ss IdentNameType modName (P.runIdent ident)
+                pure False
+              (ss, _, P.Op _ (P.Qualified (P.ByModuleName modName) ident)) -> do
+                debugLsp $ "Op: " <> show ident
+                respondWithDeclInModule ss ValOpNameType modName (P.runOpName ident)
+                pure False
+              (ss, _, P.Constructor _ (P.Qualified (P.ByModuleName modName) ident)) -> do
+                debugLsp $ "Dctor: " <> show ident
+                respondWithDeclInModule ss DctorNameType modName (P.runProperName ident)
+                pure False
+              (ss, _, P.Literal _ (P.NumericLiteral (Left int))) -> do
+                markdownRes (pursTypeStr (show int) (Just "Int") []) (Just $ spanToRange ss)
+                pure False
+              (ss, _, P.Literal _ (P.NumericLiteral (Right n))) -> do
+                markdownRes (pursTypeStr (show n) (Just "Number") []) (Just $ spanToRange ss)
+                pure False
+              (ss, _, P.Literal _ (P.StringLiteral str)) -> do
+                markdownRes (pursTypeStr (show str) (Just "String") []) (Just $ spanToRange ss)
+                pure False
+              (ss, _, P.Literal _ (P.CharLiteral ch)) -> do
+                markdownRes (pursTypeStr (show ch) (Just "Char") []) (Just $ spanToRange ss)
+                pure False
+              (ss, _, P.Literal _ (P.BooleanLiteral b)) -> do
+                markdownRes (pursTypeStr (show b) (Just "Boolean") []) (Just $ spanToRange ss)
+                pure False
+              _ -> pure True
 
--- handleDecls :: [P.Declaration] -> HandlerM ()
--- handleDecls decls = do
---   let srcPosLine = fromIntegral _line + 1
+          when noResponse do
+            nullRes
 
---       declsAtPos =
---         decls
---           & declsAtLine srcPosLine
+whileM :: (Monad m) => (a -> m Bool) -> [a] -> m Bool
+whileM _ [] = pure False
+whileM f (x : xs) = do
+  b <- f x
+  if b then whileM f xs else pure False
 
---   debugLsp $ "declsAtPos: " <> show (length declsAtPos)
+findMap :: (a -> Maybe b) -> [a] -> Maybe b
+findMap f = head . mapMaybe f
 
---   forLsp (head declsAtPos) $ \decl -> do
---     case decl of
---       P.ImportDeclaration (ss, _) importedModuleName importType _ -> do
---         case importType of
---           P.Implicit -> respondWithModule ss importedModuleName
---           P.Explicit imports -> respondWithImports ss importedModuleName imports
---           P.Hiding imports -> respondWithImports ss importedModuleName imports
---       P.TypeInstanceDeclaration _ (P.SourceSpan span start end, _) _ _ _ constraints (P.Qualified (P.ByModuleName modName) className) _args body
---         | posInSpan pos classNameSS -> respondWithDeclInModule classNameSS TyClassNameType modName classNameTxt
---         | Just (P.Constraint (ss, _) (P.Qualified (P.ByModuleName conModName) conClassName) _ _ _) <- find (posInSpan pos . fst . P.constraintAnn) constraints -> do
---             respondWithDeclInModule ss TyClassNameType conModName $ P.runProperName conClassName
---         | P.ExplicitInstance members <- body, not $ null $ declsAtLine srcPosLine members  -> do
---             handleDecls members
---         where
---           classNameSS = P.SourceSpan span start (P.SourcePos (P.sourcePosLine end) (P.sourcePosColumn start + T.length classNameTxt))
+findTypedExpr :: [(P.SourceSpan, Bool, P.Expr)] -> Maybe (P.SourceSpan, P.Expr, P.SourceType)
+findTypedExpr ((ss, _, P.TypedValue _ e t) : _) = Just (ss, e, t)
+findTypedExpr (_ : es) = findTypedExpr es
+findTypedExpr [] = Nothing
 
---           classNameTxt :: Text
---           classNameTxt = P.runProperName className
---       _ -> do
---         let exprsAtPos = getExprsAtPos pos =<< declsAtPos
---             findTypedExpr :: [Expr] -> Maybe (P.SourceType, Maybe P.SourceSpan)
---             findTypedExpr ((P.TypedValue _ e t) : _) = Just (t, P.exprSourceSpan e)
---             findTypedExpr (_ : es) = findTypedExpr es
---             findTypedExpr [] = Nothing
+dispayExprOnHover :: P.Expr -> T.Text
+dispayExprOnHover expr = ellipsis 32 $ line1Only $ T.strip $ T.pack $ render $ P.prettyPrintValue 3 expr
+  where
+    line1Only = T.takeWhile (/= '\n')
 
---         debugLsp $ "exprsAtPos: " <> show (length exprsAtPos)
+ellipsis :: Int -> Text -> Text
+ellipsis l t = if T.length t > l then T.take l t <> "..." else t
 
---         case smallestExpr exprsAtPos of
---           Just expr -> do
---             case expr of
---               P.Var ss (P.Qualified (P.ByModuleName modName) ident) -> do
---                 respondWithDeclInModule ss IdentNameType modName (P.runIdent ident)
---               P.Op ss (P.Qualified (P.ByModuleName modName) ident) -> do
---                 respondWithDeclInModule ss ValOpNameType modName (P.runOpName ident)
---               P.Constructor ss (P.Qualified (P.ByModuleName modName) ident) -> do
---                 respondWithDeclInModule ss DctorNameType modName (P.runProperName ident)
---               _ -> forLsp (findTypedExpr $ getTypedValuesAtPos pos decl) (respondWithSourceType expr)
---           _ -> do
---             let tipes =
---                   filter (not . fromPrim) $
---                     filter (not . isNullSourceTypeSpan) $
---                       getDeclTypesAtPos pos decl
 
---             debugLsp $ "tipes: " <> show (length tipes)
-
---             case tipes of
---               [] -> nullRes
---               _ -> do
---                 let smallest = minimumBy (comparing getTypeRowsAndColumns) tipes
---                 debugLsp $ "smallest: " <> show smallest
---                 case smallest of
---                   P.TypeConstructor (ss, _) (P.Qualified (P.ByModuleName modName) ident) -> do
---                     respondWithDeclInModule ss TyNameType modName $ P.runProperName ident
---                   P.TypeOp (ss, _) (P.Qualified (P.ByModuleName modName) ident) -> do
---                     respondWithDeclInModule ss TyOpNameType modName $ P.runOpName ident
---                   P.ConstrainedType (ss, _) c _ -> case P.constraintClass c of
---                     (P.Qualified (P.ByModuleName modName) ident) -> do
---                       respondWithDeclInModule ss TyClassNameType modName $ P.runProperName ident
---                     _ -> nullRes
---                   _ -> nullRes
 pursTypeStr :: Text -> Maybe Text -> [P.Comment] -> Text
 pursTypeStr word type' comments =
   "```purescript\n"

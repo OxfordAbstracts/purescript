@@ -5,6 +5,7 @@ module Language.PureScript.Pretty.Values
   ( prettyPrintValue
   , prettyPrintBinder
   , prettyPrintBinderAtom
+  , prettyPrintLiteralValue
   ) where
 
 import Prelude hiding ((<>))

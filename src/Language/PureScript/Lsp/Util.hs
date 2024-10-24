@@ -21,16 +21,20 @@ import Language.PureScript.AST.Declarations (declSourceAnn)
 import Language.PureScript.AST.SourcePos (widenSourceSpan)
 import Language.PureScript.Comments qualified as P
 import Language.PureScript.Externs qualified as P
+import Language.PureScript.Names qualified as P
 import Language.PureScript.Types qualified as P
 import Protolude hiding (to)
-import Language.PureScript.Names qualified as P
 
 posInSpan :: Types.Position -> AST.SourceSpan -> Bool
 posInSpan (Types.Position line col) (AST.SourceSpan _ (AST.SourcePos startLine startCol) (AST.SourcePos endLine endCol)) =
-  startLine <= fromIntegral (line + 1)
-    && endLine >= fromIntegral (line + 1)
-    && startCol <= fromIntegral (col + 1)
-    && endCol >= fromIntegral (col + 1)
+  not (startLine == 1 && startCol == 1)  -- ignore generated spans
+    && startLine <= atLine
+    && endLine >= atLine
+    && startCol <= atCol
+    && endCol >= atCol
+  where
+    atLine = fromIntegral line + 1
+    atCol = fromIntegral col + 1
 
 posInSpanLines :: Types.Position -> AST.SourceSpan -> Bool
 posInSpanLines (Types.Position line _) (AST.SourceSpan _ (AST.SourcePos startLine _) (AST.SourcePos endLine _)) =
@@ -47,10 +51,10 @@ isWordBreak :: Char -> Bool
 isWordBreak = not . (isAlphaNum ||^ (== '_') ||^ (== '.'))
 
 getSymbolAt :: Rope -> Types.Position -> (Types.Range, Text)
-getSymbolAt = getByPredAt isSymbolBreak 
+getSymbolAt = getByPredAt isSymbolBreak
 
 isSymbolBreak :: Char -> Bool
-isSymbolBreak = isSpace ||^ (== '(') ||^ (== ')') ||^ (== '{') ||^ (== '}') ||^ (== '[') ||^ (== ']') ||^ (== ',') 
+isSymbolBreak = isSpace ||^ (== '(') ||^ (== ')') ||^ (== '{') ||^ (== '}') ||^ (== '[') ||^ (== ']') ||^ (== ',')
 
 getByPredAt :: (Char -> Bool) -> Rope -> Types.Position -> (Types.Range, Text)
 getByPredAt charPred file pos@(Types.Position {..}) =
@@ -174,9 +178,9 @@ declsAtLine l = go . sortBy (comparing declStartLine)
     go [d] | declStartLine d <= l = [d]
     go _ = []
 
-    unsureEndLine = \case 
-      P.ValueDeclaration{}  -> True
-      P.ExternDeclaration{} -> True
+    unsureEndLine = \case
+      P.ValueDeclaration {} -> True
+      P.ExternDeclaration {} -> True
       P.TypeClassDeclaration {} -> True
       P.TypeInstanceDeclaration {} -> True
       _ -> False
@@ -201,9 +205,8 @@ findExprSourceSpan = goExpr
         (const Nothing)
         (const Nothing)
 
-
 getOperatorValueName :: P.Declaration -> Maybe (P.Qualified P.Name)
-getOperatorValueName = \case 
+getOperatorValueName = \case
   P.FixityDeclaration _ (Left (P.ValueFixity _ n _)) -> Just (either P.IdentName P.DctorName <$> n)
   P.FixityDeclaration _ (Right (P.TypeFixity _ n _)) -> Just (P.TyName <$> n)
   _ -> Nothing
