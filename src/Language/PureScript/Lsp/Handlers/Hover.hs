@@ -1,16 +1,17 @@
 {-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# OPTIONS_GHC -Wno-deprecations #-}
 {-# OPTIONS_GHC -Wno-unused-imports #-}
 {-# OPTIONS_GHC -Wno-unused-local-binds #-}
 {-# OPTIONS_GHC -Wno-unused-record-wildcards #-}
-{-# OPTIONS_GHC -Wno-deprecations #-}
 
 module Language.PureScript.Lsp.Handlers.Hover where
 
 import Control.Lens (Field1 (_1), Field2 (_2), Field3 (_3), (^.))
 import Control.Lens.Combinators (view)
 import Data.List (last)
+import Data.List.NonEmpty qualified as NE
 import Data.Text qualified as T
 import Language.LSP.Protocol.Lens qualified as LSP
 import Language.LSP.Protocol.Message qualified as Message
@@ -20,7 +21,7 @@ import Language.PureScript qualified as P
 import Language.PureScript.Docs.Convert.Single (convertComments)
 import Language.PureScript.Docs.Types qualified as Docs
 import Language.PureScript.Ide.Error (prettyPrintTypeSingleLine)
-import Language.PureScript.Lsp.AtPosition (EverythingAtPos (..), getEverythingAtPos, getImportRefNameType, spanSize, spanToRange)
+import Language.PureScript.Lsp.AtPosition (EverythingAtPos (..), debugExpr, getChildExprs, getEverythingAtPos, getImportRefNameType, showCounts, spanSize, spanToRange)
 import Language.PureScript.Lsp.Cache.Query (getAstDeclarationTypeInModule)
 import Language.PureScript.Lsp.Docs (readDeclarationDocsWithNameType, readModuleDocs)
 import Language.PureScript.Lsp.Log (debugLsp)
@@ -129,51 +130,55 @@ hoverHandler = Server.requestHandler Message.SMethod_TextDocumentHover $ \req re
                 respondWithImport ss importedModuleName ref
               _ -> do
                 let exprs = apExprs everything
+                    handleExpr expr = do
+                      case expr of
+                        (ss, _, P.Var _ (P.Qualified (P.ByModuleName modName) ident)) -> do
+                          debugLsp $ "Var: " <> show ident
+                          respondWithDeclInModule ss IdentNameType modName (P.runIdent ident)
+                          pure False
+                        (ss, _, P.Op _ (P.Qualified (P.ByModuleName modName) ident)) -> do
+                          debugLsp $ "Op: " <> show ident
+                          respondWithDeclInModule ss ValOpNameType modName (P.runOpName ident)
+                          pure False
+                        (ss, _, P.Constructor _ (P.Qualified (P.ByModuleName modName) ident)) -> do
+                          debugLsp $ "Dctor: " <> show ident
+                          respondWithDeclInModule ss DctorNameType modName (P.runProperName ident)
+                          pure False
+                        (ss, _, P.TypedValue _ tExpr ty) | not (generatedExpr tExpr) -> do
+                          respondWithTypedExpr ss tExpr ty
+                          pure False
+                        (ss, _, P.Literal _ lit) -> do
+                          handleLiteral ss lit
+                        _ -> pure True
+
                 debugLsp $ "exprs found: " <> show (length exprs)
-                noExprFound <-
-                  exprs & allM \expr -> do
-                    case expr of
-                      (ss, _, P.Var _ (P.Qualified (P.ByModuleName modName) ident)) -> do
-                        debugLsp $ "Var: " <> show ident
-                        respondWithDeclInModule ss IdentNameType modName (P.runIdent ident)
-                        pure False
-                      (ss, _, P.Op _ (P.Qualified (P.ByModuleName modName) ident)) -> do
-                        debugLsp $ "Op: " <> show ident
-                        respondWithDeclInModule ss ValOpNameType modName (P.runOpName ident)
-                        pure False
-                      (ss, _, P.Constructor _ (P.Qualified (P.ByModuleName modName) ident)) -> do
-                        debugLsp $ "Dctor: " <> show ident
-                        respondWithDeclInModule ss DctorNameType modName (P.runProperName ident)
-                        pure False
-                      (ss, _, P.TypedValue _ tExpr ty) | not (generatedExpr tExpr) -> do
-                        respondWithTypedExpr ss tExpr ty
-                        pure False
-                      (ss, _, P.Literal _ lit) -> do
-                        handleLiteral ss lit
-                      _ -> pure True
+                noExprFound <- allM handleExpr exprs
 
                 debugLsp $ "No expr found: " <> show noExprFound
                 when noExprFound do
-                  let binders = apBinders everything
-                  noBinderFound <-
-                    binders & allM \case
-                      (ss, _, P.TypedBinder st binder) | not (generatedBinder binder) -> do
-                        debugLsp $ "VarBinder: " <> show binder
-                        respondWithTypeBinder ss binder st
+                  debugLsp $ showCounts everything
+                  let decls = apDecls everything & sortDeclsBySize
+                  void $
+                    apDecls everything & allM \case
+                      P.BoundValueDeclaration sa _binder expr -> do
+                        debugLsp "BoundValueDeclaration"
+                        let ss = fst sa
+                            children = getChildExprs expr
+                        children & allM \e -> handleExpr (ss, True, e)
+                      P.BindingGroupDeclaration bindingGroup -> do
+                        debugLsp "BindingGroupDeclaration"
+                        NE.toList bindingGroup & allM \((sa, _), _, expr) ->
+                          handleExpr (fst sa, True, expr)
+                      decl@(P.ValueDeclaration vd) -> do
+                        debugLsp $ "ValueDeclaration: " <> P.runIdent (P.valdeclIdent vd)
+                        let ss = P.declSourceSpan decl
+                            guaredExprs = P.valdeclExpression vd
+                            children = guaredExprs >>= getChildExprs . (\(P.GuardedExpr _ e) -> e)
+                        children & allM \expr ->
+                            handleExpr (ss, True, expr)
+                      decl -> do
+                        debugLsp $ "Decl: " <> ellipsis 100 (show decl)
                         pure False
-                      (ss, _, P.ConstructorBinder _ (P.Qualified (P.ByModuleName modName) ident) _) -> do
-                        debugLsp $ "DctorBinder: " <> show ident
-                        respondWithDeclInModule ss DctorNameType modName (P.runProperName ident)
-                        pure False
-                      (ss, _, P.OpBinder _ (P.Qualified (P.ByModuleName modName) ident)) -> do
-                        debugLsp $ "OpBinder: " <> show ident
-                        respondWithDeclInModule ss ValOpNameType modName (P.runOpName ident)
-                        pure False
-                      (ss, _, P.LiteralBinder _ lit) -> do
-                        handleLiteral ss lit
-                      _ -> pure True
-                  debugLsp $ "No binder found: " <> show noBinderFound
-                  pure ()
       handlePos startPos
 
 allM :: (Monad m) => (a -> m Bool) -> [a] -> m Bool
@@ -183,34 +188,36 @@ allM f (x : xs) = do
   if b then allM f xs else pure False
 
 generatedExpr :: P.Expr -> Bool
-generatedExpr = traceShow' "generatedExpr result" . \case
-  P.Var _ ident -> traceToErr "Var" $ generatedIdent $ P.disqualify ident
-  P.Abs b e -> traceShow' "Abs result" $ traceToErr "Abs" $  generatedBinder b || generatedExpr e
-  P.App e e' -> traceToErr "App" $ generatedExpr e || generatedExpr e'
-  P.TypedValue _ e _ -> traceToErr "TypedValue" $ generatedExpr e
-  P.PositionedValue _ _ e -> traceToErr "PositionedValue" $ generatedExpr e
-  _ -> traceToErr "Other expr"  False
+generatedExpr = \case
+  P.Var _ ident -> generatedIdent $ P.disqualify ident
+  P.Abs b e -> generatedBinder b || generatedExpr e
+  P.App e e' -> generatedExpr e || generatedExpr e'
+  P.TypedValue _ e _ -> generatedExpr e
+  P.PositionedValue _ _ e -> generatedExpr e
+  _ -> False
 
+sortDeclsBySize :: [P.Declaration] -> [P.Declaration]
+sortDeclsBySize = sortBy (compare `on` (spanSize . P.declSourceSpan))
 
-traceToErr ::  Text -> b -> b
+traceToErr :: Text -> b -> b
 traceToErr a b = trace a b
 
 traceWith :: Text -> (b -> Text) -> b -> b
 traceWith label f a = traceToErr (label <> ": " <> f a) a
 
-traceShow' :: Show b => Text -> b -> b
+traceShow' :: (Show b) => Text -> b -> b
 traceShow' l = traceWith l show
 
 generatedBinder :: P.Binder -> Bool
 generatedBinder = \case
-  P.VarBinder ss ident -> traceToErr "VarBinder" $ traceShow' "is generated VarBinder" $ traceWith "null src span" show (ss == P.nullSourceSpan) || generatedIdent (traceShow' "ident" ident)
-  P.NamedBinder ss ident _ -> traceToErr "NamedBinder" $  (ss == P.nullSourceSpan) || generatedIdent ident
-  _ -> traceToErr "Other binder" False
+  P.VarBinder ss ident -> (ss == P.nullSourceSpan) || generatedIdent ident
+  P.NamedBinder ss ident _ -> (ss == P.nullSourceSpan) || generatedIdent ident
+  _ -> False
 
 generatedIdent :: P.Ident -> Bool
 generatedIdent = \case
-  P.GenIdent {} -> traceToErr "GenIdent" True
-  _ -> traceToErr "Other ident" False
+  P.GenIdent {} -> True
+  _ -> False
 
 findTypedExpr :: [(P.SourceSpan, Bool, P.Expr)] -> Maybe (P.SourceSpan, P.Expr, P.SourceType)
 findTypedExpr ((ss, _, P.TypedValue _ e t) : _) = Just (ss, e, t)

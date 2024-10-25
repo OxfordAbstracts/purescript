@@ -83,6 +83,25 @@ data EverythingAtPos = EverythingAtPos
   }
   deriving (Show)
 
+showCounts :: EverythingAtPos -> Text
+showCounts EverythingAtPos {..} =
+  "decls: "
+    <> show (length apDecls)
+    <> ",\nexprs: "
+    <> show (length apExprs)
+    <> ",\nbinders: "
+    <> show (length apBinders)
+    <> ",\ncaseAlts: "
+    <> show (length apCaseAlternatives)
+    <> ",\ndoNotElems: "
+    <> show (length apDoNotationElements)
+    <> ",\nguards: "
+    <> show (length apGuards)
+    <> ",\ntypes: "
+    <> show (length apTypes)
+    <> ",\nimport: "
+    <> show (isJust apImport)
+
 nullEverythingAtPos :: EverythingAtPos
 nullEverythingAtPos = EverythingAtPos [] [] [] [] [] [] [] Nothing
 
@@ -412,11 +431,24 @@ getExprsAtPos pos declaration = execState (goDecl declaration) []
         modify (expr :)
       pure expr
 
-getTypedValuesAtPos :: Types.Position -> P.Declaration -> [P.Expr]
-getTypedValuesAtPos pos declaration = execState (goDecl declaration) []
+getChildExprs :: P.Expr -> [P.Expr]
+getChildExprs parentExpr = execState (goExpr parentExpr) []
   where
-    goDecl :: P.Declaration -> StateT [P.Expr] Identity P.Declaration
-    goDecl = onDecl
+    goExpr :: P.Expr -> StateT [P.Expr] Identity P.Expr
+    goExpr = onExpr
+
+    (_, onExpr, _) = P.everywhereOnValuesM pure handleExpr pure
+
+    handleExpr :: P.Expr -> StateT [P.Expr] Identity P.Expr
+    handleExpr expr = do
+      modify (expr :)
+      pure expr
+
+getTypedValuesAtPos :: Types.Position -> P.Declaration -> [P.Expr]
+getTypedValuesAtPos pos declaration = execState (go declaration) []
+  where
+    go :: P.Declaration -> StateT [P.Expr] Identity P.Declaration
+    go = onDecl
 
     (onDecl, _, _) = P.everywhereOnValuesTopDownM pure handleExpr pure
 
