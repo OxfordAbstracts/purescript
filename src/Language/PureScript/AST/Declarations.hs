@@ -795,7 +795,7 @@ exprSourceSpan (Op ss _) = Just ss
 exprSourceSpan (IfThenElse _ _ _) = Nothing
 exprSourceSpan (Constructor ss _) = Just ss
 exprSourceSpan (Case _ _) = Nothing
-exprSourceSpan (TypedValue _ _ _) = Nothing
+exprSourceSpan (TypedValue _ expr _) = exprSourceSpan expr
 exprSourceSpan (Let _ _ _) = Nothing
 exprSourceSpan (Do _ _) = Nothing
 exprSourceSpan (Ado _ _ _) = Nothing
@@ -805,12 +805,6 @@ exprSourceSpan (DerivedInstancePlaceholder _ _) = Nothing
 exprSourceSpan AnonymousArgument = Nothing
 exprSourceSpan (Hole _) = Nothing
 exprSourceSpan (PositionedValue ss _ _) = Just ss
-
-
--- findExprSourceSpan :: Expr -> Maybe SourceSpan
--- findExprSourceSpan = goExpr 
---   where 
---     ( ) = P.everythingOnValues
 
 
 -- |

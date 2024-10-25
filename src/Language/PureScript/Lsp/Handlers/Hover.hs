@@ -2,8 +2,9 @@
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# OPTIONS_GHC -Wno-unused-imports #-}
-{-# OPTIONS_GHC -Wno-unused-record-wildcards #-}
 {-# OPTIONS_GHC -Wno-unused-local-binds #-}
+{-# OPTIONS_GHC -Wno-unused-record-wildcards #-}
+{-# OPTIONS_GHC -Wno-deprecations #-}
 
 module Language.PureScript.Lsp.Handlers.Hover where
 
@@ -11,7 +12,6 @@ import Control.Lens (Field1 (_1), Field2 (_2), Field3 (_3), (^.))
 import Control.Lens.Combinators (view)
 import Data.List (last)
 import Data.Text qualified as T
-import Language.Haskell.TH qualified as P
 import Language.LSP.Protocol.Lens qualified as LSP
 import Language.LSP.Protocol.Message qualified as Message
 import Language.LSP.Protocol.Types qualified as Types
@@ -29,15 +29,17 @@ import Language.PureScript.Lsp.NameType (LspNameType (..))
 import Language.PureScript.Lsp.Print (printName)
 import Language.PureScript.Lsp.State (cachedRebuild)
 import Language.PureScript.Lsp.Types (OpenFile (..))
+import Language.PureScript.Lsp.Util (posInSpan, sourcePosToPosition)
+import Language.PureScript.Names (disqualify)
 import Protolude hiding (to)
 import Text.PrettyPrint.Boxes (render)
 
 hoverHandler :: Server.Handlers HandlerM
 hoverHandler = Server.requestHandler Message.SMethod_TextDocumentHover $ \req res -> do
-  let Types.HoverParams docIdent pos@(Types.Position {..}) _prog = req ^. LSP.params
+  let Types.HoverParams docIdent startPos _prog = req ^. LSP.params
       filePathMb = Types.uriToFilePath $ docIdent ^. LSP.uri
 
-      nullRes = res $ Right $ Types.InL $ Types.Hover (Types.InR $ Types.InR []) Nothing
+      nullRes = res $ Right $ Types.InR Types.Null
 
       markdownRes md range = res $ Right $ Types.InL $ Types.Hover (Types.InL $ Types.MarkupContent Types.MarkupKind_Markdown md) range
 
@@ -75,6 +77,11 @@ hoverHandler = Server.requestHandler Message.SMethod_TextDocumentHover $ \req re
         let printedType = prettyPrintTypeSingleLine tipe
         markdownRes (pursTypeStr (dispayExprOnHover expr) (Just printedType) []) (Just $ spanToRange ss)
 
+      respondWithTypeBinder :: P.SourceSpan -> P.Binder -> P.SourceType -> HandlerM ()
+      respondWithTypeBinder ss binder tipe = do
+        let printedType = prettyPrintTypeSingleLine tipe
+        markdownRes (pursTypeStr (dispayBinderOnHover binder) (Just printedType) []) (Just $ spanToRange ss)
+
       respondWithModule :: P.SourceSpan -> P.ModuleName -> HandlerM ()
       respondWithModule ss modName = do
         docsMb <- readModuleDocs modName
@@ -89,60 +96,121 @@ hoverHandler = Server.requestHandler Message.SMethod_TextDocumentHover $ \req re
         respondWithDeclInModule ss nameType importedModuleName (printName name)
       respondWithImport ss importedModuleName _ = respondWithModule ss importedModuleName
 
+      handleLiteral :: P.SourceSpan -> P.Literal a -> HandlerM Bool
+      handleLiteral ss = \case
+        P.NumericLiteral (Left int) -> do
+          markdownRes (pursTypeStr (show int) (Just "Int") []) (Just $ spanToRange ss)
+          pure False
+        P.NumericLiteral (Right n) -> do
+          markdownRes (pursTypeStr (show n) (Just "Number") []) (Just $ spanToRange ss)
+          pure False
+        P.StringLiteral str -> do
+          markdownRes (pursTypeStr (ellipsis 64 $ show str) (Just "String") []) (Just $ spanToRange ss)
+          pure False
+        P.CharLiteral ch -> do
+          markdownRes (pursTypeStr (show ch) (Just "Char") []) (Just $ spanToRange ss)
+          pure False
+        P.BooleanLiteral b -> do
+          markdownRes (pursTypeStr (show b) (Just "Boolean") []) (Just $ spanToRange ss)
+          pure False
+        _ -> pure True
+
   forLsp filePathMb \filePath -> do
     cacheOpenMb <- cachedRebuild filePath
     forLsp cacheOpenMb \OpenFile {..} -> do
-      let everything = getEverythingAtPos (P.getModuleDeclarations ofModule) pos
-      debugLsp $ "pos: " <> show pos
+      let handlePos :: Types.Position -> HandlerM ()
+          handlePos pos = do
+            let everything = getEverythingAtPos (P.getModuleDeclarations ofModule) pos
+            debugLsp $ "pos: " <> show pos
 
-      case apImport everything of
-        Just (ss, importedModuleName, _, ref) -> do
-          debugLsp $ "Import: " <> show importedModuleName
-          respondWithImport ss importedModuleName ref
-        _ -> do 
-          let exprs = apExprs everything
-          noResponse <-
-            exprs & whileM \case
-              (ss, True, P.Var _ (P.Qualified (P.ByModuleName modName) ident)) -> do
-                debugLsp $ "Var: " <> show ident
-                respondWithDeclInModule ss IdentNameType modName (P.runIdent ident)
-                pure False
-              (ss, _, P.Op _ (P.Qualified (P.ByModuleName modName) ident)) -> do
-                debugLsp $ "Op: " <> show ident
-                respondWithDeclInModule ss ValOpNameType modName (P.runOpName ident)
-                pure False
-              (ss, _, P.Constructor _ (P.Qualified (P.ByModuleName modName) ident)) -> do
-                debugLsp $ "Dctor: " <> show ident
-                respondWithDeclInModule ss DctorNameType modName (P.runProperName ident)
-                pure False
-              (ss, _, P.Literal _ (P.NumericLiteral (Left int))) -> do
-                markdownRes (pursTypeStr (show int) (Just "Int") []) (Just $ spanToRange ss)
-                pure False
-              (ss, _, P.Literal _ (P.NumericLiteral (Right n))) -> do
-                markdownRes (pursTypeStr (show n) (Just "Number") []) (Just $ spanToRange ss)
-                pure False
-              (ss, _, P.Literal _ (P.StringLiteral str)) -> do
-                markdownRes (pursTypeStr (show str) (Just "String") []) (Just $ spanToRange ss)
-                pure False
-              (ss, _, P.Literal _ (P.CharLiteral ch)) -> do
-                markdownRes (pursTypeStr (show ch) (Just "Char") []) (Just $ spanToRange ss)
-                pure False
-              (ss, _, P.Literal _ (P.BooleanLiteral b)) -> do
-                markdownRes (pursTypeStr (show b) (Just "Boolean") []) (Just $ spanToRange ss)
-                pure False
-              _ -> pure True
+            case apImport everything of
+              Just (ss, importedModuleName, _, ref) -> do
+                debugLsp $ "Import: " <> show importedModuleName
+                respondWithImport ss importedModuleName ref
+              _ -> do
+                let exprs = apExprs everything
+                debugLsp $ "exprs found: " <> show (length exprs)
+                noExprFound <-
+                  exprs & allM \expr -> do
+                    case expr of
+                      (ss, _, P.Var _ (P.Qualified (P.ByModuleName modName) ident)) -> do
+                        debugLsp $ "Var: " <> show ident
+                        respondWithDeclInModule ss IdentNameType modName (P.runIdent ident)
+                        pure False
+                      (ss, _, P.Op _ (P.Qualified (P.ByModuleName modName) ident)) -> do
+                        debugLsp $ "Op: " <> show ident
+                        respondWithDeclInModule ss ValOpNameType modName (P.runOpName ident)
+                        pure False
+                      (ss, _, P.Constructor _ (P.Qualified (P.ByModuleName modName) ident)) -> do
+                        debugLsp $ "Dctor: " <> show ident
+                        respondWithDeclInModule ss DctorNameType modName (P.runProperName ident)
+                        pure False
+                      (ss, _, P.TypedValue _ tExpr ty) | not (generatedExpr tExpr) -> do
+                        respondWithTypedExpr ss tExpr ty
+                        pure False
+                      (ss, _, P.Literal _ lit) -> do
+                        handleLiteral ss lit
+                      _ -> pure True
 
-          when noResponse do
-            nullRes
+                debugLsp $ "No expr found: " <> show noExprFound
+                when noExprFound do
+                  let binders = apBinders everything
+                  noBinderFound <-
+                    binders & allM \case
+                      (ss, _, P.TypedBinder st binder) | not (generatedBinder binder) -> do
+                        debugLsp $ "VarBinder: " <> show binder
+                        respondWithTypeBinder ss binder st
+                        pure False
+                      (ss, _, P.ConstructorBinder _ (P.Qualified (P.ByModuleName modName) ident) _) -> do
+                        debugLsp $ "DctorBinder: " <> show ident
+                        respondWithDeclInModule ss DctorNameType modName (P.runProperName ident)
+                        pure False
+                      (ss, _, P.OpBinder _ (P.Qualified (P.ByModuleName modName) ident)) -> do
+                        debugLsp $ "OpBinder: " <> show ident
+                        respondWithDeclInModule ss ValOpNameType modName (P.runOpName ident)
+                        pure False
+                      (ss, _, P.LiteralBinder _ lit) -> do
+                        handleLiteral ss lit
+                      _ -> pure True
+                  debugLsp $ "No binder found: " <> show noBinderFound
+                  pure ()
+      handlePos startPos
 
-whileM :: (Monad m) => (a -> m Bool) -> [a] -> m Bool
-whileM _ [] = pure False
-whileM f (x : xs) = do
+allM :: (Monad m) => (a -> m Bool) -> [a] -> m Bool
+allM _ [] = pure True
+allM f (x : xs) = do
   b <- f x
-  if b then whileM f xs else pure False
+  if b then allM f xs else pure False
 
-findMap :: (a -> Maybe b) -> [a] -> Maybe b
-findMap f = head . mapMaybe f
+generatedExpr :: P.Expr -> Bool
+generatedExpr = traceShow' "generatedExpr result" . \case
+  P.Var _ ident -> traceToErr "Var" $ generatedIdent $ P.disqualify ident
+  P.Abs b e -> traceShow' "Abs result" $ traceToErr "Abs" $  generatedBinder b || generatedExpr e
+  P.App e e' -> traceToErr "App" $ generatedExpr e || generatedExpr e'
+  P.TypedValue _ e _ -> traceToErr "TypedValue" $ generatedExpr e
+  P.PositionedValue _ _ e -> traceToErr "PositionedValue" $ generatedExpr e
+  _ -> traceToErr "Other expr"  False
+
+
+traceToErr ::  Text -> b -> b
+traceToErr a b = trace a b
+
+traceWith :: Text -> (b -> Text) -> b -> b
+traceWith label f a = traceToErr (label <> ": " <> f a) a
+
+traceShow' :: Show b => Text -> b -> b
+traceShow' l = traceWith l show
+
+generatedBinder :: P.Binder -> Bool
+generatedBinder = \case
+  P.VarBinder ss ident -> traceToErr "VarBinder" $ traceShow' "is generated VarBinder" $ traceWith "null src span" show (ss == P.nullSourceSpan) || generatedIdent (traceShow' "ident" ident)
+  P.NamedBinder ss ident _ -> traceToErr "NamedBinder" $  (ss == P.nullSourceSpan) || generatedIdent ident
+  _ -> traceToErr "Other binder" False
+
+generatedIdent :: P.Ident -> Bool
+generatedIdent = \case
+  P.GenIdent {} -> traceToErr "GenIdent" True
+  _ -> traceToErr "Other ident" False
 
 findTypedExpr :: [(P.SourceSpan, Bool, P.Expr)] -> Maybe (P.SourceSpan, P.Expr, P.SourceType)
 findTypedExpr ((ss, _, P.TypedValue _ e t) : _) = Just (ss, e, t)
@@ -154,9 +222,13 @@ dispayExprOnHover expr = ellipsis 32 $ line1Only $ T.strip $ T.pack $ render $ P
   where
     line1Only = T.takeWhile (/= '\n')
 
+dispayBinderOnHover :: P.Binder -> T.Text
+dispayBinderOnHover binder = ellipsis 32 $ line1Only $ T.strip $ P.prettyPrintBinder binder
+  where
+    line1Only = T.takeWhile (/= '\n')
+
 ellipsis :: Int -> Text -> Text
 ellipsis l t = if T.length t > l then T.take l t <> "..." else t
-
 
 pursTypeStr :: Text -> Maybe Text -> [P.Comment] -> Text
 pursTypeStr word type' comments =

@@ -226,6 +226,25 @@ addTypes tys atPos = atPos {apTypes = tys <> apTypes atPos}
 addTypesSt :: (MonadState EverythingAtPos m) => [P.SourceType] -> m ()
 addTypesSt tys = modify (addTypes tys)
 
+debugExpr :: P.Expr -> Text
+debugExpr =
+  T.replace ", sourcePosColumn = " ":"
+    . T.replace "SourcePos {sourcePosLine = " ""
+    . T.replace "SourceSpan {spanEnd = SourcePos {sourcePosLine =  " "end = "
+    . T.replace "SourceSpan {spanStart = SourcePos {sourcePosLine =  " "start = "
+    . T.replace "spanName = \"/Users/rorycampbell/Documents/projects/simple-purs/src/B.purs\", " ""
+    . show
+
+debugSrcSpan :: P.SourceSpan -> Text
+debugSrcSpan = 
+  T.replace ", sourcePosColumn = " ":"
+    . T.replace "SourcePos {sourcePosLine = " ""
+    . T.replace "SourceSpan {spanEnd = SourcePos {sourcePosLine =  " "end = "
+    . T.replace "SourceSpan {spanStart = SourcePos {sourcePosLine =  " "start = "
+    . T.replace "spanName = \"/Users/rorycampbell/Documents/projects/simple-purs/src/B.purs\", " ""
+    . show
+
+
 -- getDeclTypesAtPos :: Types.Position -> P.Declaration -> [P.SourceType]
 
 atPosition ::
