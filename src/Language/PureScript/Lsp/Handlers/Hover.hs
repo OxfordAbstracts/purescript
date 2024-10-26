@@ -1,4 +1,5 @@
 {-# LANGUAGE BlockArguments #-}
+{-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# OPTIONS_GHC -Wno-deprecations #-}
@@ -8,8 +9,11 @@
 
 module Language.PureScript.Lsp.Handlers.Hover where
 
+import Control.Exception.Lifted (catch, handle)
 import Control.Lens (Field1 (_1), Field2 (_2), Field3 (_3), (^.))
 import Control.Lens.Combinators (view)
+import Control.Monad.Supply (runSupplyT)
+import Control.Monad.Trans.Writer (WriterT (runWriterT))
 import Data.List (last)
 import Data.List.NonEmpty qualified as NE
 import Data.Text qualified as T
@@ -17,6 +21,7 @@ import Language.LSP.Protocol.Lens qualified as LSP
 import Language.LSP.Protocol.Message qualified as Message
 import Language.LSP.Protocol.Types qualified as Types
 import Language.LSP.Server qualified as Server
+import Language.PureScript (evalSupplyT)
 import Language.PureScript qualified as P
 import Language.PureScript.Docs.Convert.Single (convertComments)
 import Language.PureScript.Docs.Types qualified as Docs
@@ -32,7 +37,8 @@ import Language.PureScript.Lsp.State (cachedRebuild)
 import Language.PureScript.Lsp.Types (OpenFile (..))
 import Language.PureScript.Lsp.Util (posInSpan, sourcePosToPosition)
 import Language.PureScript.Names (disqualify)
-import Protolude hiding (to)
+import Language.PureScript.TypeChecker.Types (infer')
+import Protolude hiding (handle, to)
 import Text.PrettyPrint.Boxes (render)
 
 hoverHandler :: Server.Handlers HandlerM
@@ -168,14 +174,15 @@ hoverHandler = Server.requestHandler Message.SMethod_TextDocumentHover $ \req re
                       P.BindingGroupDeclaration bindingGroup -> do
                         debugLsp "BindingGroupDeclaration"
                         NE.toList bindingGroup & allM \((sa, _), _, expr) ->
-                          handleExpr (fst sa, True, expr)
+                          getChildExprs expr & allM \child -> handleExpr (fst sa, True, child)
                       decl@(P.ValueDeclaration vd) -> do
-                        debugLsp $ "ValueDeclaration: " <> P.runIdent (P.valdeclIdent vd)
+                        debugLsp $ "ValueDeclaration IDENT: " <> P.runIdent (P.valdeclIdent vd)
+                        debugLsp $ "ValueDeclaration: " <> show vd
                         let ss = P.declSourceSpan decl
                             guaredExprs = P.valdeclExpression vd
                             children = guaredExprs >>= getChildExprs . (\(P.GuardedExpr _ e) -> e)
                         children & allM \expr ->
-                            handleExpr (ss, True, expr)
+                          handleExpr (ss, True, expr)
                       decl -> do
                         debugLsp $ "Decl: " <> ellipsis 100 (show decl)
                         pure False
@@ -252,3 +259,216 @@ pursTypeStr word type' comments =
 
 pursMd :: Text -> Text
 pursMd t = "```purescript\n" <> t <> "\n```"
+
+data InferError
+  = FileNotCached
+  | CompilationError P.MultipleErrors
+  | InferException Text
+  deriving (Show, Exception)
+
+inferExprType :: FilePath -> P.Expr -> HandlerM (Either InferError P.SourceType)
+inferExprType filePath expr = do
+  cacheOpenMb <- cachedRebuild filePath
+  case cacheOpenMb of
+    Nothing -> pure $ Left FileNotCached
+    Just OpenFile {..} -> do
+      inferRes <- runWriterT $ runExceptT $ evalSupplyT 0 $ evalStateT (infer' expr) (P.emptyCheckState ofStartingEnv)
+      pure $ bimap CompilationError (\(P.TypedValue' _ _ t) -> t) $ fst inferRes
+
+inferExprType' :: FilePath -> P.Expr -> HandlerM P.SourceType
+inferExprType' fp =
+  inferExprType fp >=> \case
+    Right t -> pure t
+    Left e -> throwIO e
+
+-- asdf =
+-- ValueDeclaration
+--   : ValueDeclarationData
+--     { valdeclSourceAnn =
+--         ( SourceSpan
+--             { spanStart =
+--                 SourcePos {sourcePosLine = 27, sourcePosColumn = 3},
+--               spanEnd =
+--                 SourcePos {sourcePosLine = 27, sourcePosColumn = 18}
+--             },
+--           []
+--         ),
+--       valdeclIdent = Ident "asdfa",
+--       valdeclName = Public,
+--       valdeclBinders = [],
+--       valdeclExpression =
+--         [ GuardedExpr
+--             []
+--             ( PositionedValue
+--                 ( SourceSpan
+--                     {         spanStart =
+--                         SourcePos {sourcePosLine = 27, sourcePosColumn = 11},
+--                       spanEnd =
+--                         SourcePos {sourcePosLine = 27, sourcePosColumn = 18}
+--                     }
+--                 )
+--                 []
+--                 ( App
+--                     ( App
+--                         ( TypedValue
+--                             True
+--                             ( PositionedValue
+--                                 ( SourceSpan
+--                                     {                         spanStart =
+--                                         SourcePos {sourcePosLine = 27, sourcePosColumn = 11},
+--                                       spanEnd =
+--                                         SourcePos {sourcePosLine = 27, sourcePosColumn = 15}
+--                                     }
+--                                 )
+--                                 []
+--                                 ( Var
+--                                     ( SourceSpan
+--                                         {                             spanStart =
+--                                             SourcePos {sourcePosLine = 27, sourcePosColumn = 11},
+--                                           spanEnd =
+--                                             SourcePos {sourcePosLine = 27, sourcePosColumn = 15}
+--                                         }
+--                                     )
+--                                     (Qualified (ByModuleName (ModuleName "Data.Show")) (Ident "show"))
+--                                 )
+--                             )
+--                             ( ForAll
+--                                 ( SourceSpan
+--                                     { spanName = "",
+--                                       spanStart =
+--                                         SourcePos {sourcePosLine = 0, sourcePosColumn = 0},
+--                                       spanEnd =
+--                                         SourcePos {sourcePosLine = 0, sourcePosColumn = 0}
+--                                     },
+--                                   []
+--                                 )
+--                                 TypeVarVisible
+--                                 "a"
+--                                 ( Just
+--                                     ( TypeConstructor
+--                                         ( SourceSpan
+--                                             { spanName = "",
+--                                               spanStart =
+--                                                 SourcePos {sourcePosLine = 0, sourcePosColumn = 0},
+--                                               spanEnd =
+--                                                 SourcePos {sourcePosLine = 0, sourcePosColumn = 0}
+--                                             },
+--                                           []
+--                                         )
+--                                         (Qualified (ByModuleName (ModuleName "Prim")) (ProperName {runProperName = "Type"}))
+--                                     )
+--                                 )
+--                                 ( ConstrainedType
+--                                     ( SourceSpan
+--                                         { spanName = "",
+--                                           spanStart =
+--                                             SourcePos {sourcePosLine = 0, sourcePosColumn = 0},
+--                                           spanEnd =
+--                                             SourcePos {sourcePosLine = 0, sourcePosColumn = 0}
+--                                         },
+--                                       []
+--                                     )
+--                                     ( Constraint
+--                                         { constraintAnn =
+--                                             ( SourceSpan
+--                                                 { spanName = "",
+--                                                   spanStart =
+--                                                     SourcePos {sourcePosLine = 0, sourcePosColumn = 0},
+--                                                   spanEnd =
+--                                                     SourcePos {sourcePosLine = 0, sourcePosColumn = 0}
+--                                                 },
+--                                               []
+--                                             ),
+--                                           constraintClass = Qualified (ByModuleName (ModuleName "Data.Show")) (ProperName {runProperName = "Show"}),
+--                                           constraintKindArgs = [],
+--                                           constraintArgs =
+--                                             [ TypeVar
+--                                                 ( SourceSpan
+--                                                     { spanName = "",
+--                                                       spanStart =
+--                                                         SourcePos {sourcePosLine = 0, sourcePosColumn = 0},
+--                                                       spanEnd =
+--                                                         SourcePos {sourcePosLine = 0, sourcePosColumn = 0}
+--                                                     },
+--                                                   []
+--                                                 )
+--                                                 "a"
+--                                             ],
+--                                           constraintData = Nothing
+--                                         }
+--                                     )
+--                                     ( TypeApp
+--                                         ( SourceSpan {spanName = ".spago/p/prelude-6.0.1/src/Data/Show.purs", spanStart = SourcePos {sourcePosLine = 24, sourcePosColumn = 11}, spanEnd = SourcePos {sourcePosLine = 24, sourcePosColumn = 22}},
+--                                           []
+--                                         )
+--                                         ( TypeApp
+--                                             ( SourceSpan {spanName = ".spago/p/prelude-6.0.1/src/Data/Show.purs", spanStart = SourcePos {sourcePosLine = 24, sourcePosColumn = 11}, spanEnd = SourcePos {sourcePosLine = 24, sourcePosColumn = 22}},
+--                                               []
+--                                             )
+--                                             ( TypeConstructor
+--                                                 ( SourceSpan {spanName = ".spago/p/prelude-6.0.1/src/Data/Show.purs", spanStart = SourcePos {sourcePosLine = 24, sourcePosColumn = 13}, spanEnd = SourcePos {sourcePosLine = 24, sourcePosColumn = 15}},
+--                                                   []
+--                                                 )
+--                                                 (Qualified (ByModuleName (ModuleName "Prim")) (ProperName {runProperName = "Function"}))
+--                                             )
+--                                             ( TypeVar
+--                                                 ( SourceSpan {spanName = ".spago/p/prelude-6.0.1/src/Data/Show.purs", spanStart = SourcePos {sourcePosLine = 24, sourcePosColumn = 11}, spanEnd = SourcePos {sourcePosLine = 24, sourcePosColumn = 12}},
+--                                                   []
+--                                                 )
+--                                                 "a"
+--                                             )
+--                                         )
+--                                         ( TypeConstructor
+--                                             ( SourceSpan {spanName = ".spago/p/prelude-6.0.1/src/Data/Show.purs", spanStart = SourcePos {sourcePosLine = 24, sourcePosColumn = 16}, spanEnd = SourcePos {sourcePosLine = 24, sourcePosColumn = 22}},
+--                                               []
+--                                             )
+--                                             (Qualified (ByModuleName (ModuleName "Prim")) (ProperName {runProperName = "String"}))
+--                                         )
+--                                     )
+--                                 )
+--                                 (Just (SkolemScope {runSkolemScope = 24}))
+--                             )
+--                         )
+--                         ( Var
+--                             ( SourceSpan {spanName = "", spanStart = SourcePos {sourcePosLine = 0, sourcePosColumn = 0}, spanEnd = SourcePos {sourcePosLine = 0, sourcePosColumn = 0}}
+--                             )
+--                             (Qualified (ByModuleName (ModuleName "Data.Show")) (Ident "showInt"))
+--                         )
+--                     )
+--                     ( TypedValue
+--                         True
+--                         ( TypedValue
+--                             True
+--                             ( PositionedValue
+--                                 ( SourceSpan { spanStart = SourcePos {sourcePosLine = 27, sourcePosColumn = 16}, spanEnd = SourcePos {sourcePosLine = 27, sourcePosColumn = 18}}
+--                                 )
+--                                 []
+--                                 ( Literal
+--                                     ( SourceSpan { spanStart = SourcePos {sourcePosLine = 27, sourcePosColumn = 16}, spanEnd = SourcePos {sourcePosLine = 27, sourcePosColumn = 18}}
+--                                     )
+--                                     (NumericLiteral (Left 11))
+--                                 )
+--                             )
+--                             ( TypeConstructor
+--                                 ( SourceSpan {spanName = "", spanStart = SourcePos {sourcePosLine = 0, sourcePosColumn = 0}, spanEnd = SourcePos {sourcePosLine = 0, sourcePosColumn = 0}},
+--                                   []
+--                                 )
+--                                 (Qualified (ByModuleName (ModuleName "Prim")) (ProperName {runProperName = "Int"}))
+--                             )
+--                         )
+--                         ( TypeConstructor
+--                             ( SourceSpan
+--                                 { spanName = "",
+--                                   spanStart = SourcePos {sourcePosLine = 0, sourcePosColumn = 0},
+--                                   spanEnd =
+--                                     SourcePos {sourcePosLine = 0, sourcePosColumn = 0}
+--                                 },
+--                               []
+--                             )
+--                             (Qualified (ByModuleName (ModuleName "Prim")) (ProperName {runProperName = "Int"}))
+--                         )
+--                     )
+--                 )
+--             )
+--         ]
+--     }

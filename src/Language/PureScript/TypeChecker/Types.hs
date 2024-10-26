@@ -3,8 +3,10 @@
 --
 module Language.PureScript.TypeChecker.Types
   ( BindingGroupType(..)
+  , TypedValue'(..)
   , typesOf
   , checkTypeKind
+  , infer'
   ) where
 
 {-
