@@ -4,7 +4,7 @@
 
 -- {-# OPTIONS_GHC -Wno-unused-top-binds #-}
 
-module Language.PureScript.Lsp.Rebuild (RebuildResult (..), rebuildFile, codegenTargets) where
+module Language.PureScript.Lsp.Rebuild (RebuildResult (..), rebuildFile, buildExportEnvCacheAndHandleErrors, codegenTargets) where
 
 import Control.Category ((>>>))
 import Control.Concurrent.STM (TChan, TVar, writeTChan)
@@ -57,55 +57,76 @@ rebuildFile uri =
         stVar <- asks lspStateVar
         maxCache <- getMaxFilesInCache
         cachedBuild <- cachedRebuild fp
-        let makeEnv :: Map P.ModuleName FilePath -> [ExternDependency] -> P.MakeActions P.Make
-            makeEnv foreigns externs =
+        let mkMakeActions :: Map P.ModuleName FilePath -> [ExternDependency] -> P.MakeActions P.Make
+            mkMakeActions foreigns externs =
               P.buildMakeActions outputDirectory filePathMap foreigns False
                 -- & broadcastProgress chan
                 & addAllIndexing conn
-                & addRebuildCaching stVar maxCache externs
+                & addRebuildCaching stVar maxCache externs m
         case cachedBuild of
           Just open -> do
-            rebuildFromOpenFileCache outputDirectory fp pwarnings stVar makeEnv m open
+            rebuildFromOpenFileCache fp pwarnings stVar mkMakeActions m open
           Nothing -> do
-            rebuildWithoutCache moduleName makeEnv outputDirectory fp pwarnings m
-  where
-    rebuildFromOpenFileCache outputDirectory fp pwarnings stVar makeEnv m (Language.PureScript.Lsp.Types.OpenFile moduleName _ externDeps env _) = do
-      let externs = fmap edExtern externDeps
-      foreigns <- P.inferForeignModules (M.singleton moduleName (Right fp))
-      (exportEnv, externsMb) <- logPerfStandard "build export cache" $ buildExportEnvCacheAndHandleErrors (selectDependencies m) m externs
-      for_ externsMb (cacheDependencies moduleName)
-      res <- logPerfStandard "Rebuild Module with provided env" $ liftIO $ do
-        P.runMake (P.defaultOptions {P.optionsCodegenTargets = codegenTargets}) do
-          newExtern <- P.rebuildModuleWithProvidedEnv (Just $ updateCachedModule' stVar) (makeEnv foreigns externDeps) exportEnv env externs m Nothing
-          updateCacheDb codegenTargets outputDirectory fp Nothing moduleName
-          pure newExtern
-      case fst res of
-        Left errs -> debugLsp $ "Rebuild error detected: " <> show errs
-        _ -> pure ()
-      case fst res of
-        Left errs | any couldBeFromNewImports (P.runMultipleErrors errs) -> do
-          warnLsp "Module not found error detected, rebuilding without cache"
-          rebuildWithoutCache moduleName makeEnv outputDirectory fp pwarnings m
-        _ -> handleRebuildResult fp pwarnings res
+            rebuildWithoutCache moduleName mkMakeActions fp pwarnings m
 
-    rebuildWithoutCache moduleName makeEnv outputDirectory fp pwarnings m = do
-      externDeps <- logPerfStandard "Select depenencies" $ selectDependencies m
-      let externs = fmap edExtern externDeps
-      foreigns <- P.inferForeignModules (M.singleton moduleName (Right fp))
-      exportEnv <- logPerfStandard "build export cache" $ addExternsToExportEnvOrThrow primEnv externs
-      res <- logPerfStandard "Rebuild Module" $ liftIO $ do
-        P.runMake (P.defaultOptions {P.optionsCodegenTargets = codegenTargets}) do
-          newExtern <- P.rebuildModule' (makeEnv foreigns externDeps) exportEnv externs m
-          updateCacheDb codegenTargets outputDirectory fp Nothing moduleName
-          pure newExtern
-      handleRebuildResult fp pwarnings res
-    handleRebuildResult fp pwarnings (result, warnings) = do
-      case result of
-        Left errors ->
-          pure $ RebuildError errors
-        Right newExtern -> do
-          addExternToExportEnv newExtern
-          pure $ RebuildWarning (CST.toMultipleWarnings fp pwarnings <> warnings)
+rebuildFromOpenFileCache ::
+  (MonadLsp ServerConfig m, MonadReader LspEnvironment m, MonadThrow m) =>
+  FilePath ->
+  [CST.ParserWarning] ->
+  TVar LspState ->
+  (Map P.ModuleName FilePath -> [ExternDependency] -> P.MakeActions P.Make) ->
+  P.Module ->
+  OpenFile ->
+  m RebuildResult
+rebuildFromOpenFileCache fp pwarnings stVar mkMakeActions m (OpenFile moduleName _ externDeps env _ _ _) = do
+  outputDirectory <- outputPath <$> getConfig
+  let externs = fmap edExtern externDeps
+  foreigns <- P.inferForeignModules (M.singleton moduleName (Right fp))
+  (exportEnv, externsMb) <- logPerfStandard "build export cache" $ buildExportEnvCacheAndHandleErrors (selectDependencies m) m externs
+  for_ externsMb (cacheDependencies moduleName)
+  res <- logPerfStandard "Rebuild Module with provided env" $ liftIO $ do
+    P.runMake (P.defaultOptions {P.optionsCodegenTargets = codegenTargets}) do
+      newExtern <- P.rebuildModuleWithProvidedEnv (Just $ updateCachedModule' stVar) (mkMakeActions foreigns externDeps) exportEnv env externs m Nothing
+      updateCacheDb codegenTargets outputDirectory fp Nothing moduleName
+      pure newExtern
+  case fst res of
+    Left errs -> debugLsp $ "Rebuild error detected: " <> show errs
+    _ -> pure ()
+  case fst res of
+    Left errs | any couldBeFromNewImports (P.runMultipleErrors errs) -> do
+      warnLsp "Module not found error detected, rebuilding without cache"
+      rebuildWithoutCache moduleName mkMakeActions fp pwarnings m
+    _ -> handleRebuildResult fp pwarnings res
+
+rebuildWithoutCache ::
+  (MonadLsp ServerConfig m, MonadReader LspEnvironment m, MonadThrow m) =>
+  P.ModuleName ->
+  (Map P.ModuleName FilePath -> [ExternDependency] -> P.MakeActions P.Make) ->
+  FilePath ->
+  [CST.ParserWarning] ->
+  P.Module ->
+  m RebuildResult
+rebuildWithoutCache moduleName mkMakeActions fp pwarnings m = do
+  outputDirectory <- outputPath <$> getConfig
+  externDeps <- logPerfStandard "Select depenencies" $ selectDependencies m
+  let externs = fmap edExtern externDeps
+  foreigns <- P.inferForeignModules (M.singleton moduleName (Right fp))
+  exportEnv <- logPerfStandard "build export cache" $ addExternsToExportEnvOrThrow primEnv externs
+  res <- logPerfStandard "Rebuild Module" $ liftIO $ do
+    P.runMake (P.defaultOptions {P.optionsCodegenTargets = codegenTargets}) do
+      newExtern <- P.rebuildModule' (mkMakeActions foreigns externDeps) exportEnv externs m
+      updateCacheDb codegenTargets outputDirectory fp Nothing moduleName
+      pure newExtern
+  handleRebuildResult fp pwarnings res
+
+handleRebuildResult :: (MonadLsp ServerConfig f, MonadReader LspEnvironment f) => FilePath -> [CST.ParserWarning] -> (Either P.MultipleErrors ExternsFile, P.MultipleErrors) -> f RebuildResult
+handleRebuildResult fp pwarnings (result, warnings) = do
+  case result of
+    Left errors ->
+      pure $ RebuildError errors
+    Right newExtern -> do
+      addExternToExportEnv newExtern
+      pure $ RebuildWarning (CST.toMultipleWarnings fp pwarnings <> warnings)
 
 couldBeFromNewImports :: P.ErrorMessage -> Bool
 couldBeFromNewImports =
@@ -194,8 +215,8 @@ broadcastProgress chan ma = do
     { P.progress = liftIO . atomically . writeTChan chan . Just
     }
 
-addRebuildCaching :: TVar Language.PureScript.Lsp.Types.LspState -> Int -> [ExternDependency] -> P.MakeActions P.Make -> P.MakeActions P.Make
-addRebuildCaching stVar maxCache deps ma =
+addRebuildCaching :: TVar LspState -> Int -> [ExternDependency] -> P.Module -> P.MakeActions P.Make -> P.MakeActions P.Make
+addRebuildCaching stVar maxCache deps unchecked ma =
   ma
-    { P.codegen = \prevEnv astM m docs ext -> lift (liftIO $ cacheRebuild' stVar maxCache ext deps prevEnv astM) <* P.codegen ma prevEnv astM m docs ext
+    { P.codegen = \prevEnv endEnv astM m docs ext -> lift (liftIO $ cacheRebuild' stVar maxCache ext deps prevEnv endEnv unchecked astM) <* P.codegen ma prevEnv endEnv astM m docs ext
     }

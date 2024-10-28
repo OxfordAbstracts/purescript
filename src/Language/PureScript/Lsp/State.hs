@@ -52,16 +52,16 @@ getDbConn :: (MonadReader LspEnvironment m, MonadIO m) => m Connection
 getDbConn = liftIO . fmap snd . readTVarIO . lspDbConnectionVar =<< ask
 
 -- | Sets rebuild cache to the given ExternsFile
-cacheRebuild :: (MonadReader LspEnvironment m, MonadLsp ServerConfig m) => ExternsFile -> [ExternDependency] -> P.Environment -> P.Module -> m ()
-cacheRebuild ef deps prevEnv module' = do
+cacheRebuild :: (MonadReader LspEnvironment m, MonadLsp ServerConfig m) => ExternsFile -> [ExternDependency] -> P.Environment -> P.Environment -> P.Module -> P.Module -> m ()
+cacheRebuild ef deps prevEnv endEnv unchecked module' = do
   st <- lspStateVar <$> ask
   maxFiles <- getMaxFilesInCache
-  liftIO $ cacheRebuild' st maxFiles ef deps prevEnv module'
+  liftIO $ cacheRebuild' st maxFiles ef deps prevEnv endEnv unchecked module'
 
-cacheRebuild' :: TVar LspState -> Int -> ExternsFile -> [ExternDependency] -> P.Environment -> P.Module -> IO ()
-cacheRebuild' st maxFiles ef deps prevEnv module' = atomically . modifyTVar st $ \x ->
+cacheRebuild' :: TVar LspState -> Int -> ExternsFile -> [ExternDependency] -> P.Environment -> P.Environment -> P.Module -> P.Module -> IO ()
+cacheRebuild' st maxFiles ef deps prevEnv endEnv unchecked module' = atomically . modifyTVar st $ \x ->
   x
-    { openFiles = List.take maxFiles $ (fp, OpenFile (efModuleName ef) ef deps prevEnv module') : filter ((/= fp) . fst) (openFiles x)
+    { openFiles = List.take maxFiles $ (fp, OpenFile (efModuleName ef) ef deps prevEnv endEnv unchecked module') : filter ((/= fp) . fst) (openFiles x)
     }
   where
     fp = P.spanName $ efSourceSpan ef

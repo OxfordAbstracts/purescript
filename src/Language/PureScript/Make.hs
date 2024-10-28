@@ -2,6 +2,7 @@
 
 module Language.PureScript.Make
   ( -- * Make API
+    desugarAndTypeCheck,
     rebuildModule,
     rebuildModule',
     rebuildModuleWithProvidedEnv,
@@ -23,7 +24,7 @@ import Control.Monad.Supply (evalSupplyT, runSupply, runSupplyT)
 import Control.Monad.Trans.Control (MonadBaseControl (..))
 import Control.Monad.Trans.State (runStateT)
 import Control.Monad.Writer.Class (MonadWriter (..), censor)
-import Control.Monad.Writer.Strict (runWriterT, MonadTrans (lift))
+import Control.Monad.Writer.Strict (MonadTrans (lift), runWriterT)
 import Data.Foldable (fold, for_)
 import Data.Function (on)
 import Data.List (foldl', sortOn)
@@ -108,23 +109,7 @@ rebuildModuleWithProvidedEnv onDesugared MakeActions {..} exEnv env externs m@(M
   progress $ CompilingModule moduleName moduleIndex
   let withPrim = importPrim m
   lint withPrim
-  ((Module ss coms _ elaborated exps, env'), nextVar) <- runSupplyT 0 $ do
-    (desugared, (exEnv', usedImports)) <- runStateT (desugar externs withPrim) (exEnv, mempty)
-    for_ onDesugared $ lift . \f -> f desugared
-    let modulesExports = (\(_, _, exports) -> exports) <$> exEnv'
-    (checked, CheckState {..}) <- runStateT (typeCheckModule modulesExports desugared) $ emptyCheckState env
-    let usedImports' =
-          foldl'
-            ( flip $ \(fromModuleName, newtypeCtorName) ->
-                M.alter (Just . (fmap DctorName newtypeCtorName :) . fold) fromModuleName
-            )
-            usedImports
-            checkConstructorImportsForCoercible
-    -- Imports cannot be linted before type checking because we need to
-    -- known which newtype constructors are used to solve Coercible
-    -- constraints in order to not report them as unused.
-    censor (addHint (ErrorInModule moduleName)) $ lintImports checked exEnv' usedImports'
-    return (checked, checkEnv)
+  ((Module ss coms _ elaborated exps, env'), nextVar) <- desugarAndTypeCheck onDesugared moduleName externs withPrim exEnv env
 
   -- desugar case declarations *after* type- and exhaustiveness checking
   -- since pattern guards introduces cases which the exhaustiveness checker
@@ -134,6 +119,7 @@ rebuildModuleWithProvidedEnv onDesugared MakeActions {..} exEnv env externs m@(M
 
   regrouped <- createBindingGroups moduleName . collapseBindingGroups $ deguarded
   let mod' = Module ss coms moduleName regrouped exps
+
       corefn = CF.moduleToCoreFn env' mod'
       (optimized, nextVar'') = runSupply nextVar' $ CF.optimizeCoreFn corefn
       (renamedIdents, renamed) = renameInModule optimized
@@ -155,8 +141,35 @@ rebuildModuleWithProvidedEnv onDesugared MakeActions {..} exEnv env externs m@(M
               ++ prettyPrintMultipleErrors defaultPPEOptions errs
         Right d -> d
 
-  evalSupplyT nextVar'' $ codegen env mod' renamed docs exts
+  evalSupplyT nextVar'' $ codegen env env' mod' renamed docs exts
   return exts
+
+desugarAndTypeCheck ::
+  (MonadError MultipleErrors m, MonadWriter MultipleErrors m, Foldable t) =>
+  t (Module -> m b) ->
+  ModuleName ->
+  [ExternsFile] ->
+  Module ->
+  Env ->
+  Environment ->
+  m ((Module, Environment), Integer)
+desugarAndTypeCheck onDesugared moduleName externs withPrim exEnv env = runSupplyT 0 $ do
+  (desugared, (exEnv', usedImports)) <- runStateT (desugar externs withPrim) (exEnv, mempty)
+  for_ onDesugared $ lift . \f -> f desugared
+  let modulesExports = (\(_, _, exports) -> exports) <$> exEnv'
+  (checked, CheckState {..}) <- runStateT (typeCheckModule modulesExports desugared) $ emptyCheckState env
+  let usedImports' =
+        foldl'
+          ( flip $ \(fromModuleName, newtypeCtorName) ->
+              M.alter (Just . (fmap DctorName newtypeCtorName :) . fold) fromModuleName
+          )
+          usedImports
+          checkConstructorImportsForCoercible
+  -- Imports cannot be linted before type checking because we need to
+  -- known which newtype constructors are used to solve Coercible
+  -- constraints in order to not report them as unused.
+  censor (addHint (ErrorInModule moduleName)) $ lintImports checked exEnv' usedImports'
+  return (checked, checkEnv)
 
 -- It may seem more obvious to write `docs <- Docs.convertModule m env' here,
 -- but I have not done so for two reasons:

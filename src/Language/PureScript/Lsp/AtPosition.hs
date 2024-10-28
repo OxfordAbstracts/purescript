@@ -20,7 +20,7 @@ import Language.PureScript.Lsp.NameType (LspNameType (..))
 import Language.PureScript.Lsp.ServerConfig (ServerConfig)
 import Language.PureScript.Lsp.State (cachedRebuild)
 import Language.PureScript.Lsp.Types (LspEnvironment, OpenFile (..))
-import Language.PureScript.Lsp.Util (declsAtLine, posInSpan, sourcePosToPosition)
+import Language.PureScript.Lsp.Util (declsAtLine, getDeclarationAtPos, onDeclsAtLine, posInSpan, sourcePosToPosition)
 import Language.PureScript.Traversals (defS)
 import Language.PureScript.Types (getAnnForType)
 import Protolude
@@ -72,7 +72,8 @@ spanSize :: P.SourceSpan -> (Int, Int)
 spanSize (P.SourceSpan _ start end) = (P.sourcePosLine end - P.sourcePosLine start, P.sourcePosColumn end - P.sourcePosColumn start)
 
 data EverythingAtPos = EverythingAtPos
-  { apDecls :: [P.Declaration],
+  { apTopLevelDecl :: Maybe P.Declaration,
+    apDecls :: [P.Declaration],
     apExprs :: [(P.SourceSpan, Bool, P.Expr)],
     apBinders :: [(P.SourceSpan, Bool, P.Binder)],
     apCaseAlternatives :: [(P.SourceSpan, P.CaseAlternative)],
@@ -103,11 +104,15 @@ showCounts EverythingAtPos {..} =
     <> show (isJust apImport)
 
 nullEverythingAtPos :: EverythingAtPos
-nullEverythingAtPos = EverythingAtPos [] [] [] [] [] [] [] Nothing
+nullEverythingAtPos = EverythingAtPos Nothing [] [] [] [] [] [] [] Nothing
+
+topLevelDecl :: P.Declaration -> EverythingAtPos
+topLevelDecl decl = nullEverythingAtPos {apTopLevelDecl = Just decl}
 
 withSpansOnly :: EverythingAtPos -> EverythingAtPos
 withSpansOnly EverythingAtPos {..} =
   EverythingAtPos
+    apTopLevelDecl
     apDecls
     (filter (view _2) apExprs)
     (filter (view _2) apBinders)
@@ -120,6 +125,7 @@ withSpansOnly EverythingAtPos {..} =
 withTypedValuesOnly :: EverythingAtPos -> EverythingAtPos
 withTypedValuesOnly EverythingAtPos {..} =
   EverythingAtPos
+    apTopLevelDecl
     apDecls
     (filter (isJust . exprTypes . view _3) apExprs)
     (filter (isJust . binderTypes . view _3) apBinders)
@@ -136,14 +142,14 @@ getEverythingAtPos :: [P.Declaration] -> Types.Position -> EverythingAtPos
 getEverythingAtPos decls pos@(Types.Position {..}) =
   case head $ declsAtLine (fromIntegral _line + 1) $ filter (not . isPrimImport) decls of
     Nothing -> nullEverythingAtPos
-    Just (P.ImportDeclaration (ss, _) importedModuleName importType _) ->
-      nullEverythingAtPos {apImport = Just (maybe ss P.declRefSourceSpan ref, importedModuleName, importType, ref)}
+    Just decl@(P.ImportDeclaration (ss, _) importedModuleName importType _) ->
+      (topLevelDecl decl) {apImport = Just (maybe ss P.declRefSourceSpan ref, importedModuleName, importType, ref)}
       where
         ref = findDeclRefAtPos pos case importType of
           P.Implicit -> []
           P.Explicit refs -> refs
           P.Hiding refs -> refs
-    Just topDecl -> execState (handleDecl topDecl) nullEverythingAtPos {apDecls = [topDecl]}
+    Just topDecl -> execState (handleDecl topDecl) (topLevelDecl topDecl) {apDecls = [topDecl]}
       where
         (handleDecl, _, _, _, _, _) = P.everywhereWithContextOnValuesM (declSourceSpan topDecl) onDecl onExpr onBinder onCaseAlternative onDoNotationElement onGuard
 
@@ -255,14 +261,13 @@ debugExpr =
     . show
 
 debugSrcSpan :: P.SourceSpan -> Text
-debugSrcSpan = 
+debugSrcSpan =
   T.replace ", sourcePosColumn = " ":"
     . T.replace "SourcePos {sourcePosLine = " ""
     . T.replace "SourceSpan {spanEnd = SourcePos {sourcePosLine =  " "end = "
     . T.replace "SourceSpan {spanStart = SourcePos {sourcePosLine =  " "start = "
     . T.replace "spanName = \"/Users/rorycampbell/Documents/projects/simple-purs/src/B.purs\", " ""
     . show
-
 
 -- getDeclTypesAtPos :: Types.Position -> P.Declaration -> [P.SourceType]
 
@@ -430,6 +435,29 @@ getExprsAtPos pos declaration = execState (goDecl declaration) []
       when (maybe False (posInSpan pos) (P.exprSourceSpan expr)) do
         modify (expr :)
       pure expr
+
+modifySmallestExprAtPos :: (P.Expr -> P.Expr) -> Types.Position -> P.Module -> (P.Module, Maybe (P.Expr, P.Expr))
+modifySmallestExprAtPos fn pos@(Types.Position {..}) (P.Module ss c mName decls refs) =
+  (P.Module ss c mName (fmap fst declsAndExpr) refs, asum $ snd <$> declsAndExpr)
+  where
+    declsAndExpr = onDeclsAtLine (pure . modifySmallestDeclExprAtPos fn pos) (\d -> [(d, Nothing)]) (fromIntegral _line + 1) decls
+
+modifySmallestDeclExprAtPos :: (P.Expr -> P.Expr) -> Types.Position -> P.Declaration -> (P.Declaration, Maybe (P.Expr, P.Expr))
+modifySmallestDeclExprAtPos fn pos declaration = runState (onDecl declaration) Nothing
+  where
+    (onDecl, _, _) = P.everywhereOnValuesM pure handleExpr pure
+
+    handleExpr :: P.Expr -> StateT (Maybe (P.Expr, P.Expr)) Identity P.Expr
+    handleExpr expr = do
+      found <- get
+      !_ <- pure $ unsafePerformIO $ putErrLn $ P.exprCtr expr
+      !_ <- pure $ unsafePerformIO $ (putErrLn :: Text -> IO ()) (show $ maybe False (posInSpan pos) (P.exprSourceSpan expr))
+      if isNothing found && maybe False (posInSpan pos) (P.exprSourceSpan expr)
+        then do
+          let expr' = fn expr
+          modify (const $ Just (expr, expr'))
+          pure expr'
+        else pure expr
 
 getChildExprs :: P.Expr -> [P.Expr]
 getChildExprs parentExpr = execState (goExpr parentExpr) []

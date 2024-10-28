@@ -778,6 +778,35 @@ data Expr
   | PositionedValue SourceSpan [Comment] Expr
   deriving (Eq, Ord, Show, Generic, Serialise, NFData)
 
+exprCtr :: Expr -> Text 
+exprCtr (Literal _ _) = "Literal"
+exprCtr (UnaryMinus _ _) = "UnaryMinus"
+exprCtr (BinaryNoParens _ _ _) = "BinaryNoParens"
+exprCtr (Parens _) = "Parens"
+exprCtr (Accessor _ _) = "Accessor"
+exprCtr (ObjectUpdate _ _) = "ObjectUpdate"
+exprCtr (ObjectUpdateNested _ _) = "ObjectUpdateNested"
+exprCtr (Abs _ _) = "Abs"
+exprCtr (App _ _) = "App"
+exprCtr (VisibleTypeApp _ _) = "VisibleTypeApp"
+exprCtr (Unused _) = "Unused"
+exprCtr (Var _ _) = "Var"
+exprCtr (Op _ _) = "Op"
+exprCtr (IfThenElse _ _ _) = "IfThenElse"
+exprCtr (Constructor _ _) = "Constructor"
+exprCtr (Case _ _) = "Case"
+exprCtr (TypedValue _ _ _) = "TypedValue"
+exprCtr (Let _ _ _) = "Let"
+exprCtr (Do _ _) = "Do"
+exprCtr (Ado _ _ _) = "Ado"
+exprCtr (TypeClassDictionary _ _ _) = "TypeClassDictionary"
+exprCtr (DeferredDictionary _ _) = "DeferredDictionary"
+exprCtr (DerivedInstancePlaceholder _ _) = "DerivedInstancePlaceholder"
+exprCtr AnonymousArgument = "AnonymousArgument"
+exprCtr (Hole _) = "Hole"
+exprCtr (PositionedValue _ _ _) = "PositionedValue"
+
+
 exprSourceSpan :: Expr -> Maybe SourceSpan
 exprSourceSpan (Literal ss _) = Just ss
 exprSourceSpan (UnaryMinus ss _) = Just ss

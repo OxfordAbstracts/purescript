@@ -29,7 +29,7 @@ addAllIndexing conn ma =
 addAstModuleIndexing :: (MonadIO m) => Connection -> P.MakeActions m -> P.MakeActions m
 addAstModuleIndexing conn ma =
   ma
-    { P.codegen = \prevEnv astM m docs ext -> lift (indexAstModule conn astM ext (getExportedNames ext)) <* P.codegen ma prevEnv astM m docs ext
+    { P.codegen = \prevEnv endEnv astM m docs ext -> lift (indexAstModule conn astM ext (getExportedNames ext)) <* P.codegen ma prevEnv endEnv astM m docs ext
     }
 
 indexAstModule :: (MonadIO m) => Connection -> P.Module -> ExternsFile -> Set P.Name -> m ()
@@ -202,7 +202,7 @@ getExportedNames extern =
 addExternIndexing :: (MonadIO m) => Connection -> P.MakeActions m -> P.MakeActions m
 addExternIndexing conn ma =
   ma
-    { P.codegen = \prevEnv astM m docs ext -> lift (indexExtern conn ext) <* P.codegen ma prevEnv astM m docs ext
+    { P.codegen = \prevEnv endEnv astM m docs ext -> lift (indexExtern conn ext) <* P.codegen ma prevEnv endEnv astM m docs ext
     }
 
 indexExtern :: (MonadIO m) => Connection -> ExternsFile -> m ()

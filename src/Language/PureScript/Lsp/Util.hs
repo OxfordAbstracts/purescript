@@ -27,7 +27,7 @@ import Protolude hiding (to)
 
 posInSpan :: Types.Position -> AST.SourceSpan -> Bool
 posInSpan (Types.Position line col) (AST.SourceSpan _ (AST.SourcePos startLine startCol) (AST.SourcePos endLine endCol)) =
-  not (startLine == 1 && startCol == 1)  -- ignore generated spans
+  not (startLine == 1 && startCol == 1) -- ignore generated spans
     && startLine <= atLine
     && endLine >= atLine
     && startCol <= atCol
@@ -177,6 +177,27 @@ declsAtLine l = go . sortBy (comparing declStartLine)
       | otherwise = go (d' : ds)
     go [d] | declStartLine d <= l = [d]
     go _ = []
+
+    unsureEndLine = \case
+      P.ValueDeclaration {} -> True
+      P.ExternDeclaration {} -> True
+      P.TypeClassDeclaration {} -> True
+      P.TypeInstanceDeclaration {} -> True
+      _ -> False
+
+
+-- Faster way to get the declarations at a line
+onDeclsAtLine :: (P.Declaration -> [a]) -> (P.Declaration -> [a]) -> Int -> [P.Declaration] -> [a]
+onDeclsAtLine atLine notAtLine l = go . sortBy (comparing declStartLine)
+  where
+    go (d : d' : ds)
+      | declStartLine d <= l && declEndLine d >= l = atLine d <> go (d' : ds)
+      | declStartLine d <= l && declStartLine d' > l && unsureEndLine d = atLine d <> go (d' : ds)
+      | otherwise = notAtLine d <> go (d' : ds)
+    go [d]
+      | declStartLine d <= l = atLine d
+      | otherwise = notAtLine d
+    go [] = []
 
     unsureEndLine = \case
       P.ValueDeclaration {} -> True
