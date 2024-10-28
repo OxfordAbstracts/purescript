@@ -59,7 +59,7 @@ hoverHandler = Server.requestHandler Message.SMethod_TextDocumentHover $ \req re
 
       nullRes = res $ Right $ Types.InR Types.Null
 
-      markdownRes md range =
+      markdownRes range md =
         res $ Right $ Types.InL $ Types.Hover (Types.InL $ Types.MarkupContent Types.MarkupKind_Markdown md) range
 
       forLsp :: Maybe a -> (a -> HandlerM ()) -> HandlerM ()
@@ -69,27 +69,27 @@ hoverHandler = Server.requestHandler Message.SMethod_TextDocumentHover $ \req re
       respondWithDeclInModule ss nameType modName ident = do
         declDocMb <- readDeclarationDocsWithNameType modName nameType ident
         case declDocMb of
-          Just docs -> markdownRes docs (Just $ spanToRange ss)
+          Just docs -> markdownRes (Just $ spanToRange ss) ("docs:\n" <> docs)
           _ -> do
             tipes <- getAstDeclarationTypeInModule (Just nameType) modName ident
             forLsp (head tipes) \tipe ->
-              markdownRes tipe (Just $ spanToRange ss)
+              markdownRes (Just $ spanToRange ss) ("type:\n" <> tipe)
 
-      respondWithSourceType :: P.SourceType -> HandlerM ()
-      respondWithSourceType tipe = do
-        let printedType = prettyPrintTypeSingleLine tipe
-        markdownRes (pursTypeStr "_" (Just printedType) []) (Just $ spanToRange $ fst $ P.getAnnForType tipe)
+      -- respondWithSourceType :: P.SourceType -> HandlerM ()
+      -- respondWithSourceType tipe = do
+      --   let printedType = prettyPrintTypeSingleLine tipe
+      --   markdownRes (pursTypeStr "_" (Just printedType) []) (Just $ spanToRange $ fst $ P.getAnnForType tipe)
 
-      respondWithExprDebug :: Text -> P.SourceSpan -> P.Expr -> HandlerM ()
-      respondWithExprDebug label ss expr = do
-        let printedExpr = ellipsis 2000 $ show expr
-        markdownRes (label <> ": \n" <> pursMd printedExpr) (Just $ spanToRange ss)
+      -- respondWithExprDebug :: Text -> P.SourceSpan -> P.Expr -> HandlerM ()
+      -- respondWithExprDebug label ss expr = do
+      --   let printedExpr = ellipsis 2000 $ show expr
+      --   markdownRes (label <> ": \n" <> pursMd printedExpr) (Just $ spanToRange ss)
 
-      respondWithExpr2Debug :: Text -> Text -> P.SourceSpan -> P.Expr -> P.Expr -> HandlerM ()
-      respondWithExpr2Debug label label' ss expr expr' = do
-        let printedExpr = ellipsis 2000 $ show expr
-            printedExpr' = ellipsis 2000 $ show expr'
-        markdownRes (label <> ": \n" <> pursMd printedExpr <> "\n\n" <> label' <> ": \n" <> printedExpr') (Just $ spanToRange ss)
+      -- respondWithExpr2Debug :: Text -> Text -> P.SourceSpan -> P.Expr -> P.Expr -> HandlerM ()
+      -- respondWithExpr2Debug label label' ss expr expr' = do
+      --   let printedExpr = ellipsis 2000 $ show expr
+      --       printedExpr' = ellipsis 2000 $ show expr'
+      --   markdownRes (label <> ": \n" <> pursMd printedExpr <> "\n\n" <> label' <> ": \n" <> printedExpr') (Just $ spanToRange ss)
 
       respondWithTypedExpr :: Maybe P.SourceSpan -> P.Expr -> P.SourceType -> HandlerM ()
       respondWithTypedExpr ss expr tipe = do
@@ -100,18 +100,18 @@ hoverHandler = Server.requestHandler Message.SMethod_TextDocumentHover $ \req re
             printedExpr = case expr of
               P.Op _ (P.Qualified _ op) -> P.runOpName op -- pretty printing ops ends in infinite loop
               _ -> dispayExprOnHover expr
-        markdownRes (pursTypeStr printedExpr (Just printedType) []) (spanToRange <$> ss)
+        markdownRes (spanToRange <$> ss) (pursTypeStr printedExpr (Just printedType) [])
 
-      respondWithTypeBinder :: P.SourceSpan -> P.Binder -> P.SourceType -> HandlerM ()
-      respondWithTypeBinder ss binder tipe = do
-        let printedType = prettyPrintTypeSingleLine tipe
-        markdownRes (pursTypeStr (dispayBinderOnHover binder) (Just printedType) []) (Just $ spanToRange ss)
+      -- respondWithTypeBinder :: P.SourceSpan -> P.Binder -> P.SourceType -> HandlerM ()
+      -- respondWithTypeBinder ss binder tipe = do
+      --   let printedType = prettyPrintTypeSingleLine tipe
+      --   markdownRes (pursTypeStr (dispayBinderOnHover binder) (Just printedType) []) (Just $ spanToRange ss)
 
       respondWithModule :: P.SourceSpan -> P.ModuleName -> HandlerM ()
       respondWithModule ss modName = do
         docsMb <- readModuleDocs modName
         case docsMb of
-          Just docs | Just comments <- Docs.modComments docs -> markdownRes comments (Just $ spanToRange ss)
+          Just docs | Just comments <- Docs.modComments docs -> markdownRes (Just $ spanToRange ss) comments
           _ -> nullRes
 
       respondWithImport :: P.SourceSpan -> P.ModuleName -> Maybe P.DeclarationRef -> HandlerM ()
@@ -121,34 +121,76 @@ hoverHandler = Server.requestHandler Message.SMethod_TextDocumentHover $ \req re
         respondWithDeclInModule ss nameType importedModuleName (printName name)
       respondWithImport ss importedModuleName _ = respondWithModule ss importedModuleName
 
-      handleLiteral :: P.SourceSpan -> P.Literal a -> HandlerM Bool
+      handleLiteral :: P.SourceSpan -> P.Literal a -> HandlerM ()
       handleLiteral ss = \case
         P.NumericLiteral (Left int) -> do
-          markdownRes (pursTypeStr (show int) (Just "Int") []) (Just $ spanToRange ss)
-          pure False
+          markdownRes (Just $ spanToRange ss) (pursTypeStr (show int) (Just "Prim.Int") [])
         P.NumericLiteral (Right n) -> do
-          markdownRes (pursTypeStr (show n) (Just "Number") []) (Just $ spanToRange ss)
-          pure False
+          markdownRes (Just $ spanToRange ss) (pursTypeStr (show n) (Just "Prim.Number") [])
         P.StringLiteral str -> do
-          markdownRes (pursTypeStr (ellipsis 64 $ show str) (Just "String") []) (Just $ spanToRange ss)
-          pure False
+          markdownRes (Just $ spanToRange ss) (pursTypeStr (ellipsis 64 $ show str) (Just "Prim.String") [])
         P.CharLiteral ch -> do
-          markdownRes (pursTypeStr (show ch) (Just "Char") []) (Just $ spanToRange ss)
-          pure False
+          markdownRes (Just $ spanToRange ss) (pursTypeStr (show ch) (Just "Prim.Char") [])
         P.BooleanLiteral b -> do
-          markdownRes (pursTypeStr (show b) (Just "Boolean") []) (Just $ spanToRange ss)
-          pure False
-        _ -> pure True
+          markdownRes (Just $ spanToRange ss) (pursTypeStr (show b) (Just "Prim.Boolean") [])
+        _ -> nullRes -- should not be reachable
+      lookupExprTypes :: P.Expr -> HandlerM [Text]
+      lookupExprTypes = \case
+        P.Var _ (P.Qualified (P.ByModuleName modName) ident) -> do
+          getAstDeclarationTypeInModule (Just IdentNameType) modName (P.runIdent ident)
+        P.Op _ (P.Qualified (P.ByModuleName modName) op) -> do
+          getAstDeclarationTypeInModule (Just ValOpNameType) modName (P.runOpName op)
+        P.Constructor _ (P.Qualified (P.ByModuleName modName) dctor) -> do
+          getAstDeclarationTypeInModule (Just DctorNameType) modName (P.runProperName dctor)
+        P.TypedValue _ e _ | not (generatedExpr e) -> do
+          lookupExprTypes e
+        _ -> pure []
+
+      lookupExprDocs :: P.Expr -> HandlerM (Maybe Text)
+      lookupExprDocs = \case
+        P.Var _ (P.Qualified (P.ByModuleName modName) ident) -> do
+          readDeclarationDocsWithNameType modName IdentNameType (P.runIdent ident)
+        P.Op _ (P.Qualified (P.ByModuleName modName) op) -> do
+          readDeclarationDocsWithNameType modName ValOpNameType (P.runOpName op)
+        P.Constructor _ (P.Qualified (P.ByModuleName modName) dctor) -> do
+          readDeclarationDocsWithNameType modName DctorNameType (P.runProperName dctor)
+        _ -> pure Nothing
 
   forLsp filePathMb \filePath -> do
-    inferredRes <- inferExprViaTypeHole filePath startPos
-    case inferredRes of
-      Just (expr, ty) -> do
-        let ss = P.exprSourceSpan expr
-        respondWithTypedExpr ss expr ty
-      Nothing -> do
-        debugLsp "Inferred via type hole failed"
-        nullRes
+    cacheOpenMb <- cachedRebuild filePath
+    forLsp cacheOpenMb \OpenFile {..} -> do
+      let everything = getEverythingAtPos (P.getModuleDeclarations ofModule) startPos
+      case apImport everything of
+        Just (ss, importedModuleName, _, ref) -> do
+          respondWithImport ss importedModuleName ref
+        _ -> do
+          case head (apExprs everything) of
+            Just (_, _, P.Literal ss literal) | isLiteralNode literal -> handleLiteral ss literal
+            Just (ss, _, foundExpr) -> do
+              inferredRes <- inferExprViaTypeHoleText filePath startPos
+              foundTypes <- lookupExprTypes foundExpr
+              docs <- lookupExprDocs foundExpr
+              markdownRes (Just $ spanToRange ss) $
+                joinMarkup
+                  [ inferredRes,
+                    ("*Source Type*\n" <>) <$> pursMd <$> head foundTypes,
+                    ("*Docs*\n" <>) <$> docs
+                  ]
+            Nothing -> nullRes
+
+-- case head $ apTypes everything of
+--   Just ty ->
+
+isLiteralNode :: Literal P.Expr -> Bool
+isLiteralNode = \case
+  NumericLiteral _ -> True
+  StringLiteral _ -> True
+  CharLiteral _ -> True
+  BooleanLiteral _ -> True
+  _ -> False
+
+joinMarkup :: [Maybe Text] -> Text
+joinMarkup = T.intercalate "\n---\n" . catMaybes
 
 -- cacheOpenMb <- cachedRebuild filePath
 
@@ -170,10 +212,10 @@ hoverHandler = Server.requestHandler Message.SMethod_TextDocumentHover $ \req re
 --       debugLsp $ "pos: " <> show pos
 
 --       case apImport everything of
---         Just (ss, importedModuleName, _, ref) -> do
---           debugLsp $ "Import: " <> show importedModuleName
---           respondWithImport ss importedModuleName ref
---         _ -> do
+-- Just (ss, importedModuleName, _, ref) -> do
+--   debugLsp $ "Import: " <> show importedModuleName
+--   respondWithImport ss importedModuleName ref
+-- _ -> do
 --           let exprs = apExprs everything
 --               handleExpr expr = do
 --                 case expr of
@@ -311,6 +353,12 @@ getHoverSourceTypeFromErrs = \case
 --       Left _ -> pure Nothing
 --   _ -> pure Nothing
 
+inferExprViaTypeHoleText :: FilePath -> Types.Position -> HandlerM (Maybe Text)
+inferExprViaTypeHoleText filePath pos =
+  inferExprViaTypeHole filePath pos <&> fmap \(expr, t) ->
+    pursTypeStr (dispayExprOnHover expr) (Just $ prettyPrintTypeSingleLine t) []
+
+
 inferExprViaTypeHole :: FilePath -> Types.Position -> HandlerM (Maybe (P.Expr, P.SourceType))
 inferExprViaTypeHole filePath pos = do
   cacheOpenMb <- cachedRebuild filePath
@@ -410,7 +458,8 @@ findTypedExpr (_ : es) = findTypedExpr es
 findTypedExpr [] = Nothing
 
 dispayExprOnHover :: P.Expr -> T.Text
-dispayExprOnHover expr = ellipsis 32 $ T.strip $ T.pack $ render $ traceShow' "printed expr val" $ P.prettyPrintValue 2 expr
+dispayExprOnHover (P.Op _ (P.Qualified _ op)) = P.showOp op -- Op's hit an infinite loop when pretty printed
+dispayExprOnHover expr = ellipsis 32 $ T.strip $ T.pack $ render $ P.prettyPrintValue 2 expr
 
 dispayBinderOnHover :: P.Binder -> T.Text
 dispayBinderOnHover binder = line1Only $ ellipsis 32 $ T.strip $ P.prettyPrintBinder binder
