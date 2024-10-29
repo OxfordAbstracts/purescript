@@ -15,7 +15,6 @@ import Language.LSP.Server (MonadLsp)
 import Language.PureScript qualified as P
 import Language.PureScript.AST.Declarations (declSourceSpan)
 import Language.PureScript.AST.SourcePos (nullSourceSpan)
-import Language.PureScript.Lsp.Log (debugLsp)
 import Language.PureScript.Lsp.NameType (LspNameType (..))
 import Language.PureScript.Lsp.ServerConfig (ServerConfig)
 import Language.PureScript.Lsp.State (cachedRebuild)
@@ -207,7 +206,7 @@ getEverythingAtPos decls pos@(Types.Position {..}) =
           P.ConstructorBinder ss _ _ -> Just ss
           P.NamedBinder ss _ _ -> Just ss
           P.PositionedBinder ss _ _ -> Just ss
-          P.TypedBinder ss _ -> Just (fst $ getAnnForType ss)
+          P.TypedBinder _ b -> binderSourceSpan b
           P.OpBinder ss _ -> Just ss
           P.BinaryNoParensBinder {} -> Nothing
           P.ParensInBinder {} -> Nothing
@@ -307,7 +306,6 @@ atPosition nullRes handleDecl handleImportRef handleModule handleExprInModule fi
       forLsp (head declsAtPos) $ \decl -> do
         case decl of
           P.ImportDeclaration (ss, _) importedModuleName importType _ -> do
-            debugLsp $ "ImportDeclaration iomportedModuleName: " <> show importedModuleName
             case importType of
               P.Implicit -> handleModule ss importedModuleName
               P.Explicit imports -> handleImportRef ss importedModuleName imports
@@ -352,15 +350,12 @@ atPosition nullRes handleDecl handleImportRef handleModule handleExprInModule fi
                         _ -> nullRes
 
                 exprsAtPos = getExprsAtPos pos =<< declsAtPos
-            debugLsp $ "exprsAtPos: " <> show (length exprsAtPos)
             case smallestExpr exprsAtPos of
               Just expr -> do
                 case expr of
                   P.Var _ (P.Qualified (P.BySourcePos srcPos) _) | srcPos /= P.SourcePos 0 0 -> do
-                    debugLsp $ "Var BySourcePos : " <> show srcPos
                     handleExprInModule filePath srcPos
                   P.Var _ (P.Qualified (P.ByModuleName modName) ident) -> do
-                    debugLsp $ "Var ByModuleName : " <> show modName <> "." <> P.runIdent ident
                     handleDecl IdentNameType modName $ P.runIdent ident
                   P.Op _ (P.Qualified (P.BySourcePos srcPos) _) | srcPos /= P.SourcePos 0 0 -> handleExprInModule filePath srcPos
                   P.Op _ (P.Qualified (P.ByModuleName modName) ident) -> do
@@ -369,6 +364,7 @@ atPosition nullRes handleDecl handleImportRef handleModule handleExprInModule fi
                   P.Constructor _ (P.Qualified (P.ByModuleName modName) ident) -> do
                     handleDecl DctorNameType modName $ P.runProperName ident
                   _ -> respondWithTypeLocation
+
               _ -> respondWithTypeLocation
 
 smallestExpr :: [P.Expr] -> Maybe P.Expr
@@ -450,8 +446,6 @@ modifySmallestDeclExprAtPos fn pos declaration = runState (onDecl declaration) N
     handleExpr :: P.Expr -> StateT (Maybe (P.Expr, P.Expr)) Identity P.Expr
     handleExpr expr = do
       found <- get
-      !_ <- pure $ unsafePerformIO $ putErrLn $ P.exprCtr expr
-      !_ <- pure $ unsafePerformIO $ (putErrLn :: Text -> IO ()) (show $ maybe False (posInSpan pos) (P.exprSourceSpan expr))
       if isNothing found && maybe False (posInSpan pos) (P.exprSourceSpan expr)
         then do
           let expr' = fn expr

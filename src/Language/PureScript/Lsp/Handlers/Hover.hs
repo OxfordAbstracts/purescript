@@ -20,7 +20,6 @@ import Data.List (last)
 import Data.List.NonEmpty qualified as NE
 import Data.Map qualified as M
 import Data.Text qualified as T
-import GHC.TopHandler (runIO)
 import Language.LSP.Protocol.Lens qualified as LSP
 import Language.LSP.Protocol.Message qualified as Message
 import Language.LSP.Protocol.Types qualified as Types
@@ -160,6 +159,8 @@ hoverHandler = Server.requestHandler Message.SMethod_TextDocumentHover $ \req re
     cacheOpenMb <- cachedRebuild filePath
     forLsp cacheOpenMb \OpenFile {..} -> do
       let everything = getEverythingAtPos (P.getModuleDeclarations ofModule) startPos
+          respondWithCounts = markdownRes Nothing $ showCounts everything
+      debugLsp $ showCounts everything
       case apImport everything of
         Just (ss, importedModuleName, _, ref) -> do
           respondWithImport ss importedModuleName ref
@@ -176,7 +177,11 @@ hoverHandler = Server.requestHandler Message.SMethod_TextDocumentHover $ \req re
                     ("*Source Type*\n" <>) <$> pursMd <$> head foundTypes,
                     ("*Docs*\n" <>) <$> docs
                   ]
-            Nothing -> nullRes
+            Nothing -> case head $ apBinders everything of
+              Just (_ss, _, binder) -> do
+                debugLsp $ "Binder: " <> show binder
+                respondWithCounts
+              _ -> respondWithCounts
 
 -- case head $ apTypes everything of
 --   Just ty ->
@@ -269,47 +274,6 @@ joinMarkup = T.intercalate "\n---\n" . catMaybes
 --                   pure False
 -- handlePos startPos
 
-inferAtPosition :: FilePath -> Types.Position -> HandlerM (Maybe (Either P.MultipleErrors (P.SourceSpan, P.Expr, P.SourceType)))
-inferAtPosition filePath pos@(Types.Position {..}) = do
-  cacheOpenMb <- cachedRebuild filePath
-  case cacheOpenMb of
-    Nothing -> pure Nothing
-    Just OpenFile {..} -> do
-      let everything = getEverythingAtPos (P.getModuleDeclarations ofModule) pos
-
-      case (apTopLevelDecl everything, head $ apExprs everything) of
-        (Just decl, Just (ss, _, expr)) -> do
-          let onDecl d = pure d
-              onExpr e = do
-                when (e == expr) do
-                  (P.TypedValue' _ _ t) <- infer' e
-                  tell $ P.MultipleErrors [P.ErrorMessage [] (P.HoleInferredType hoverHoleLabel t [] Nothing)]
-                -- P.MultipleErrors  [P.ErrorMessage [] (P.HoleInferredType hoverHoleLabel inferred [] Nothing)]
-                pure e
-              onBinder b = do
-                !_ <- pure $ force $ traceShow' "onBinder" b
-                case b of
-                  P.TypedBinder _st _b' -> pure ()
-                  _ -> pure ()
-                pure b
-
-              (inferExpr, _, _) = P.everywhereOnValuesTopDownM onDecl onExpr onBinder
-
-          -- runInference :: HandlerM (Either P.MultipleErrors (P.Declaration, P.MultipleErrors))
-          -- runInference = runExceptT $ runWriterT $ evalSupplyT 0 $ evalStateT (inferExpr decl) ((P.emptyCheckState ofStartingEnv) {P.checkCurrentModule = Just ofModuleName})
-
-          inferRes <- runInference (inferExpr decl) ofModuleName ofEndEnv
-          case getHoverSourceTypeFromErrs inferRes of
-            Just t -> pure $ Just $ Right (ss, expr, t)
-            _ -> pure $ Just $ Left $ getResErrors inferRes
-        _ -> pure Nothing
-  where
-    runInference a modName env =
-      runExceptT $
-        runWriterT $
-          evalSupplyT 0 $
-            evalStateT a ((P.emptyCheckState env) {P.checkCurrentModule = Just modName})
-
 -- inferBinder :: P.SourceType -> P.Binder -> m (Map P.Ident (P.SourceSpan, P.SourceType))
 -- inferBinder _ NullBinder = return M.empty
 -- inferBinder val (LiteralBinder _ (StringLiteral _)) = unifyTypes val tyString >> return M.empty
@@ -358,7 +322,6 @@ inferExprViaTypeHoleText filePath pos =
   inferExprViaTypeHole filePath pos <&> fmap \(expr, t) ->
     pursTypeStr (dispayExprOnHover expr) (Just $ prettyPrintTypeSingleLine t) []
 
-
 inferExprViaTypeHole :: FilePath -> Types.Position -> HandlerM (Maybe (P.Expr, P.SourceType))
 inferExprViaTypeHole filePath pos = do
   cacheOpenMb <- cachedRebuild filePath
@@ -374,11 +337,9 @@ inferExprViaTypeHole filePath pos = do
           runWriterT $
             runExceptT $
               P.desugarAndTypeCheck Nothing ofModuleName externs moduleWithHole exportEnv ofStartingEnv
-        debugLsp $ "Infer via type hole checkRes: " <> show (isLeft checkRes)
         case checkRes of
           Right _ -> pure $ (exprBefore,) <$> findHoleType warnings
           Left errs -> do
-            debugLsp $ T.pack $ P.prettyPrintMultipleErrors P.noColorPPEOptions (warnings <> errs)
             pure $
               (exprBefore,) <$> findHoleType (warnings <> errs)
   where
@@ -458,13 +419,15 @@ findTypedExpr (_ : es) = findTypedExpr es
 findTypedExpr [] = Nothing
 
 dispayExprOnHover :: P.Expr -> T.Text
-dispayExprOnHover (P.Op _ (P.Qualified _ op)) = P.showOp op -- Op's hit an infinite loop when pretty printed
-dispayExprOnHover expr = ellipsis 32 $ T.strip $ T.pack $ render $ P.prettyPrintValue 2 expr
+dispayExprOnHover (P.Op _ (P.Qualified _ op)) = P.runOpName op -- Op's hit an infinite loop when pretty printed by themselves
+dispayExprOnHover (P.Case _ _) = "<case expr>" -- case expressions are too large to pretty print in hover and are on mulitple lines
+dispayExprOnHover expr = ellipsis 32 $ on1Line $ T.strip $ T.pack $ render $ P.prettyPrintValue 2 expr
 
 dispayBinderOnHover :: P.Binder -> T.Text
-dispayBinderOnHover binder = line1Only $ ellipsis 32 $ T.strip $ P.prettyPrintBinder binder
-  where
-    line1Only = T.takeWhile (/= '\n')
+dispayBinderOnHover binder = ellipsis 32 $ on1Line $ T.strip $ P.prettyPrintBinder binder
+
+on1Line :: T.Text -> T.Text
+on1Line = T.intercalate " " . T.lines
 
 ellipsis :: Int -> Text -> Text
 ellipsis l t = if T.length t > l then T.take l t <> "..." else t
