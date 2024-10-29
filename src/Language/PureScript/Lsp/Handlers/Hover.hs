@@ -228,7 +228,7 @@ joinMarkup = T.intercalate "\n---\n\n" . catMaybes
 --   respondWithImport ss importedModuleName ref
 -- _ -> do
 --           let exprs = apExprs everything
---               handleExpr expr = do
+--               handleExpr exprT = do
 --                 case expr of
 --                   (ss, _, P.Var _ (P.Qualified (P.ByModuleName modName) ident)) -> do
 --                     debugLsp $ "Var: " <> show ident
@@ -340,7 +340,6 @@ inferBinderViaTypeHole :: FilePath -> Types.Position -> HandlerM (Maybe (P.Binde
 inferBinderViaTypeHole = inferViaTypeHole (modifySmallestBinderAtPos addBinderTypeHoleAnnotation)
 
 inferViaTypeHole ::
-  (Show a) =>
   ( Types.Position ->
     P.Module ->
     (P.Module, Maybe (a, a))
@@ -356,19 +355,15 @@ inferViaTypeHole addHole filePath pos = do
     case values of
       Nothing -> pure Nothing
       Just (valueBefore, _valueAfter) -> do
-        debugLsp $ "valueBefore: " <> show valueBefore
-        debugLsp $ "_valueAfter: " <> show _valueAfter
         let externs = fmap edExtern ofDependencies
         (exportEnv, _) <- buildExportEnvCacheAndHandleErrors (selectDependencies module') module' externs
         (checkRes, warnings) <-
           runWriterT $
             runExceptT $
               P.desugarAndTypeCheck Nothing ofModuleName externs moduleWithHole exportEnv ofStartingEnv
-        debugLsp $ "warnings: " <> show warnings
         case checkRes of
           Right _ -> pure $ (valueBefore,) <$> findHoleType warnings
           Left errs -> do
-            debugLsp $ "errs: " <> show errs
             pure $
               (valueBefore,) <$> findHoleType (warnings <> errs)
 
@@ -492,195 +487,3 @@ inferExprType' fp =
   inferExprType fp >=> \case
     Right t -> pure t
     Left e -> throwIO e
-
--- asdf =
--- ValueDeclaration
---   : ValueDeclarationData
---     { valdeclSourceAnn =
---         ( SourceSpan
---             { spanStart =
---                 SourcePos {sourcePosLine = 27, sourcePosColumn = 3},
---               spanEnd =
---                 SourcePos {sourcePosLine = 27, sourcePosColumn = 18}
---             },
---           []
---         ),
---       valdeclIdent = Ident "asdfa",
---       valdeclName = Public,
---       valdeclBinders = [],
---       valdeclExpression =
---         [ GuardedExpr
---             []
---             ( PositionedValue
---                 ( SourceSpan
---                     {         spanStart =
---                         SourcePos {sourcePosLine = 27, sourcePosColumn = 11},
---                       spanEnd =
---                         SourcePos {sourcePosLine = 27, sourcePosColumn = 18}
---                     }
---                 )
---                 []
---                 ( App
---                     ( App
---                         ( TypedValue
---                             True
---                             ( PositionedValue
---                                 ( SourceSpan
---                                     {                         spanStart =
---                                         SourcePos {sourcePosLine = 27, sourcePosColumn = 11},
---                                       spanEnd =
---                                         SourcePos {sourcePosLine = 27, sourcePosColumn = 15}
---                                     }
---                                 )
---                                 []
---                                 ( Var
---                                     ( SourceSpan
---                                         {                             spanStart =
---                                             SourcePos {sourcePosLine = 27, sourcePosColumn = 11},
---                                           spanEnd =
---                                             SourcePos {sourcePosLine = 27, sourcePosColumn = 15}
---                                         }
---                                     )
---                                     (Qualified (ByModuleName (ModuleName "Data.Show")) (Ident "show"))
---                                 )
---                             )
---                             ( ForAll
---                                 ( SourceSpan
---                                     { spanName = "",
---                                       spanStart =
---                                         SourcePos {sourcePosLine = 0, sourcePosColumn = 0},
---                                       spanEnd =
---                                         SourcePos {sourcePosLine = 0, sourcePosColumn = 0}
---                                     },
---                                   []
---                                 )
---                                 TypeVarVisible
---                                 "a"
---                                 ( Just
---                                     ( TypeConstructor
---                                         ( SourceSpan
---                                             { spanName = "",
---                                               spanStart =
---                                                 SourcePos {sourcePosLine = 0, sourcePosColumn = 0},
---                                               spanEnd =
---                                                 SourcePos {sourcePosLine = 0, sourcePosColumn = 0}
---                                             },
---                                           []
---                                         )
---                                         (Qualified (ByModuleName (ModuleName "Prim")) (ProperName {runProperName = "Type"}))
---                                     )
---                                 )
---                                 ( ConstrainedType
---                                     ( SourceSpan
---                                         { spanName = "",
---                                           spanStart =
---                                             SourcePos {sourcePosLine = 0, sourcePosColumn = 0},
---                                           spanEnd =
---                                             SourcePos {sourcePosLine = 0, sourcePosColumn = 0}
---                                         },
---                                       []
---                                     )
---                                     ( Constraint
---                                         { constraintAnn =
---                                             ( SourceSpan
---                                                 { spanName = "",
---                                                   spanStart =
---                                                     SourcePos {sourcePosLine = 0, sourcePosColumn = 0},
---                                                   spanEnd =
---                                                     SourcePos {sourcePosLine = 0, sourcePosColumn = 0}
---                                                 },
---                                               []
---                                             ),
---                                           constraintClass = Qualified (ByModuleName (ModuleName "Data.Show")) (ProperName {runProperName = "Show"}),
---                                           constraintKindArgs = [],
---                                           constraintArgs =
---                                             [ TypeVar
---                                                 ( SourceSpan
---                                                     { spanName = "",
---                                                       spanStart =
---                                                         SourcePos {sourcePosLine = 0, sourcePosColumn = 0},
---                                                       spanEnd =
---                                                         SourcePos {sourcePosLine = 0, sourcePosColumn = 0}
---                                                     },
---                                                   []
---                                                 )
---                                                 "a"
---                                             ],
---                                           constraintData = Nothing
---                                         }
---                                     )
---                                     ( TypeApp
---                                         ( SourceSpan {spanName = ".spago/p/prelude-6.0.1/src/Data/Show.purs", spanStart = SourcePos {sourcePosLine = 24, sourcePosColumn = 11}, spanEnd = SourcePos {sourcePosLine = 24, sourcePosColumn = 22}},
---                                           []
---                                         )
---                                         ( TypeApp
---                                             ( SourceSpan {spanName = ".spago/p/prelude-6.0.1/src/Data/Show.purs", spanStart = SourcePos {sourcePosLine = 24, sourcePosColumn = 11}, spanEnd = SourcePos {sourcePosLine = 24, sourcePosColumn = 22}},
---                                               []
---                                             )
---                                             ( TypeConstructor
---                                                 ( SourceSpan {spanName = ".spago/p/prelude-6.0.1/src/Data/Show.purs", spanStart = SourcePos {sourcePosLine = 24, sourcePosColumn = 13}, spanEnd = SourcePos {sourcePosLine = 24, sourcePosColumn = 15}},
---                                                   []
---                                                 )
---                                                 (Qualified (ByModuleName (ModuleName "Prim")) (ProperName {runProperName = "Function"}))
---                                             )
---                                             ( TypeVar
---                                                 ( SourceSpan {spanName = ".spago/p/prelude-6.0.1/src/Data/Show.purs", spanStart = SourcePos {sourcePosLine = 24, sourcePosColumn = 11}, spanEnd = SourcePos {sourcePosLine = 24, sourcePosColumn = 12}},
---                                                   []
---                                                 )
---                                                 "a"
---                                             )
---                                         )
---                                         ( TypeConstructor
---                                             ( SourceSpan {spanName = ".spago/p/prelude-6.0.1/src/Data/Show.purs", spanStart = SourcePos {sourcePosLine = 24, sourcePosColumn = 16}, spanEnd = SourcePos {sourcePosLine = 24, sourcePosColumn = 22}},
---                                               []
---                                             )
---                                             (Qualified (ByModuleName (ModuleName "Prim")) (ProperName {runProperName = "String"}))
---                                         )
---                                     )
---                                 )
---                                 (Just (SkolemScope {runSkolemScope = 24}))
---                             )
---                         )
---                         ( Var
---                             ( SourceSpan {spanName = "", spanStart = SourcePos {sourcePosLine = 0, sourcePosColumn = 0}, spanEnd = SourcePos {sourcePosLine = 0, sourcePosColumn = 0}}
---                             )
---                             (Qualified (ByModuleName (ModuleName "Data.Show")) (Ident "showInt"))
---                         )
---                     )
---                     ( TypedValue
---                         True
---                         ( TypedValue
---                             True
---                             ( PositionedValue
---                                 ( SourceSpan { spanStart = SourcePos {sourcePosLine = 27, sourcePosColumn = 16}, spanEnd = SourcePos {sourcePosLine = 27, sourcePosColumn = 18}}
---                                 )
---                                 []
---                                 ( Literal
---                                     ( SourceSpan { spanStart = SourcePos {sourcePosLine = 27, sourcePosColumn = 16}, spanEnd = SourcePos {sourcePosLine = 27, sourcePosColumn = 18}}
---                                     )
---                                     (NumericLiteral (Left 11))
---                                 )
---                             )
---                             ( TypeConstructor
---                                 ( SourceSpan {spanName = "", spanStart = SourcePos {sourcePosLine = 0, sourcePosColumn = 0}, spanEnd = SourcePos {sourcePosLine = 0, sourcePosColumn = 0}},
---                                   []
---                                 )
---                                 (Qualified (ByModuleName (ModuleName "Prim")) (ProperName {runProperName = "Int"}))
---                             )
---                         )
---                         ( TypeConstructor
---                             ( SourceSpan
---                                 { spanName = "",
---                                   spanStart = SourcePos {sourcePosLine = 0, sourcePosColumn = 0},
---                                   spanEnd =
---                                     SourcePos {sourcePosLine = 0, sourcePosColumn = 0}
---                                 },
---                               []
---                             )
---                             (Qualified (ByModuleName (ModuleName "Prim")) (ProperName {runProperName = "Int"}))
---                         )
---                     )
---                 )
---             )
---         ]
---     }
