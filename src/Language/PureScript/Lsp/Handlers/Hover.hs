@@ -162,7 +162,7 @@ hoverHandler = Server.requestHandler Message.SMethod_TextDocumentHover $ \req re
                 joinMarkup
                   [ inferredRes,
                     head foundTypes,
-                    ("_Docs_\n" <>) <$> docs
+                    ("**Docs**\n" <>) <$> docs
                   ]
             Nothing -> do
               binderInferredRes <- inferBinderViaTypeHole filePath startPos
@@ -188,7 +188,7 @@ isLiteralNode = \case
   _ -> False
 
 joinMarkup :: [Maybe Text] -> Text
-joinMarkup = T.intercalate "\n---\n\n" . catMaybes
+joinMarkup = T.intercalate "\n---\n" . catMaybes
 
 -- cacheOpenMb <- cachedRebuild filePath
 
