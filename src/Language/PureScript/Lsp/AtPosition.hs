@@ -8,7 +8,6 @@ module Language.PureScript.Lsp.AtPosition where
 import Control.Lens (At, Field1 (_1), Field2 (_2), Field3 (_3), un, view)
 -- import Language.PureScript.Lsp.Monad (m)
 
-import Control.Monad.State.Strict (StateT, execState, get, modify, runState)
 import Data.List qualified as List
 import Data.Text qualified as T
 import GHC.IO (unsafePerformIO)
@@ -24,8 +23,7 @@ import Language.PureScript.Lsp.Types (LspEnvironment, OpenFile (..))
 import Language.PureScript.Lsp.Util (declsAtLine, getDeclarationAtPos, onDeclsAtLine, posInSpan, sourcePosToPosition)
 import Language.PureScript.Traversals (defS)
 import Language.PureScript.Types (getAnnForType)
-import Protolude hiding (StateT, execState, runState)
-
+import Protolude 
 data AtPos
   = APExpr P.SourceSpan Bool P.Expr
   | APBinder P.SourceSpan Bool P.Binder
