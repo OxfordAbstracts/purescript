@@ -32,7 +32,7 @@ import Language.PureScript.Docs.Types qualified as Docs
 import Language.PureScript.Environment (tyBoolean, tyChar, tyInt, tyNumber, tyString)
 import Language.PureScript.Errors (Literal (..))
 import Language.PureScript.Ide.Error (prettyPrintTypeSingleLine)
-import Language.PureScript.Lsp.AtPosition (EverythingAtPos (..), debugExpr, getChildExprs, getEverythingAtPos, getImportRefNameType, modifySmallestExprAtPos, showCounts, spanSize, spanToRange)
+import Language.PureScript.Lsp.AtPosition (EverythingAtPos (..), binderSourceSpan, debugExpr, getChildExprs, getEverythingAtPos, getImportRefNameType, modifySmallestBinderAtPos, modifySmallestExprAtPos, showCounts, spanSize, spanToRange)
 import Language.PureScript.Lsp.Cache (selectDependencies)
 import Language.PureScript.Lsp.Cache.Query (getAstDeclarationTypeInModule)
 import Language.PureScript.Lsp.Docs (readDeclarationDocsWithNameType, readModuleDocs)
@@ -123,24 +123,24 @@ hoverHandler = Server.requestHandler Message.SMethod_TextDocumentHover $ \req re
       handleLiteral :: P.SourceSpan -> P.Literal a -> HandlerM ()
       handleLiteral ss = \case
         P.NumericLiteral (Left int) -> do
-          markdownRes (Just $ spanToRange ss) (pursTypeStr (show int) (Just "Prim.Int") [])
+          markdownRes (Just $ spanToRange ss) (pursTypeStr (show int) (Just "Int") [])
         P.NumericLiteral (Right n) -> do
-          markdownRes (Just $ spanToRange ss) (pursTypeStr (show n) (Just "Prim.Number") [])
+          markdownRes (Just $ spanToRange ss) (pursTypeStr (show n) (Just "Number") [])
         P.StringLiteral str -> do
-          markdownRes (Just $ spanToRange ss) (pursTypeStr (ellipsis 64 $ show str) (Just "Prim.String") [])
+          markdownRes (Just $ spanToRange ss) (pursTypeStr (ellipsis 64 $ show str) (Just "String") [])
         P.CharLiteral ch -> do
-          markdownRes (Just $ spanToRange ss) (pursTypeStr (show ch) (Just "Prim.Char") [])
+          markdownRes (Just $ spanToRange ss) (pursTypeStr (show ch) (Just "Char") [])
         P.BooleanLiteral b -> do
-          markdownRes (Just $ spanToRange ss) (pursTypeStr (show b) (Just "Prim.Boolean") [])
+          markdownRes (Just $ spanToRange ss) (pursTypeStr (show b) (Just "Boolean") [])
         _ -> nullRes -- should not be reachable
       lookupExprTypes :: P.Expr -> HandlerM [Text]
       lookupExprTypes = \case
         P.Var _ (P.Qualified (P.ByModuleName modName) ident) -> do
-          getAstDeclarationTypeInModule (Just IdentNameType) modName (P.runIdent ident)
+          fmap (displayType modName (P.runIdent ident)) <$> getAstDeclarationTypeInModule (Just IdentNameType) modName (P.runIdent ident)
         P.Op _ (P.Qualified (P.ByModuleName modName) op) -> do
-          getAstDeclarationTypeInModule (Just ValOpNameType) modName (P.runOpName op)
+          fmap (displayType modName (P.runOpName op)) <$> getAstDeclarationTypeInModule (Just ValOpNameType) modName (P.runOpName op)
         P.Constructor _ (P.Qualified (P.ByModuleName modName) dctor) -> do
-          getAstDeclarationTypeInModule (Just DctorNameType) modName (P.runProperName dctor)
+          fmap (displayType modName (P.runProperName dctor)) <$> getAstDeclarationTypeInModule (Just DctorNameType) modName (P.runProperName dctor)
         P.TypedValue _ e _ | not (generatedExpr e) -> do
           lookupExprTypes e
         _ -> pure []
@@ -174,14 +174,20 @@ hoverHandler = Server.requestHandler Message.SMethod_TextDocumentHover $ \req re
               markdownRes (Just $ spanToRange ss) $
                 joinMarkup
                   [ inferredRes,
-                    ("*Source Type*\n" <>) <$> pursMd <$> head foundTypes,
-                    ("*Docs*\n" <>) <$> docs
+                    head foundTypes,
+                    ("_Docs_\n" <>) <$> docs
                   ]
-            Nothing -> case head $ apBinders everything of
-              Just (_ss, _, binder) -> do
-                debugLsp $ "Binder: " <> show binder
-                respondWithCounts
-              _ -> respondWithCounts
+            Nothing -> do
+              binderInferredRes <- inferBinderViaTypeHole filePath startPos
+              case binderInferredRes of
+                Just (binder, ty) ->
+                  markdownRes
+                    (spanToRange <$> binderSourceSpan binder)
+                    (pursTypeStr (dispayBinderOnHover binder) (Just $ prettyPrintTypeSingleLine ty) [])
+                Nothing -> respondWithCounts
+
+displayType :: P.ModuleName -> Text -> Text -> Text
+displayType mName expr ty = "*" <> P.runModuleName mName <> "*\n" <> pursMd (expr <> " :: " <> ty)
 
 -- case head $ apTypes everything of
 --   Just ty ->
@@ -195,7 +201,7 @@ isLiteralNode = \case
   _ -> False
 
 joinMarkup :: [Maybe Text] -> Text
-joinMarkup = T.intercalate "\n---\n" . catMaybes
+joinMarkup = T.intercalate "\n---\n\n" . catMaybes
 
 -- cacheOpenMb <- cachedRebuild filePath
 
@@ -323,28 +329,51 @@ inferExprViaTypeHoleText filePath pos =
     pursTypeStr (dispayExprOnHover expr) (Just $ prettyPrintTypeSingleLine t) []
 
 inferExprViaTypeHole :: FilePath -> Types.Position -> HandlerM (Maybe (P.Expr, P.SourceType))
-inferExprViaTypeHole filePath pos = do
+inferExprViaTypeHole = inferViaTypeHole (modifySmallestExprAtPos addExprTypeHoleAnnotation)
+
+inferBinderViaTypeHoleText :: FilePath -> Types.Position -> HandlerM (Maybe Text)
+inferBinderViaTypeHoleText filePath pos =
+  inferBinderViaTypeHole filePath pos <&> fmap \(binder, t) ->
+    pursTypeStr (dispayBinderOnHover binder) (Just $ prettyPrintTypeSingleLine t) []
+
+inferBinderViaTypeHole :: FilePath -> Types.Position -> HandlerM (Maybe (P.Binder, P.SourceType))
+inferBinderViaTypeHole = inferViaTypeHole (modifySmallestBinderAtPos addBinderTypeHoleAnnotation)
+
+inferViaTypeHole ::
+  (Show a) =>
+  ( Types.Position ->
+    P.Module ->
+    (P.Module, Maybe (a, a))
+  ) ->
+  FilePath ->
+  Types.Position ->
+  HandlerM (Maybe (a, P.SourceType))
+inferViaTypeHole addHole filePath pos = do
   cacheOpenMb <- cachedRebuild filePath
   cacheOpenMb & maybe (pure Nothing) \OpenFile {..} -> do
     let module' = P.importPrim ofUncheckedModule
-        (moduleWithHole, exprs) = modifySmallestExprAtPos addTypeHoleAnnotation pos module'
-    case exprs of
+        (moduleWithHole, values) = addHole pos module'
+    case values of
       Nothing -> pure Nothing
-      Just (exprBefore, _exprAfter) -> do
+      Just (valueBefore, _valueAfter) -> do
+        debugLsp $ "valueBefore: " <> show valueBefore
+        debugLsp $ "_valueAfter: " <> show _valueAfter
         let externs = fmap edExtern ofDependencies
         (exportEnv, _) <- buildExportEnvCacheAndHandleErrors (selectDependencies module') module' externs
         (checkRes, warnings) <-
           runWriterT $
             runExceptT $
               P.desugarAndTypeCheck Nothing ofModuleName externs moduleWithHole exportEnv ofStartingEnv
+        debugLsp $ "warnings: " <> show warnings
         case checkRes of
-          Right _ -> pure $ (exprBefore,) <$> findHoleType warnings
+          Right _ -> pure $ (valueBefore,) <$> findHoleType warnings
           Left errs -> do
+            debugLsp $ "errs: " <> show errs
             pure $
-              (exprBefore,) <$> findHoleType (warnings <> errs)
-  where
-    findHoleType :: P.MultipleErrors -> Maybe P.SourceType
-    findHoleType = P.runMultipleErrors >>> findMap getHoverHoleType
+              (valueBefore,) <$> findHoleType (warnings <> errs)
+
+findHoleType :: P.MultipleErrors -> Maybe P.SourceType
+findHoleType = P.runMultipleErrors >>> findMap getHoverHoleType
 
 getHoverHoleType :: P.ErrorMessage -> Maybe P.SourceType
 getHoverHoleType =
@@ -355,19 +384,14 @@ getHoverHoleType =
 findMap :: (a -> Maybe b) -> [a] -> Maybe b
 findMap f = listToMaybe . mapMaybe f
 
--- addHoleAnnotation :: (Monad m) => P.Expr -> P.Declaration -> m P.Declaration
--- addHoleAnnotation expr = onDeclExprs \e ->
---   if e == expr
---     then
---       pure $
---         P.TypedValue False e (P.TypeWildcard P.nullSourceAnn $ P.HoleWildcard hoverHoleLabel)
---     else pure e
+addExprTypeHoleAnnotation :: P.Expr -> P.Expr
+addExprTypeHoleAnnotation expr = P.TypedValue False expr (P.TypeWildcard P.nullSourceAnn $ P.HoleWildcard hoverHoleLabel)
 
-addTypeHoleAnnotation :: P.Expr -> P.Expr
-addTypeHoleAnnotation expr = P.TypedValue False expr (P.TypeWildcard P.nullSourceAnn $ P.HoleWildcard hoverHoleLabel)
+addBinderTypeHoleAnnotation :: P.Binder -> P.Binder
+addBinderTypeHoleAnnotation b = P.ParensInBinder (P.TypedBinder (P.TypeWildcard P.nullSourceAnn $ P.HoleWildcard hoverHoleLabel) b) -- parens seems to be needed. For some desugaring reason?
 
 hoverHoleLabel :: Text
-hoverHoleLabel = "?HOVER?"
+hoverHoleLabel = "HOVER"
 
 onDeclExprs :: (Monad m) => (P.Expr -> m P.Expr) -> P.Declaration -> m P.Declaration
 onDeclExprs fn = view _1 $ P.everywhereOnValuesTopDownM pure fn pure

@@ -1,5 +1,6 @@
 {-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE DeriveAnyClass #-}
+{-# OPTIONS_GHC -Wno-deprecations #-}
 {-# OPTIONS_GHC -Wno-unused-imports #-}
 
 module Language.PureScript.Lsp.AtPosition where
@@ -7,6 +8,7 @@ module Language.PureScript.Lsp.AtPosition where
 import Control.Lens (At, Field1 (_1), Field2 (_2), Field3 (_3), un, view)
 -- import Language.PureScript.Lsp.Monad (m)
 
+import Control.Monad.State.Strict (StateT, execState, get, modify, runState)
 import Data.List qualified as List
 import Data.Text qualified as T
 import GHC.IO (unsafePerformIO)
@@ -22,7 +24,7 @@ import Language.PureScript.Lsp.Types (LspEnvironment, OpenFile (..))
 import Language.PureScript.Lsp.Util (declsAtLine, getDeclarationAtPos, onDeclsAtLine, posInSpan, sourcePosToPosition)
 import Language.PureScript.Traversals (defS)
 import Language.PureScript.Types (getAnnForType)
-import Protolude
+import Protolude hiding (StateT, execState, runState)
 
 data AtPos
   = APExpr P.SourceSpan Bool P.Expr
@@ -155,6 +157,14 @@ getEverythingAtPos decls pos@(Types.Position {..}) =
         onDecl :: P.SourceSpan -> P.Declaration -> StateT EverythingAtPos Identity (P.SourceSpan, P.Declaration)
         onDecl _ decl = do
           let ss = declSourceSpan decl
+          --     !_ = force $ traceWith "decls" (T.take 128 . debugExpr) decl
+
+          -- !_ <- force <$> case decl of
+          --   P.ValueDecl _sa ident _nk binders _gexprs -> do
+          --     let a :: Text = show $ force $ traceShow' "" (ident, binders)
+          --     pure a
+          --   _ -> pure ""
+
           when (posInSpan pos ss) do
             modify $ addDecl decl
           addTypesSt $ declTypes decl
@@ -163,6 +173,14 @@ getEverythingAtPos decls pos@(Types.Position {..}) =
         onExpr ss expr = do
           let ssMb = P.exprSourceSpan expr
               ss' = fromMaybe ss ssMb
+          --     !_ = force $ traceWith "expr" (T.take 256 . debugExpr) expr
+          -- !_ <-
+          --   force <$> case expr of
+          --     P.Abs binder _e -> do
+          --       let a :: Text = show $ force $ traceShow' "binder" binder
+          --       pure a
+          --     _ -> pure ""
+
           when (posInSpan pos ss' && not (isPlaceholder expr)) do
             modify $ addExpr ss' (isJust ssMb) expr
           addTypesSt $ exprTypes expr
@@ -198,19 +216,6 @@ getEverythingAtPos decls pos@(Types.Position {..}) =
             modify (addGuard ss guard')
           pure (ss, guard')
 
-        binderSourceSpan :: P.Binder -> Maybe P.SourceSpan
-        binderSourceSpan = \case
-          P.NullBinder -> Nothing
-          P.LiteralBinder ss _ -> Just ss
-          P.VarBinder ss _ -> Just ss
-          P.ConstructorBinder ss _ _ -> Just ss
-          P.NamedBinder ss _ _ -> Just ss
-          P.PositionedBinder ss _ _ -> Just ss
-          P.TypedBinder _ b -> binderSourceSpan b
-          P.OpBinder ss _ -> Just ss
-          P.BinaryNoParensBinder {} -> Nothing
-          P.ParensInBinder {} -> Nothing
-
         doNotationElementSpan :: P.DoNotationElement -> Maybe P.SourceSpan
         doNotationElementSpan = \case
           P.PositionedDoNotationElement ss _ _ -> Just ss
@@ -224,6 +229,15 @@ getEverythingAtPos decls pos@(Types.Position {..}) =
           P.DeferredDictionary {} -> True
           P.DerivedInstancePlaceholder {} -> True
           _ -> False
+
+traceToErr :: Text -> b -> b
+traceToErr a b = trace a b
+
+traceWith :: Text -> (b -> Text) -> b -> b
+traceWith label f a = traceToErr (label <> ": " <> f a) a
+
+traceShow' :: (Show b) => Text -> b -> b
+traceShow' l = traceWith l show
 
 addDecl :: P.Declaration -> EverythingAtPos -> EverythingAtPos
 addDecl decl atPos = atPos {apDecls = decl : apDecls atPos}
@@ -250,9 +264,10 @@ addTypes tys atPos = atPos {apTypes = tys <> apTypes atPos}
 addTypesSt :: (MonadState EverythingAtPos m) => [P.SourceType] -> m ()
 addTypesSt tys = modify (addTypes tys)
 
-debugExpr :: P.Expr -> Text
+debugExpr :: (Show a) => a -> Text
 debugExpr =
-  T.replace ", sourcePosColumn = " ":"
+  T.replace "ValueDeclaration (ValueDeclarationData {valdeclSourceAnn = (SourceSpan" "ValDecl"
+    . T.replace ", sourcePosColumn = " ":"
     . T.replace "SourcePos {sourcePosLine = " ""
     . T.replace "SourceSpan {spanEnd = SourcePos {sourcePosLine =  " "end = "
     . T.replace "SourceSpan {spanStart = SourcePos {sourcePosLine =  " "start = "
@@ -364,7 +379,6 @@ atPosition nullRes handleDecl handleImportRef handleModule handleExprInModule fi
                   P.Constructor _ (P.Qualified (P.ByModuleName modName) ident) -> do
                     handleDecl DctorNameType modName $ P.runProperName ident
                   _ -> respondWithTypeLocation
-
               _ -> respondWithTypeLocation
 
 smallestExpr :: [P.Expr] -> Maybe P.Expr
@@ -432,6 +446,7 @@ getExprsAtPos pos declaration = execState (goDecl declaration) []
         modify (expr :)
       pure expr
 
+
 modifySmallestExprAtPos :: (P.Expr -> P.Expr) -> Types.Position -> P.Module -> (P.Module, Maybe (P.Expr, P.Expr))
 modifySmallestExprAtPos fn pos@(Types.Position {..}) (P.Module ss c mName decls refs) =
   (P.Module ss c mName (fmap fst declsAndExpr) refs, asum $ snd <$> declsAndExpr)
@@ -452,6 +467,42 @@ modifySmallestDeclExprAtPos fn pos declaration = runState (onDecl declaration) N
           modify (const $ Just (expr, expr'))
           pure expr'
         else pure expr
+
+
+modifySmallestBinderAtPos :: (P.Binder -> P.Binder) -> Types.Position -> P.Module -> (P.Module, Maybe (P.Binder, P.Binder))
+modifySmallestBinderAtPos fn pos@(Types.Position {..}) (P.Module ss c mName decls refs) =
+  (P.Module ss c mName (fmap fst declsAndBinder) refs, asum $ snd <$> declsAndBinder)
+  where
+    declsAndBinder = onDeclsAtLine (pure . modifySmallestDeclBinderAtPos fn pos) (\d -> [(d, Nothing)]) (fromIntegral _line + 1) decls
+
+
+modifySmallestDeclBinderAtPos :: (P.Binder -> P.Binder) -> Types.Position -> P.Declaration -> (P.Declaration, Maybe (P.Binder, P.Binder))
+modifySmallestDeclBinderAtPos fn pos declaration = runState (onDecl declaration) Nothing
+  where
+    (onDecl, _, _) = P.everywhereOnValuesM pure pure handleBinder
+
+    handleBinder :: P.Binder -> StateT (Maybe (P.Binder, P.Binder)) Identity P.Binder
+    handleBinder binder = do
+      found <- get
+      if isNothing found && maybe False (posInSpan pos) (binderSourceSpan binder)
+        then do
+          let binder' = fn binder
+          modify (const $ Just (binder, binder'))
+          pure binder'
+        else pure binder
+
+binderSourceSpan :: P.Binder -> Maybe P.SourceSpan
+binderSourceSpan = \case
+  P.NullBinder -> Nothing
+  P.LiteralBinder ss _ -> Just ss
+  P.VarBinder ss _ -> Just ss
+  P.ConstructorBinder ss _ _ -> Just ss
+  P.NamedBinder ss _ _ -> Just ss
+  P.PositionedBinder ss _ _ -> Just ss
+  P.TypedBinder _ b -> binderSourceSpan b
+  P.OpBinder ss _ -> Just ss
+  P.BinaryNoParensBinder {} -> Nothing
+  P.ParensInBinder {} -> Nothing
 
 getChildExprs :: P.Expr -> [P.Expr]
 getChildExprs parentExpr = execState (goExpr parentExpr) []
