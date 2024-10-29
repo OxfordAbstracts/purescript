@@ -41,6 +41,7 @@ import Language.PureScript.Lsp.Monad (HandlerM)
 import Language.PureScript.Lsp.NameType (LspNameType (..))
 import Language.PureScript.Lsp.Print (printName)
 import Language.PureScript.Lsp.Rebuild (buildExportEnvCacheAndHandleErrors)
+import Language.PureScript.Lsp.ServerConfig (getInferExpressions)
 import Language.PureScript.Lsp.State (cachedRebuild, getExportEnv)
 import Language.PureScript.Lsp.Types (ExternDependency (edExtern), OpenFile (..))
 import Language.PureScript.Lsp.Util (declsAtLine, posInSpan, sourcePosToPosition)
@@ -73,22 +74,6 @@ hoverHandler = Server.requestHandler Message.SMethod_TextDocumentHover $ \req re
             tipes <- getAstDeclarationTypeInModule (Just nameType) modName ident
             forLsp (head tipes) \tipe ->
               markdownRes (Just $ spanToRange ss) ("type:\n" <> tipe)
-
-      -- respondWithSourceType :: P.SourceType -> HandlerM ()
-      -- respondWithSourceType tipe = do
-      --   let printedType = prettyPrintTypeSingleLine tipe
-      --   markdownRes (pursTypeStr "_" (Just printedType) []) (Just $ spanToRange $ fst $ P.getAnnForType tipe)
-
-      -- respondWithExprDebug :: Text -> P.SourceSpan -> P.Expr -> HandlerM ()
-      -- respondWithExprDebug label ss expr = do
-      --   let printedExpr = ellipsis 2000 $ show expr
-      --   markdownRes (label <> ": \n" <> pursMd printedExpr) (Just $ spanToRange ss)
-
-      -- respondWithExpr2Debug :: Text -> Text -> P.SourceSpan -> P.Expr -> P.Expr -> HandlerM ()
-      -- respondWithExpr2Debug label label' ss expr expr' = do
-      --   let printedExpr = ellipsis 2000 $ show expr
-      --       printedExpr' = ellipsis 2000 $ show expr'
-      --   markdownRes (label <> ": \n" <> pursMd printedExpr <> "\n\n" <> label' <> ": \n" <> printedExpr') (Just $ spanToRange ss)
 
       respondWithTypedExpr :: Maybe P.SourceSpan -> P.Expr -> P.SourceType -> HandlerM ()
       respondWithTypedExpr ss expr tipe = do
@@ -132,7 +117,9 @@ hoverHandler = Server.requestHandler Message.SMethod_TextDocumentHover $ \req re
           markdownRes (Just $ spanToRange ss) (pursTypeStr (show ch) (Just "Char") [])
         P.BooleanLiteral b -> do
           markdownRes (Just $ spanToRange ss) (pursTypeStr (show b) (Just "Boolean") [])
-        _ -> nullRes -- should not be reachable
+        -- should not be reachable
+        _ -> nullRes
+
       lookupExprTypes :: P.Expr -> HandlerM [Text]
       lookupExprTypes = \case
         P.Var _ (P.Qualified (P.ByModuleName modName) ident) -> do
@@ -348,24 +335,28 @@ inferViaTypeHole ::
   Types.Position ->
   HandlerM (Maybe (a, P.SourceType))
 inferViaTypeHole addHole filePath pos = do
-  cacheOpenMb <- cachedRebuild filePath
-  cacheOpenMb & maybe (pure Nothing) \OpenFile {..} -> do
-    let module' = P.importPrim ofUncheckedModule
-        (moduleWithHole, values) = addHole pos module'
-    case values of
-      Nothing -> pure Nothing
-      Just (valueBefore, _valueAfter) -> do
-        let externs = fmap edExtern ofDependencies
-        (exportEnv, _) <- buildExportEnvCacheAndHandleErrors (selectDependencies module') module' externs
-        (checkRes, warnings) <-
-          runWriterT $
-            runExceptT $
-              P.desugarAndTypeCheck Nothing ofModuleName externs moduleWithHole exportEnv ofStartingEnv
-        case checkRes of
-          Right _ -> pure $ (valueBefore,) <$> findHoleType warnings
-          Left errs -> do
-            pure $
-              (valueBefore,) <$> findHoleType (warnings <> errs)
+  shouldInfer <- getInferExpressions
+  if not shouldInfer
+    then pure Nothing
+    else do
+      cacheOpenMb <- cachedRebuild filePath
+      cacheOpenMb & maybe (pure Nothing) \OpenFile {..} -> do
+        let module' = P.importPrim ofUncheckedModule
+            (moduleWithHole, values) = addHole pos module'
+        case values of
+          Nothing -> pure Nothing
+          Just (valueBefore, _valueAfter) -> do
+            let externs = fmap edExtern ofDependencies
+            (exportEnv, _) <- buildExportEnvCacheAndHandleErrors (selectDependencies module') module' externs
+            (checkRes, warnings) <-
+              runWriterT $
+                runExceptT $
+                  P.desugarAndTypeCheck Nothing ofModuleName externs moduleWithHole exportEnv ofStartingEnv
+            case checkRes of
+              Right _ -> pure $ (valueBefore,) <$> findHoleType warnings
+              Left errs -> do
+                pure $
+                  (valueBefore,) <$> findHoleType (warnings <> errs)
 
 findHoleType :: P.MultipleErrors -> Maybe P.SourceType
 findHoleType = P.runMultipleErrors >>> findMap getHoverHoleType

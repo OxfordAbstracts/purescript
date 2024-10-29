@@ -16,7 +16,8 @@ data ServerConfig = ServerConfig
     traceValue :: Maybe TraceValue,
     maxTypeLength :: Maybe Int,
     maxCompletions :: Maybe Int, 
-    maxFilesInCache :: Maybe Int
+    maxFilesInCache :: Maybe Int, 
+    inferExpressions :: Bool
   }
   deriving (Show, Eq, Generic, ToJSON, FromJSON)
 
@@ -30,7 +31,8 @@ defaultConfig outputPath =
       traceValue = Nothing,
       maxTypeLength = Just defaultMaxTypeLength,
       maxCompletions = Just defaultMaxCompletions, 
-      maxFilesInCache = Just defaultMaxFilesInCache
+      maxFilesInCache = Just defaultMaxFilesInCache,
+      inferExpressions = True
     }
 
 setTraceValue :: (MonadLsp ServerConfig m) => TraceValue -> m ()
@@ -58,3 +60,7 @@ getMaxCompletions =
 getMaxFilesInCache :: (MonadLsp ServerConfig m) => m Int
 getMaxFilesInCache =
   fromMaybe defaultMaxFilesInCache . maxFilesInCache <$> getConfig
+
+
+getInferExpressions :: (MonadLsp ServerConfig m) => m Bool
+getInferExpressions = inferExpressions <$> getConfig  
