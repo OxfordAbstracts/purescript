@@ -89,7 +89,9 @@ completionAndResolveHandlers =
                                       TyClassNameType -> Types.CompletionItemKind_Interface
                                       ValOpNameType -> Types.CompletionItemKind_Operator
                                       TyOpNameType -> Types.CompletionItemKind_TypeParameter
-                                      ModNameType -> Types.CompletionItemKind_Module,
+                                      ModNameType -> Types.CompletionItemKind_Module
+                                      KindNameType -> Types.CompletionItemKind_Struct
+                                      RoleNameType -> Types.CompletionItemKind_Struct,
                                   _tags = Nothing,
                                   _detail = Nothing,
                                   _documentation = Nothing,

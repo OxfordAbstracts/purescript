@@ -13,8 +13,8 @@ import Language.LSP.Server (MonadLsp)
 import Language.PureScript.AST qualified as P
 import Language.PureScript.Externs (ExternsFile (efModuleName))
 import Language.PureScript.Externs qualified as P
-import Language.PureScript.Lsp.NameType (LspNameType (DctorNameType), externDeclNameType, lspNameType)
-import Language.PureScript.Lsp.Print (printCtrType, printDataDeclType, printDeclarationType, printEfDeclName, printEfDeclType, printName, printType)
+import Language.PureScript.Lsp.NameType (LspNameType (DctorNameType), declNameType, externDeclNameType, lspNameType)
+import Language.PureScript.Lsp.Print (printCtrType, printDataDeclKind, printDeclarationType, printEfDeclName, printEfDeclType, printName, printType)
 import Language.PureScript.Lsp.ServerConfig (ServerConfig)
 import Language.PureScript.Lsp.Util (efDeclSourceSpan, getOperatorValueName)
 import Language.PureScript.Make qualified as P
@@ -51,12 +51,12 @@ indexAstModule conn (P.Module _ss _comments moduleName' decls _exportRefs) exter
         printedType = case getOperatorValueName decl >>= disqualifyIfInModule >>= getDeclFromName of
           Just decl' -> printDeclarationType decl'
           Nothing -> case decl of
-            P.TypeDeclaration declData -> printType $ P.tydeclType declData
-            P.DataDeclaration _ _ tyName args _ -> printDataDeclType tyName args
+            P.TypeDeclaration declData -> printType (P.tydeclType declData)
+            P.DataDeclaration _ _ _ args _ -> printDataDeclKind args
             _ -> printDeclarationType decl
     for_ nameMb \name -> do
       let exported = Set.member name exportedNames
-          nameType = lspNameType name
+          nameType = fromMaybe (lspNameType name) $ declNameType decl
           printedName = printName name
 
       SQL.executeNamed

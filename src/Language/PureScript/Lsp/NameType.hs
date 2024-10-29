@@ -8,6 +8,7 @@ import Database.SQLite.Simple.ToField (ToField (toField))
 import Language.PureScript.Externs (ExternsDeclaration (..))
 import Language.PureScript.Names
 import Protolude
+import Language.PureScript.AST.Declarations qualified as P
 
 data LspNameType
   = IdentNameType
@@ -17,6 +18,8 @@ data LspNameType
   | DctorNameType
   | TyClassNameType
   | ModNameType
+  | RoleNameType
+  | KindNameType
   deriving (Show, Read, Eq, Generic, A.ToJSON, A.FromJSON)
 
 readableType :: LspNameType -> Text
@@ -28,6 +31,8 @@ readableType = \case
   DctorNameType -> "Constructor"
   TyClassNameType -> "Type Class"
   ModNameType -> "Module"
+  RoleNameType -> "Role"
+  KindNameType -> "Kind"
 
 readableTypeIn :: LspNameType -> Text
 readableTypeIn = \case
@@ -49,6 +54,16 @@ lspNameType = \case
   DctorName _ -> DctorNameType
   TyClassName _ -> TyClassNameType
   ModName _ -> ModNameType
+
+declNameType :: P.Declaration -> Maybe LspNameType
+declNameType = \case
+  P.DataDeclaration{} ->  Just TyNameType
+  P.TypeSynonymDeclaration{} ->  Just TyNameType
+  P.TypeClassDeclaration{} ->  Just TyClassNameType
+  P.TypeInstanceDeclaration{} ->  Just IdentNameType
+  P.KindDeclaration{} ->  Just KindNameType
+  P.RoleDeclaration{} ->  Just RoleNameType
+  _ -> Nothing
 
 externDeclNameType :: ExternsDeclaration -> LspNameType
 externDeclNameType = \case

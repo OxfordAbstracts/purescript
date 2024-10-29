@@ -138,6 +138,8 @@ addDeclarationToImports moduleName' importedModuleName wordQualifierMb declName 
         DctorNameType -> P.TypeRef nullSourceSpan (P.ProperName $ fromMaybe "Ctr type not found" ctrType) (Just [P.ProperName declName])
         TyClassNameType -> P.TypeClassRef nullSourceSpan (P.ProperName declName)
         ModNameType -> P.ModuleRef nullSourceSpan (P.ModuleName declName)
+        RoleNameType -> P.TypeRef nullSourceSpan (P.ProperName declName) Nothing
+        KindNameType -> P.TypeRef nullSourceSpan (P.ProperName declName) Nothing
 
     alreadyImportedModuleMb =
       find (\(Import mn' _ _) -> mn' == importedModuleName) imports

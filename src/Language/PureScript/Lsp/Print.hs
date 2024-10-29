@@ -39,16 +39,11 @@ getCtrType pos tyName ctr = foldr addCtrField (P.TypeConstructor () $ P.Qualifie
 addCtrField :: (P.Ident, P.SourceType) -> P.Type () -> P.Type ()
 addCtrField (_ident, ty) acc = ty `arrow` acc
 
-printDataDeclType :: P.ProperName 'P.TypeName -> [(Text, Maybe P.SourceType)] -> Text
-printDataDeclType tyName = printType . getDataDeclType tyName
+printDataDeclKind :: [(Text, Maybe P.SourceType)] -> Text
+printDataDeclKind = printType . getDataDeclKind
 
-getDataDeclType :: P.ProperName 'P.TypeName -> [(Text, Maybe P.SourceType)] -> P.Type ()
-getDataDeclType tyName args = P.KindedType () tipe kind
-  where
-    tipe :: P.Type ()
-    tipe = foldr addDataDeclArgType (P.TypeVar () $ P.runProperName tyName) args
-
-    kind = foldr addDataDeclArgKind (P.TypeVar () "Type") args
+getDataDeclKind :: [(Text, Maybe P.SourceType)] -> P.Type ()
+getDataDeclKind args = foldr addDataDeclArgKind (P.TypeVar () "Type") args
 
 addDataDeclArgType :: (Text, Maybe P.SourceType) -> P.Type () -> P.Type ()
 addDataDeclArgType (ident, _) acc = P.TypeApp () acc (P.TypeVar () ident)

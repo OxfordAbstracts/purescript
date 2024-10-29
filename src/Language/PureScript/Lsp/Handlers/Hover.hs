@@ -32,7 +32,7 @@ import Language.PureScript.Docs.Types qualified as Docs
 import Language.PureScript.Environment (tyBoolean, tyChar, tyInt, tyNumber, tyString)
 import Language.PureScript.Errors (Literal (..))
 import Language.PureScript.Ide.Error (prettyPrintTypeSingleLine)
-import Language.PureScript.Lsp.AtPosition (EverythingAtPos (..), binderSourceSpan, debugExpr, getChildExprs, getEverythingAtPos, getImportRefNameType, modifySmallestBinderAtPos, modifySmallestExprAtPos, showCounts, spanSize, spanToRange)
+import Language.PureScript.Lsp.AtPosition (EverythingAtPos (..), binderSourceSpan, debugExpr, getChildExprs, getEverythingAtPos, getImportRefNameType, getTypeLinesAndColumns, modifySmallestBinderAtPos, modifySmallestExprAtPos, showCounts, spanSize, spanToRange)
 import Language.PureScript.Lsp.Cache (selectDependencies)
 import Language.PureScript.Lsp.Cache.Query (getAstDeclarationTypeInModule)
 import Language.PureScript.Lsp.Docs (readDeclarationDocsWithNameType, readModuleDocs)
@@ -50,6 +50,8 @@ import Language.PureScript.TypeChecker (getEnv)
 import Language.PureScript.TypeChecker.Types (infer')
 import Language.PureScript.TypeChecker.Unify (unifyTypes)
 import Protolude hiding (handle, to)
+import Safe qualified
+import Text.Blaze.Html5 (mark)
 import Text.PrettyPrint.Boxes (render)
 
 hoverHandler :: Server.Handlers HandlerM
@@ -67,13 +69,15 @@ hoverHandler = Server.requestHandler Message.SMethod_TextDocumentHover $ \req re
 
       respondWithDeclInModule :: P.SourceSpan -> LspNameType -> P.ModuleName -> Text -> HandlerM ()
       respondWithDeclInModule ss nameType modName ident = do
-        declDocMb <- readDeclarationDocsWithNameType modName nameType ident
-        case declDocMb of
-          Just docs -> markdownRes (Just $ spanToRange ss) ("docs:\n" <> docs)
-          _ -> do
-            tipes <- getAstDeclarationTypeInModule (Just nameType) modName ident
-            forLsp (head tipes) \tipe ->
-              markdownRes (Just $ spanToRange ss) ("type:\n" <> tipe)
+        docs <- readDeclarationDocsWithNameType modName nameType ident
+        foundTypes <- getAstDeclarationTypeInModule (Just nameType) modName ident
+        debugLsp $ "Found types: " <> show (isJust $ head foundTypes)
+        debugLsp $ "Found docs: " <> show (isJust docs)
+        markdownRes (Just $ spanToRange ss) $
+          joinMarkup
+            [ displayType modName ident <$> head foundTypes,
+              ("**Docs**\n" <>) <$> docs
+            ]
 
       respondWithTypedExpr :: Maybe P.SourceSpan -> P.Expr -> P.SourceType -> HandlerM ()
       respondWithTypedExpr ss expr tipe = do
@@ -85,11 +89,6 @@ hoverHandler = Server.requestHandler Message.SMethod_TextDocumentHover $ \req re
               P.Op _ (P.Qualified _ op) -> P.runOpName op -- pretty printing ops ends in infinite loop
               _ -> dispayExprOnHover expr
         markdownRes (spanToRange <$> ss) (pursTypeStr printedExpr (Just printedType) [])
-
-      -- respondWithTypeBinder :: P.SourceSpan -> P.Binder -> P.SourceType -> HandlerM ()
-      -- respondWithTypeBinder ss binder tipe = do
-      --   let printedType = prettyPrintTypeSingleLine tipe
-      --   markdownRes (pursTypeStr (dispayBinderOnHover binder) (Just printedType) []) (Just $ spanToRange ss)
 
       respondWithModule :: P.SourceSpan -> P.ModuleName -> HandlerM ()
       respondWithModule ss modName = do
@@ -152,9 +151,10 @@ hoverHandler = Server.requestHandler Message.SMethod_TextDocumentHover $ \req re
         Just (ss, importedModuleName, _, ref) -> do
           respondWithImport ss importedModuleName ref
         _ -> do
-          case head (apExprs everything) of
+          case head $ filter (not . generatedExpr . view _3) $ apExprs everything of
             Just (_, _, P.Literal ss literal) | isLiteralNode literal -> handleLiteral ss literal
             Just (ss, _, foundExpr) -> do
+              debugLsp $ "Found expr: " <> show foundExpr
               inferredRes <- inferExprViaTypeHoleText filePath startPos
               foundTypes <- lookupExprTypes foundExpr
               docs <- lookupExprDocs foundExpr
@@ -166,18 +166,31 @@ hoverHandler = Server.requestHandler Message.SMethod_TextDocumentHover $ \req re
                   ]
             Nothing -> do
               binderInferredRes <- inferBinderViaTypeHole filePath startPos
+
               case binderInferredRes of
-                Just (binder, ty) ->
+                Just (binder, ty) -> do
+                  debugLsp $ "Found binder: " <> show binder
                   markdownRes
                     (spanToRange <$> binderSourceSpan binder)
                     (pursTypeStr (dispayBinderOnHover binder) (Just $ prettyPrintTypeSingleLine ty) [])
-                Nothing -> respondWithCounts
+                Nothing -> do
+                  debugLsp $ "smallest type: " <> show (Safe.minimumByMay (comparing getTypeLinesAndColumns) (apTypes everything))
+                  case Safe.minimumByMay (comparing getTypeLinesAndColumns) (apTypes everything) of
+                    Just (P.ConstrainedType ann (P.Constraint _ (P.Qualified (P.ByModuleName modName) ident) _ _ _) _) ->
+                      respondWithDeclInModule (fst ann) TyClassNameType modName $ P.runProperName ident
+                    Just (P.TypeConstructor ann (P.Qualified (P.ByModuleName mName) name)) -> do
+                      debugLsp $ "TypeConstructor: " <> P.runProperName name
+                      respondWithDeclInModule (fst ann) TyNameType mName (P.runProperName name)
+                    Just (P.TypeOp ann (P.Qualified (P.ByModuleName mName) name)) ->
+                      respondWithDeclInModule (fst ann) TyOpNameType mName (P.runOpName name)
+                    Just ty ->
+                      markdownRes
+                        (Just $ spanToRange $ fst $ P.getAnnForType ty)
+                        (pursTypeStr "" (Just $ prettyPrintTypeSingleLine ty) [])
+                    _ -> respondWithCounts
 
 displayType :: P.ModuleName -> Text -> Text -> Text
 displayType mName expr ty = "*" <> P.runModuleName mName <> "*\n" <> pursMd (expr <> " :: " <> ty)
-
--- case head $ apTypes everything of
---   Just ty ->
 
 isLiteralNode :: Literal P.Expr -> Bool
 isLiteralNode = \case
