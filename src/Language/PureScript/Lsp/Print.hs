@@ -45,6 +45,12 @@ printDataDeclKind = printType . getDataDeclKind
 getDataDeclKind :: [(Text, Maybe P.SourceType)] -> P.Type ()
 getDataDeclKind args = foldr addDataDeclArgKind (P.TypeVar () "Type") args
 
+printTypeClassKind :: [(Text, Maybe P.SourceType)] -> Text
+printTypeClassKind = printType . getTypeClassKind
+
+getTypeClassKind :: [(Text, Maybe P.SourceType)] -> P.Type ()
+getTypeClassKind args = foldr addDataDeclArgKind (P.TypeVar () "Constraint") args
+
 addDataDeclArgType :: (Text, Maybe P.SourceType) -> P.Type () -> P.Type ()
 addDataDeclArgType (ident, _) acc = P.TypeApp () acc (P.TypeVar () ident)
 

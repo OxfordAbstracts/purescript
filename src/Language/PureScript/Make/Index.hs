@@ -15,7 +15,7 @@ import Language.PureScript qualified as P
 import Language.PureScript.Environment (Environment)
 import Language.PureScript.Externs (ExternsFile (efModuleName))
 import Language.PureScript.Lsp.NameType (LspNameType (DctorNameType), declNameType, externDeclNameType, lspNameType)
-import Language.PureScript.Lsp.Print (addDataDeclArgKind, printCtrType, printDataDeclKind, printDeclarationType, printEfDeclName, printEfDeclType, printName, printType)
+import Language.PureScript.Lsp.Print (addDataDeclArgKind, printCtrType, printDataDeclKind, printDeclarationType, printEfDeclName, printEfDeclType, printName, printType, printTypeClassKind)
 import Language.PureScript.Lsp.ServerConfig (ServerConfig)
 import Language.PureScript.Lsp.Util (efDeclSourceSpan, getOperatorValueName)
 import Language.PureScript.TypeChecker.Monad (emptyCheckState)
@@ -55,26 +55,29 @@ indexAstModule conn endEnv (P.Module _ss _comments moduleName' decls _exportRefs
         start = P.spanStart ss
         end = P.spanEnd ss
         nameMb = P.declName decl
-        getMatchingKind sigFor tyName = findMap (\case P.KindDeclaration _ sigFor' name kind  | sigFor == sigFor' && name == tyName -> Just kind; _ -> Nothing) decls
+        getMatchingKind sigFor tyName = findMap (\case P.KindDeclaration _ sigFor' name kind | sigFor == sigFor' && name == tyName -> Just kind; _ -> Nothing) decls
         getPrintedType d = case getOperatorValueName d >>= disqualifyIfInModule >>= getDeclFromName of
           Just decl' -> printDeclarationType decl'
           Nothing -> case d of
-            P.DataDeclaration _ _ tyName args _ -> case getMatchingKind P.DataSig tyName of 
-                Just kind -> printType kind 
-                _ ->  printDataDeclKind args
-            P.TypeSynonymDeclaration ann name args ty ->  case getMatchingKind P.TypeSynonymSig name of 
-                Just kind -> printType kind 
-                _ ->
-                  let addForall ty' = foldl' (\acc v -> P.ForAll P.nullSourceAnn P.TypeVarInvisible v Nothing acc Nothing) ty' vars
-                        where
-                          vars = P.usedTypeVariables ty'
+            P.DataDeclaration _ _ tyName args _ -> case getMatchingKind P.DataSig tyName of
+              Just kind -> printType kind
+              _ -> printDataDeclKind args
+            P.TypeSynonymDeclaration ann name args ty -> case getMatchingKind P.TypeSynonymSig name of
+              Just kind -> printType kind
+              _ ->
+                let addForall ty' = foldl' (\acc v -> P.ForAll P.nullSourceAnn P.TypeVarInvisible v Nothing acc Nothing) ty' vars
+                      where
+                        vars = P.usedTypeVariables ty'
 
-                      inferSynRes =
-                        runExcept $ evalStateT (P.inferKind . addForall =<< P.inferTypeSynonym moduleName' (ann, name, args, ty)) (emptyCheckState endEnv) {P.checkCurrentModule = Just moduleName'}
-                  in case inferSynRes of
-                        Left err -> "Inference error: " <> T.pack (P.prettyPrintMultipleErrors P.noColorPPEOptions err)
-                        Right (_, tyKind) ->
-                          printType $ foldr addDataDeclArgKind (void tyKind) args
+                    inferSynRes =
+                      runExcept $ evalStateT (P.inferKind . addForall =<< P.inferTypeSynonym moduleName' (ann, name, args, ty)) (emptyCheckState endEnv) {P.checkCurrentModule = Just moduleName'}
+                 in case inferSynRes of
+                      Left err -> "Inference error: " <> T.pack (P.prettyPrintMultipleErrors P.noColorPPEOptions err)
+                      Right (_, tyKind) ->
+                        printType $ foldr addDataDeclArgKind (void tyKind) args
+            P.TypeClassDeclaration _ name args _ _ _ -> case getMatchingKind P.ClassSig (P.coerceProperName name) of
+              Just kind -> printType kind
+              _ -> printTypeClassKind args
             _ -> printDeclarationType d
 
     let printedType = getPrintedType decl
