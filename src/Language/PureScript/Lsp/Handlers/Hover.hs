@@ -171,14 +171,12 @@ hoverHandler = Server.requestHandler Message.SMethod_TextDocumentHover $ \req re
           case smallestExpr' (view _3) $ filter (not . (isAbs <||> generatedExpr) . view _3) $ apExprs everything of
             Just (_, _, P.Literal ss literal) | isLiteralNode literal -> handleLiteral ss literal
             Just (ss, _, foundExpr) -> do
-              debugLsp $ "Found expr: " <> ellipsis 512 (debugExpr foundExpr)
-              debugLsp $ "Show expr: " <> dispayExprOnHover foundExpr
               inferredRes <- inferExprViaTypeHoleText filePath startPos
               foundTypes <- lookupExprTypes foundExpr
               docs <- lookupExprDocs foundExpr
               markdownRes (Just $ spanToRange ss) $
                 joinMarkup
-                  [ inferredRes,
+                  [ inferredRes <|> Just (dispayExprOnHover foundExpr),
                     head foundTypes,
                     showDocs <$> docs
                   ]
