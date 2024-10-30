@@ -4,21 +4,21 @@
 module Language.PureScript.Make.Index where
 
 import Codec.Serialise (serialise)
+import Data.List (partition)
 import Data.Set qualified as Set
 import Data.Text qualified as T
 import Database.SQLite.Simple (Connection, NamedParam ((:=)))
 import Database.SQLite.Simple qualified as SQL
 import Distribution.Compat.Directory (makeAbsolute)
 import Language.LSP.Server (MonadLsp)
-import Language.PureScript.AST qualified as P
+import Language.PureScript qualified as P
+import Language.PureScript.Environment (Environment)
 import Language.PureScript.Externs (ExternsFile (efModuleName))
-import Language.PureScript.Externs qualified as P
 import Language.PureScript.Lsp.NameType (LspNameType (DctorNameType), declNameType, externDeclNameType, lspNameType)
-import Language.PureScript.Lsp.Print (printCtrType, printDataDeclKind, printDeclarationType, printEfDeclName, printEfDeclType, printName, printType)
+import Language.PureScript.Lsp.Print (addDataDeclArgKind, printCtrType, printDataDeclKind, printDeclarationType, printEfDeclName, printEfDeclType, printName, printType)
 import Language.PureScript.Lsp.ServerConfig (ServerConfig)
 import Language.PureScript.Lsp.Util (efDeclSourceSpan, getOperatorValueName)
-import Language.PureScript.Make qualified as P
-import Language.PureScript.Names qualified as P
+import Language.PureScript.TypeChecker.Monad (emptyCheckState)
 import Protolude hiding (moduleName)
 
 addAllIndexing :: (MonadIO m) => Connection -> P.MakeActions m -> P.MakeActions m
@@ -29,11 +29,11 @@ addAllIndexing conn ma =
 addAstModuleIndexing :: (MonadIO m) => Connection -> P.MakeActions m -> P.MakeActions m
 addAstModuleIndexing conn ma =
   ma
-    { P.codegen = \prevEnv endEnv astM m docs ext -> lift (indexAstModule conn astM ext (getExportedNames ext)) <* P.codegen ma prevEnv endEnv astM m docs ext
+    { P.codegen = \prevEnv endEnv astM m docs ext -> lift (indexAstModule conn endEnv astM ext (getExportedNames ext)) <* P.codegen ma prevEnv endEnv astM m docs ext
     }
 
-indexAstModule :: (MonadIO m) => Connection -> P.Module -> ExternsFile -> Set P.Name -> m ()
-indexAstModule conn (P.Module _ss _comments moduleName' decls _exportRefs) extern exportedNames = liftIO do
+indexAstModule :: (MonadIO m) => Connection -> Environment -> P.Module -> ExternsFile -> Set P.Name -> m ()
+indexAstModule conn endEnv (P.Module _ss _comments moduleName' decls _exportRefs) extern exportedNames = liftIO do
   path <- makeAbsolute externPath
   SQL.executeNamed
     conn
@@ -43,17 +43,42 @@ indexAstModule conn (P.Module _ss _comments moduleName' decls _exportRefs) exter
     ]
   SQL.execute conn "DELETE FROM ast_declarations WHERE module_name = ?" (SQL.Only $ P.runModuleName moduleName')
 
-  forM_ decls \decl -> do
+  let declsSorted :: [P.Declaration]
+      declsSorted = partition (not . isTypeDecl) decls & uncurry (<>)
+
+      isTypeDecl = \case
+        P.TypeDeclaration _ -> True
+        _ -> False
+
+  forM_ declsSorted \decl -> do
     let (ss, _) = P.declSourceAnn decl
         start = P.spanStart ss
         end = P.spanEnd ss
         nameMb = P.declName decl
-        printedType = case getOperatorValueName decl >>= disqualifyIfInModule >>= getDeclFromName of
+        getMatchingKind sigFor tyName = findMap (\case P.KindDeclaration _ sigFor' name kind  | sigFor == sigFor' && name == tyName -> Just kind; _ -> Nothing) decls
+        getPrintedType d = case getOperatorValueName d >>= disqualifyIfInModule >>= getDeclFromName of
           Just decl' -> printDeclarationType decl'
-          Nothing -> case decl of
-            P.TypeDeclaration declData -> printType (P.tydeclType declData)
-            P.DataDeclaration _ _ _ args _ -> printDataDeclKind args
-            _ -> printDeclarationType decl
+          Nothing -> case d of
+            P.DataDeclaration _ _ tyName args _ -> case getMatchingKind P.DataSig tyName of 
+                Just kind -> printType kind 
+                _ ->  printDataDeclKind args
+            P.TypeSynonymDeclaration ann name args ty ->  case getMatchingKind P.TypeSynonymSig name of 
+                Just kind -> printType kind 
+                _ ->
+                  let addForall ty' = foldl' (\acc v -> P.ForAll P.nullSourceAnn P.TypeVarInvisible v Nothing acc Nothing) ty' vars
+                        where
+                          vars = P.usedTypeVariables ty'
+
+                      inferSynRes =
+                        runExcept $ evalStateT (P.inferKind . addForall =<< P.inferTypeSynonym moduleName' (ann, name, args, ty)) (emptyCheckState endEnv) {P.checkCurrentModule = Just moduleName'}
+                  in case inferSynRes of
+                        Left err -> "Inference error: " <> T.pack (P.prettyPrintMultipleErrors P.noColorPPEOptions err)
+                        Right (_, tyKind) ->
+                          printType $ foldr addDataDeclArgKind (void tyKind) args
+            _ -> printDeclarationType d
+
+    let printedType = getPrintedType decl
+
     for_ nameMb \name -> do
       let exported = Set.member name exportedNames
           nameType = fromMaybe (lspNameType name) $ declNameType decl
@@ -63,13 +88,14 @@ indexAstModule conn (P.Module _ss _comments moduleName' decls _exportRefs) exter
         conn
         ( SQL.Query
             "INSERT INTO ast_declarations \
-            \         (module_name, name, printed_type, name_type, start_line, end_line, start_col, end_col, lines, cols, exported, generated) \
-            \ VALUES (:module_name, :name, :printed_type, :name_type, :start_line, :end_line, :start_col, :end_col, :lines, :cols, :exported, :generated)"
+            \         (module_name, name, printed_type, name_type, decl_ctr, start_line, end_line, start_col, end_col, lines, cols, exported, generated) \
+            \ VALUES (:module_name, :name, :printed_type, :name_type, :decl_ctr, :start_line, :end_line, :start_col, :end_col, :lines, :cols, :exported, :generated)"
         )
         [ ":module_name" := P.runModuleName moduleName',
           ":name" := printedName,
           ":printed_type" := printedType,
           ":name_type" := nameType,
+          ":decl_ctr" := P.declCtr decl,
           ":start_line" := P.sourcePosLine start,
           ":end_line" := P.sourcePosLine end,
           ":start_col" := P.sourcePosColumn start,
@@ -118,6 +144,9 @@ indexAstModule conn (P.Module _ss _comments moduleName' decls _exportRefs) exter
     disqualifyIfInModule (P.Qualified (P.ByModuleName moduleName) name) | moduleName == moduleName' = Just name
     disqualifyIfInModule (P.Qualified (P.BySourcePos _) name) = Just name
     disqualifyIfInModule _ = Nothing
+
+findMap :: (a -> Maybe b) -> [a] -> Maybe b
+findMap f = listToMaybe . mapMaybe f
 
 declCtrs :: P.Declaration -> Maybe (P.SourceAnn, P.ProperName 'P.TypeName, [P.DataConstructorDeclaration])
 declCtrs = \case
@@ -245,7 +274,7 @@ initDb conn = do
   SQL.execute_
     conn
     "CREATE TABLE IF NOT EXISTS ast_declarations \
-    \(module_name TEXT references ast_modules(module_name) ON DELETE CASCADE, name TEXT, name_type TEXT, ctr_type TEXT, printed_type TEXT, start_line INTEGER, end_line INTEGER, start_col INTEGER, end_col INTEGER, lines INTEGER, cols INTEGER, exported BOOLEAN, generated BOOLEAN, \
+    \(module_name TEXT references ast_modules(module_name) ON DELETE CASCADE, name TEXT, name_type TEXT, decl_ctr TEXT, ctr_type TEXT, printed_type TEXT, start_line INTEGER, end_line INTEGER, start_col INTEGER, end_col INTEGER, lines INTEGER, cols INTEGER, exported BOOLEAN, generated BOOLEAN, \
     \UNIQUE(module_name, name_type, name) on conflict replace)"
   SQL.execute_ conn "CREATE TABLE IF NOT EXISTS externs (path TEXT PRIMARY KEY, ef_version TEXT, value BLOB, module_name TEXT, UNIQUE(path) on conflict replace, UNIQUE(module_name) on conflict replace)"
   SQL.execute_ conn "CREATE TABLE IF NOT EXISTS ef_imports (module_name TEXT references externs(module_name) ON DELETE CASCADE, imported_module TEXT, import_type TEXT, imported_as TEXT, value BLOB)"

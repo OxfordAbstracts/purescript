@@ -23,6 +23,7 @@ module Language.PureScript.TypeChecker.Kinds
   , unknownsWithKinds
   , freshKind
   , freshKindWithKind
+  , inferTypeSynonym
   ) where
 
 import Prelude

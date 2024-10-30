@@ -449,6 +449,24 @@ data Declaration
   | TypeInstanceDeclaration SourceAnn SourceAnn ChainId Integer (Either Text Ident) [SourceConstraint] (Qualified (ProperName 'ClassName)) [SourceType] TypeInstanceBody
   deriving (Eq, Ord, Show, Generic, Serialise, NFData)
 
+declCtr :: Declaration -> Text 
+declCtr DataDeclaration{} = "DataDeclaration"
+declCtr DataBindingGroupDeclaration{} = "DataBindingGroupDeclaration"
+declCtr TypeSynonymDeclaration{} = "TypeSynonymDeclaration"
+declCtr KindDeclaration{} = "KindDeclaration"
+declCtr RoleDeclaration{} = "RoleDeclaration"
+declCtr TypeDeclaration{} = "TypeDeclaration"
+declCtr ValueDeclaration{} = "ValueDeclaration"
+declCtr BoundValueDeclaration{} = "BoundValueDeclaration"
+declCtr BindingGroupDeclaration{} = "BindingGroupDeclaration"
+declCtr ExternDeclaration{} = "ExternDeclaration"
+declCtr ExternDataDeclaration{} = "ExternDataDeclaration"
+declCtr FixityDeclaration{} = "FixityDeclaration"
+declCtr ImportDeclaration{} = "ImportDeclaration"
+declCtr TypeClassDeclaration{} = "TypeClassDeclaration"
+declCtr TypeInstanceDeclaration{} = "TypeInstanceDeclaration"
+
+
 instance A.ToJSON Declaration where
   toJSON = A.toJSON . show . S.serialise
 

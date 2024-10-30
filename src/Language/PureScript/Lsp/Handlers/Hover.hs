@@ -32,10 +32,10 @@ import Language.PureScript.Docs.Types qualified as Docs
 import Language.PureScript.Environment (tyBoolean, tyChar, tyInt, tyNumber, tyString)
 import Language.PureScript.Errors (Literal (..))
 import Language.PureScript.Ide.Error (prettyPrintTypeSingleLine)
-import Language.PureScript.Lsp.AtPosition (EverythingAtPos (..), binderSourceSpan, debugExpr, getChildExprs, getEverythingAtPos, getImportRefNameType, getTypeLinesAndColumns, modifySmallestBinderAtPos, modifySmallestExprAtPos, showCounts, spanSize, spanToRange)
+import Language.PureScript.Lsp.AtPosition (EverythingAtPos (..), binderSourceSpan, debugExpr, getChildExprs, getEverythingAtPos, getImportRefNameType, getTypeLinesAndColumns, modifySmallestBinderAtPos, modifySmallestExprAtPos, showCounts, smallestType, spanSize, spanToRange)
 import Language.PureScript.Lsp.Cache (selectDependencies)
 import Language.PureScript.Lsp.Cache.Query (getAstDeclarationTypeInModule)
-import Language.PureScript.Lsp.Docs (readDeclarationDocsWithNameType, readModuleDocs)
+import Language.PureScript.Lsp.Docs (readDeclarationDocsAsMarkdown, readDeclarationDocsWithNameType, readModuleDocs)
 import Language.PureScript.Lsp.Log (debugLsp)
 import Language.PureScript.Lsp.Monad (HandlerM)
 import Language.PureScript.Lsp.NameType (LspNameType (..))
@@ -71,12 +71,26 @@ hoverHandler = Server.requestHandler Message.SMethod_TextDocumentHover $ \req re
       respondWithDeclInModule ss nameType modName ident = do
         docs <- readDeclarationDocsWithNameType modName nameType ident
         foundTypes <- getAstDeclarationTypeInModule (Just nameType) modName ident
-        debugLsp $ "Found types: " <> show (isJust $ head foundTypes)
+        debugLsp $ "respondWithDeclInModule " <> show (modName, ident)
+        debugLsp $ "Found types: " <> show foundTypes
         debugLsp $ "Found docs: " <> show (isJust docs)
         markdownRes (Just $ spanToRange ss) $
           joinMarkup
-            [ displayType modName ident <$> head foundTypes,
-              ("**Docs**\n" <>) <$> docs
+            [ showTypeSection modName ident <$> head foundTypes,
+              showDocs <$> docs
+            ]
+
+      respondWithDeclInModuleWithUnkownNameType :: P.SourceSpan -> P.ModuleName -> Text -> HandlerM ()
+      respondWithDeclInModuleWithUnkownNameType ss modName ident = do
+        docs <- readDeclarationDocsAsMarkdown modName ident
+        foundTypes <- getAstDeclarationTypeInModule Nothing modName ident
+        debugLsp $ "respondWithDeclInModuleWithUnkownNameType " <> show (modName, ident)
+        debugLsp $ "Found types: " <> show foundTypes
+        debugLsp $ "Found docs: " <> show (isJust docs)
+        markdownRes (Just $ spanToRange ss) $
+          joinMarkup
+            [ showTypeSection modName ident <$> head foundTypes,
+              showDocs <$> docs
             ]
 
       respondWithTypedExpr :: Maybe P.SourceSpan -> P.Expr -> P.SourceType -> HandlerM ()
@@ -122,11 +136,11 @@ hoverHandler = Server.requestHandler Message.SMethod_TextDocumentHover $ \req re
       lookupExprTypes :: P.Expr -> HandlerM [Text]
       lookupExprTypes = \case
         P.Var _ (P.Qualified (P.ByModuleName modName) ident) -> do
-          fmap (displayType modName (P.runIdent ident)) <$> getAstDeclarationTypeInModule (Just IdentNameType) modName (P.runIdent ident)
+          fmap (showTypeSection modName (P.runIdent ident)) <$> getAstDeclarationTypeInModule (Just IdentNameType) modName (P.runIdent ident)
         P.Op _ (P.Qualified (P.ByModuleName modName) op) -> do
-          fmap (displayType modName (P.runOpName op)) <$> getAstDeclarationTypeInModule (Just ValOpNameType) modName (P.runOpName op)
+          fmap (showTypeSection modName (P.runOpName op)) <$> getAstDeclarationTypeInModule (Just ValOpNameType) modName (P.runOpName op)
         P.Constructor _ (P.Qualified (P.ByModuleName modName) dctor) -> do
-          fmap (displayType modName (P.runProperName dctor)) <$> getAstDeclarationTypeInModule (Just DctorNameType) modName (P.runProperName dctor)
+          fmap (showTypeSection modName (P.runProperName dctor)) <$> getAstDeclarationTypeInModule (Just DctorNameType) modName (P.runProperName dctor)
         P.TypedValue _ e _ | not (generatedExpr e) -> do
           lookupExprTypes e
         _ -> pure []
@@ -147,7 +161,7 @@ hoverHandler = Server.requestHandler Message.SMethod_TextDocumentHover $ \req re
       let everything = getEverythingAtPos (P.getModuleDeclarations ofModule) startPos
           respondWithCounts = markdownRes Nothing $ showCounts everything
       debugLsp $ showCounts everything
-      case apImport everything of
+      case head $ apImport everything of
         Just (ss, importedModuleName, _, ref) -> do
           respondWithImport ss importedModuleName ref
         _ -> do
@@ -162,7 +176,7 @@ hoverHandler = Server.requestHandler Message.SMethod_TextDocumentHover $ \req re
                 joinMarkup
                   [ inferredRes,
                     head foundTypes,
-                    ("**Docs**\n" <>) <$> docs
+                    showDocs <$> docs
                   ]
             Nothing -> do
               binderInferredRes <- inferBinderViaTypeHole filePath startPos
@@ -174,23 +188,41 @@ hoverHandler = Server.requestHandler Message.SMethod_TextDocumentHover $ \req re
                     (spanToRange <$> binderSourceSpan binder)
                     (pursTypeStr (dispayBinderOnHover binder) (Just $ prettyPrintTypeSingleLine ty) [])
                 Nothing -> do
-                  debugLsp $ "smallest type: " <> show (Safe.minimumByMay (comparing getTypeLinesAndColumns) (apTypes everything))
-                  case Safe.minimumByMay (comparing getTypeLinesAndColumns) (apTypes everything) of
-                    Just (P.ConstrainedType ann (P.Constraint _ (P.Qualified (P.ByModuleName modName) ident) _ _ _) _) ->
-                      respondWithDeclInModule (fst ann) TyClassNameType modName $ P.runProperName ident
-                    Just (P.TypeConstructor ann (P.Qualified (P.ByModuleName mName) name)) -> do
-                      debugLsp $ "TypeConstructor: " <> P.runProperName name
+                  case smallestType $ apTypes everything of
+                    Just (P.ConstrainedType ann (P.Constraint _ (P.Qualified (P.ByModuleName mName) ident) _ _ _) _) -> do
+                      debugLsp $ "Found constrained type: " <> show ident
+                      respondWithDeclInModule (fst ann) TyClassNameType mName $ P.runProperName ident
+                    Just (P.TypeConstructor ann (P.Qualified (P.ByModuleName mName) name)) | P.runProperName name /= "Type" -> do
+                      debugLsp $ "Found type constructor: " <> show name
                       respondWithDeclInModule (fst ann) TyNameType mName (P.runProperName name)
-                    Just (P.TypeOp ann (P.Qualified (P.ByModuleName mName) name)) ->
+                    Just (P.TypeOp ann (P.Qualified (P.ByModuleName mName) name)) -> do
+                      debugLsp $ "Found type op: " <> show name
                       respondWithDeclInModule (fst ann) TyOpNameType mName (P.runOpName name)
-                    Just ty ->
-                      markdownRes
-                        (Just $ spanToRange $ fst $ P.getAnnForType ty)
-                        (pursTypeStr "" (Just $ prettyPrintTypeSingleLine ty) [])
-                    _ -> respondWithCounts
+                    _ -> do
+                      debugLsp "Looking for unsugared types"
+                      let typesBeforeSugaring = apTypes $ getEverythingAtPos (P.getModuleDeclarations ofUncheckedModule) startPos
+                      case smallestType typesBeforeSugaring of
+                        Just ty -> do
+                          case ty of
+                            P.TypeConstructor ann (P.Qualified _ name) | P.runProperName name /= "Type" -> do
+                              debugLsp $ "Found type constructor: " <> show name
+                              respondWithDeclInModule (fst ann) TyNameType ofModuleName (P.runProperName name)
+                            P.ConstrainedType ann (P.Constraint _ (P.Qualified _ ident) _ _ _) _ -> do
+                              debugLsp $ "Found constrained type: " <> show ident
+                              respondWithDeclInModule (fst ann) TyClassNameType ofModuleName $ P.runProperName ident
+                            _ -> do
+                              debugLsp $ "Found type: " <> show ty
+                              markdownRes
+                                (Just $ spanToRange $ fst $ P.getAnnForType ty)
+                                (pursTypeStr (prettyPrintTypeSingleLine ty) Nothing [])
+                        Nothing -> do
+                          respondWithCounts
 
-displayType :: P.ModuleName -> Text -> Text -> Text
-displayType mName expr ty = "*" <> P.runModuleName mName <> "*\n" <> pursMd (expr <> " :: " <> ty)
+showTypeSection :: P.ModuleName -> Text -> Text -> Text
+showTypeSection mName expr ty = "*" <> P.runModuleName mName <> "*\n" <> pursMd (expr <> " :: " <> ty)
+
+showDocs :: Text -> Text
+showDocs d = "**Docs**\n" <> d
 
 isLiteralNode :: Literal P.Expr -> Bool
 isLiteralNode = \case
@@ -313,15 +345,6 @@ getHoverSourceTypeFromErrs :: Either P.MultipleErrors (P.Declaration, P.Multiple
 getHoverSourceTypeFromErrs = \case
   Left (P.MultipleErrors errs) -> findMap getHoverHoleType errs
   Right (_, P.MultipleErrors errs) -> findMap getHoverHoleType errs
-
--- let everything = getEverythingAtPos (P.getModuleDeclarations ofModule) pos
--- case head (apExprs everything) of
---   Just (_, _, e) -> do
---     inferredRes <- inferExprType filePath e
---     case inferredRes of
---       Right ty -> pure $ Just (e, ty)
---       Left _ -> pure Nothing
---   _ -> pure Nothing
 
 inferExprViaTypeHoleText :: FilePath -> Types.Position -> HandlerM (Maybe Text)
 inferExprViaTypeHoleText filePath pos =
