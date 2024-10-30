@@ -2,40 +2,28 @@
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE OverloadedStrings #-}
-{-# OPTIONS_GHC -Wno-deprecations #-}
-{-# OPTIONS_GHC -Wno-unused-imports #-}
-{-# OPTIONS_GHC -Wno-unused-local-binds #-}
-{-# OPTIONS_GHC -Wno-unused-record-wildcards #-}
 
-module Language.PureScript.Lsp.Handlers.Hover where
+module Language.PureScript.Lsp.Handlers.Hover (hoverHandler) where
 
 import Control.Arrow ((>>>))
-import Control.Exception.Lifted (catch, handle)
-import Control.Lens (Field1 (_1), Field2 (_2), Field3 (_3), (^.))
+import Control.Lens (Field2 (_2), Field3 (_3), (^.))
 import Control.Lens.Combinators (view)
-import Control.Monad.Supply (runSupplyT)
 import Control.Monad.Trans.Writer (WriterT (runWriterT))
-import Control.Monad.Writer (MonadWriter (..), censor)
-import Data.List (last)
-import Data.List.NonEmpty qualified as NE
 import Data.Map qualified as M
 import Data.Text qualified as T
 import Language.LSP.Protocol.Lens qualified as LSP
 import Language.LSP.Protocol.Message qualified as Message
 import Language.LSP.Protocol.Types qualified as Types
 import Language.LSP.Server qualified as Server
-import Language.PureScript (evalSupplyT)
 import Language.PureScript qualified as P
-import Language.PureScript.AST.Binders (Binder (..))
 import Language.PureScript.Docs.Convert.Single (convertComments)
 import Language.PureScript.Docs.Types qualified as Docs
-import Language.PureScript.Environment (tyBoolean, tyChar, tyInt, tyNumber, tyString)
 import Language.PureScript.Errors (Literal (..))
 import Language.PureScript.Ide.Error (prettyPrintTypeSingleLine)
-import Language.PureScript.Lsp.AtPosition (EverythingAtPos (..), binderSourceSpan, debugExpr, getChildExprs, getEverythingAtPos, getImportRefNameType, getTypeLinesAndColumns, modifySmallestBinderAtPos, modifySmallestExprAtPos, showCounts, smallestType, spanSize, spanToRange, smallestExpr, smallestExpr')
+import Language.PureScript.Lsp.AtPosition (EverythingAtPos (..), binderSourceSpan, getEverythingAtPos, getImportRefNameType, modifySmallestBinderAtPos, modifySmallestExprAtPos, showCounts, smallestType, spanToRange, smallestExpr')
 import Language.PureScript.Lsp.Cache (selectDependencies)
 import Language.PureScript.Lsp.Cache.Query (getAstDeclarationTypeInModule)
-import Language.PureScript.Lsp.Docs (readDeclarationDocsAsMarkdown, readDeclarationDocsWithNameType, readModuleDocs)
+import Language.PureScript.Lsp.Docs (readDeclarationDocsWithNameType, readModuleDocs)
 import Language.PureScript.Lsp.Log (debugLsp)
 import Language.PureScript.Lsp.Monad (HandlerM)
 import Language.PureScript.Lsp.NameType (LspNameType (..))
@@ -44,14 +32,7 @@ import Language.PureScript.Lsp.Rebuild (buildExportEnvCacheAndHandleErrors)
 import Language.PureScript.Lsp.ServerConfig (getInferExpressions)
 import Language.PureScript.Lsp.State (cachedRebuild, getExportEnv)
 import Language.PureScript.Lsp.Types (ExternDependency (edExtern), OpenFile (..))
-import Language.PureScript.Lsp.Util (declsAtLine, posInSpan, sourcePosToPosition)
-import Language.PureScript.Names (disqualify)
-import Language.PureScript.TypeChecker (getEnv)
-import Language.PureScript.TypeChecker.Types (infer')
-import Language.PureScript.TypeChecker.Unify (unifyTypes)
 import Protolude hiding (handle, to)
-import Safe qualified
-import Text.Blaze.Html5 (mark)
 import Text.PrettyPrint.Boxes (render)
 import Language.PureScript.Sugar.Names.Env qualified as P
 
@@ -80,30 +61,6 @@ hoverHandler = Server.requestHandler Message.SMethod_TextDocumentHover $ \req re
             [ showTypeSection modName ident <$> head foundTypes,
               showDocs <$> docs
             ]
-
-      respondWithDeclInModuleWithUnkownNameType :: P.SourceSpan -> P.ModuleName -> Text -> HandlerM ()
-      respondWithDeclInModuleWithUnkownNameType ss modName ident = do
-        docs <- readDeclarationDocsAsMarkdown modName ident
-        foundTypes <- getAstDeclarationTypeInModule Nothing modName ident
-        debugLsp $ "respondWithDeclInModuleWithUnkownNameType " <> show (modName, ident)
-        debugLsp $ "Found types: " <> show foundTypes
-        debugLsp $ "Found docs: " <> show (isJust docs)
-        markdownRes (Just $ spanToRange ss) $
-          joinMarkup
-            [ showTypeSection modName ident <$> head foundTypes,
-              showDocs <$> docs
-            ]
-
-      respondWithTypedExpr :: Maybe P.SourceSpan -> P.Expr -> P.SourceType -> HandlerM ()
-      respondWithTypedExpr ss expr tipe = do
-        void $
-          expr & onChildExprs \e -> do
-            pure e
-        let printedType = prettyPrintTypeSingleLine tipe
-            printedExpr = case expr of
-              P.Op _ (P.Qualified _ op) -> P.runOpName op -- pretty printing ops ends in infinite loop
-              _ -> dispayExprOnHover expr
-        markdownRes (spanToRange <$> ss) (pursTypeStr printedExpr (Just printedType) [])
 
       respondWithModule :: P.SourceSpan -> P.ModuleName -> HandlerM ()
       respondWithModule ss modName = do
@@ -200,7 +157,6 @@ hoverHandler = Server.requestHandler Message.SMethod_TextDocumentHover $ \req re
                       debugLsp $ "Found type op: " <> show name
                       respondWithDeclInModule (fst ann) TyOpNameType mName (P.runOpName name)
                     _ -> do
-                      debugLsp $ "Smallest type printed: " <> show (fmap prettyPrintTypeSingleLine $ smallestType $ apTypes everything) 
                       debugLsp "Looking for unsugared types"
                       let typesBeforeSugaring = apTypes $ getEverythingAtPos (P.getModuleDeclarations ofUncheckedModule) startPos
                       case smallestType typesBeforeSugaring of
@@ -211,7 +167,6 @@ hoverHandler = Server.requestHandler Message.SMethod_TextDocumentHover $ \req re
 
                           case ty of
                             P.TypeConstructor ann q@(P.Qualified _ name) | P.runProperName name /= "Type" -> do
-                              debugLsp $ "Found type constructor: " <> show (q, name)
                               let mName = fromMaybe ofModuleName $ fmap P.importSourceModule . head =<< M.lookup q (P.importedTypes imports)
                               respondWithDeclInModule (fst ann) TyNameType mName (P.runProperName name)
                             P.ConstrainedType ann (P.Constraint _ q@(P.Qualified _ ident) _ _ _) _ -> do
@@ -241,117 +196,6 @@ isLiteralNode = \case
 joinMarkup :: [Maybe Text] -> Text
 joinMarkup = T.intercalate "\n---\n" . catMaybes
 
--- cacheOpenMb <- cachedRebuild filePath
-
--- forLsp cacheOpenMb \OpenFile {..} -> do
---   let everything = getEverythingAtPos (P.getModuleDeclarations ofModule) startPos
---   case head (apExprs everything) of
---     Just (ss, _, e) -> do
---       inferredRes <-  filePath e
---       case inferredRes of
---         Right ty -> respondWithTypedExpr ss e ty
---         Left err -> do
---           debugLsp $ "Error: " <> show err
---           nullRes
---     _ -> nullRes
-
--- let handlePos :: Types.Position -> HandlerM ()
---     handlePos pos = do
---       let everything = getEverythingAtPos (P.getModuleDeclarations ofModule) pos
---       debugLsp $ "pos: " <> show pos
-
---       case apImport everything of
--- Just (ss, importedModuleName, _, ref) -> do
---   debugLsp $ "Import: " <> show importedModuleName
---   respondWithImport ss importedModuleName ref
--- _ -> do
---           let exprs = apExprs everything
---               handleExpr exprT = do
---                 case expr of
---                   (ss, _, P.Var _ (P.Qualified (P.ByModuleName modName) ident)) -> do
---                     debugLsp $ "Var: " <> show ident
---                     respondWithDeclInModule ss IdentNameType modName (P.runIdent ident)
---                     pure False
---                   (ss, _, P.Op _ (P.Qualified (P.ByModuleName modName) ident)) -> do
---                     debugLsp $ "Op: " <> show ident
---                     respondWithDeclInModule ss ValOpNameType modName (P.runOpName ident)
---                     pure False
---                   (ss, _, P.Constructor _ (P.Qualified (P.ByModuleName modName) ident)) -> do
---                     debugLsp $ "Dctor: " <> show ident
---                     respondWithDeclInModule ss DctorNameType modName (P.runProperName ident)
---                     pure False
---                   (ss, _, P.TypedValue _ tExpr ty) | not (generatedExpr tExpr) -> do
---                     respondWithTypedExpr ss tExpr ty
---                     pure False
---                   (ss, _, P.Literal _ lit) -> do
---                     handleLiteral ss lit
---                   _ -> pure True
-
---           debugLsp $ "exprs found: " <> show (length exprs)
---           noExprFound <- allM handleExpr exprs
-
---           debugLsp $ "No expr found: " <> show noExprFound
---           when noExprFound do
---             debugLsp $ showCounts everything
---             let decls = apDecls everything & sortDeclsBySize
---             void $
---               apDecls everything & allM \case
---                 P.BoundValueDeclaration sa _binder expr -> do
---                   debugLsp "BoundValueDeclaration"
---                   let ss = fst sa
---                       children = getChildExprs expr
---                   children & allM \e -> handleExpr (ss, True, e)
---                 P.BindingGroupDeclaration bindingGroup -> do
---                   debugLsp "BindingGroupDeclaration"
---                   NE.toList bindingGroup & allM \((sa, _), _, expr) ->
---                     getChildExprs expr & allM \child -> handleExpr (fst sa, True, child)
---                 decl@(P.ValueDeclaration vd) -> do
---                   debugLsp $ "ValueDeclaration IDENT: " <> P.runIdent (P.valdeclIdent vd)
---                   debugLsp $ "ValueDeclaration: " <> show vd
---                   let ss = P.declSourceSpan decl
---                       guaredExprs = P.valdeclExpression vd
---                       children = guaredExprs >>= getChildExprs . (\(P.GuardedExpr _ e) -> e)
---                   children & allM \expr ->
---                     handleExpr (ss, True, expr)
---                 decl -> do
---                   debugLsp $ "Decl: " <> ellipsis 100 (show decl)
---                   pure False
--- handlePos startPos
-
--- inferBinder :: P.SourceType -> P.Binder -> m (Map P.Ident (P.SourceSpan, P.SourceType))
--- inferBinder _ NullBinder = return M.empty
--- inferBinder val (LiteralBinder _ (StringLiteral _)) = unifyTypes val tyString >> return M.empty
--- inferBinder val (LiteralBinder _ (CharLiteral _)) = unifyTypes val tyChar >> return M.empty
--- inferBinder val (LiteralBinder _ (NumericLiteral (Left _))) = unifyTypes val tyInt >> return M.empty
--- inferBinder val (LiteralBinder _ (NumericLiteral (Right _))) = unifyTypes val tyNumber >> return M.empty
--- inferBinder val (LiteralBinder _ (BooleanLiteral _)) = unifyTypes val tyBoolean >> return M.empty
--- inferBinder val (VarBinder ss name) = return $ M.singleton name (ss, val)
--- inferBinder val (ConstructorBinder ss ctor binders) = do
---   env <- getEnv
---   case M.lookup ctor (P.dataConstructors env) of
---     Just (_, _, ty, _) -> do
---       let (args, ret) = peelArgs ty
---           expected = length args
---           actual = length binders
---       unifyTypes ret val
---       M.unions <$> zipWithM inferBinder (reverse args) binders
---     _ -> throwError . P.errorMessage' ss . P.UnknownName . fmap P.DctorName $ ctor
---   where
---     peelArgs :: P.Type a -> ([P.Type a], P.Type a)
---     peelArgs = go []
---       where
---         go args (P.TypeApp _ (P.TypeApp _ fn arg) ret) | P.eqType fn P.tyFunction = go (arg : args) ret
---         go args ret = (args, ret)
--- inferBinder _ _ = throwError "Not implemented"
-
-getResErrors :: Either P.MultipleErrors (a, P.MultipleErrors) -> P.MultipleErrors
-getResErrors = either identity snd
-
-getHoverSourceTypeFromErrs :: Either P.MultipleErrors (P.Declaration, P.MultipleErrors) -> Maybe P.SourceType
-getHoverSourceTypeFromErrs = \case
-  Left (P.MultipleErrors errs) -> findMap getHoverHoleType errs
-  Right (_, P.MultipleErrors errs) -> findMap getHoverHoleType errs
-
 inferExprViaTypeHoleText :: FilePath -> Types.Position -> HandlerM (Maybe Text)
 inferExprViaTypeHoleText filePath pos =
   inferExprViaTypeHole filePath pos <&> fmap \(expr, t) ->
@@ -360,10 +204,6 @@ inferExprViaTypeHoleText filePath pos =
 inferExprViaTypeHole :: FilePath -> Types.Position -> HandlerM (Maybe (P.Expr, P.SourceType))
 inferExprViaTypeHole = inferViaTypeHole (modifySmallestExprAtPos addExprTypeHoleAnnotation)
 
-inferBinderViaTypeHoleText :: FilePath -> Types.Position -> HandlerM (Maybe Text)
-inferBinderViaTypeHoleText filePath pos =
-  inferBinderViaTypeHole filePath pos <&> fmap \(binder, t) ->
-    pursTypeStr (dispayBinderOnHover binder) (Just $ prettyPrintTypeSingleLine t) []
 
 inferBinderViaTypeHole :: FilePath -> Types.Position -> HandlerM (Maybe (P.Binder, P.SourceType))
 inferBinderViaTypeHole = inferViaTypeHole (modifySmallestBinderAtPos addBinderTypeHoleAnnotation)
@@ -377,8 +217,8 @@ inferViaTypeHole ::
   Types.Position ->
   HandlerM (Maybe (a, P.SourceType))
 inferViaTypeHole addHole filePath pos = do
-  shouldInfer <- getInferExpressions
-  if not shouldInfer
+  shouldInferUsingTypeHole <- getInferExpressions
+  if not shouldInferUsingTypeHole
     then pure Nothing
     else do
       cacheOpenMb <- cachedRebuild filePath
@@ -421,18 +261,6 @@ addBinderTypeHoleAnnotation b = P.ParensInBinder (P.TypedBinder (P.TypeWildcard 
 hoverHoleLabel :: Text
 hoverHoleLabel = "HOVER"
 
-onDeclExprs :: (Monad m) => (P.Expr -> m P.Expr) -> P.Declaration -> m P.Declaration
-onDeclExprs fn = view _1 $ P.everywhereOnValuesTopDownM pure fn pure
-
-onChildExprs :: (Monad m) => (P.Expr -> m P.Expr) -> P.Expr -> m P.Expr
-onChildExprs fn = view _2 $ P.everywhereOnValuesTopDownM pure fn pure
-
-allM :: (Monad m) => (a -> m Bool) -> [a] -> m Bool
-allM _ [] = pure True
-allM f (x : xs) = do
-  b <- f x
-  if b then allM f xs else pure False
-
 isAbs :: P.Expr -> Bool
 isAbs = \case
   P.Abs _ _ -> True
@@ -449,18 +277,6 @@ generatedExpr = \case
   P.Case es _ -> any generatedExpr es
   _ -> False
 
-sortDeclsBySize :: [P.Declaration] -> [P.Declaration]
-sortDeclsBySize = sortBy (compare `on` (spanSize . P.declSourceSpan))
-
-traceToErr :: Text -> b -> b
-traceToErr a b = trace a b
-
-traceWith :: Text -> (b -> Text) -> b -> b
-traceWith label f a = traceToErr (label <> ": " <> f a) a
-
-traceShow' :: (Show b) => Text -> b -> b
-traceShow' l = traceWith l show
-
 generatedBinder :: P.Binder -> Bool
 generatedBinder = \case
   P.VarBinder ss ident -> (ss == P.nullSourceSpan) || generatedIdent ident
@@ -471,11 +287,6 @@ generatedIdent :: P.Ident -> Bool
 generatedIdent = \case
   P.GenIdent {} -> True
   _ -> False
-
-findTypedExpr :: [(P.SourceSpan, Bool, P.Expr)] -> Maybe (P.SourceSpan, P.Expr, P.SourceType)
-findTypedExpr ((ss, _, P.TypedValue _ e t) : _) = Just (ss, e, t)
-findTypedExpr (_ : es) = findTypedExpr es
-findTypedExpr [] = Nothing
 
 dispayExprOnHover :: P.Expr -> T.Text
 dispayExprOnHover (P.Op _ (P.Qualified _ op)) = P.runOpName op -- Op's hit an infinite loop when pretty printed by themselves
@@ -513,17 +324,17 @@ data InferError
   | InferException Text
   deriving (Show, Exception)
 
-inferExprType :: FilePath -> P.Expr -> HandlerM (Either InferError P.SourceType)
-inferExprType filePath expr = do
-  cacheOpenMb <- cachedRebuild filePath
-  case cacheOpenMb of
-    Nothing -> pure $ Left FileNotCached
-    Just OpenFile {..} -> do
-      inferRes <- runWriterT $ runExceptT $ evalSupplyT 0 $ evalStateT (infer' expr) ((P.emptyCheckState ofStartingEnv) {P.checkCurrentModule = Just ofModuleName})
-      pure $ bimap CompilationError (\(P.TypedValue' _ _ t) -> t) $ fst inferRes
+-- inferExprType :: FilePath -> P.Expr -> HandlerM (Either InferError P.SourceType)
+-- inferExprType filePath expr = do
+--   cacheOpenMb <- cachedRebuild filePath
+--   case cacheOpenMb of
+--     Nothing -> pure $ Left FileNotCached
+--     Just OpenFile {..} -> do
+--       inferRes <- runWriterT $ runExceptT $ evalSupplyT 0 $ evalStateT (infer' expr) ((P.emptyCheckState ofStartingEnv) {P.checkCurrentModule = Just ofModuleName})
+--       pure $ bimap CompilationError (\(P.TypedValue' _ _ t) -> t) $ fst inferRes
 
-inferExprType' :: FilePath -> P.Expr -> HandlerM P.SourceType
-inferExprType' fp =
-  inferExprType fp >=> \case
-    Right t -> pure t
-    Left e -> throwIO e
+-- inferExprType' :: FilePath -> P.Expr -> HandlerM P.SourceType
+-- inferExprType' fp =
+--   inferExprType fp >=> \case
+--     Right t -> pure t
+--     Left e -> throwIO e

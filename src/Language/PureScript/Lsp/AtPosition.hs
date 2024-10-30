@@ -1,16 +1,8 @@
 {-# LANGUAGE BlockArguments #-}
-{-# LANGUAGE DeriveAnyClass #-}
-{-# OPTIONS_GHC -Wno-deprecations #-}
-{-# OPTIONS_GHC -Wno-unused-imports #-}
-
 module Language.PureScript.Lsp.AtPosition where
 
-import Control.Lens (At, Field1 (_1), Field2 (_2), Field3 (_3), un, view)
--- import Language.PureScript.Lsp.Monad (m)
-
-import Data.List qualified as List
+import Control.Lens (Field1 (_1), Field2 (_2), Field3 (_3), view)
 import Data.Text qualified as T
-import GHC.IO (unsafePerformIO)
 import Language.LSP.Protocol.Types qualified as Types
 import Language.LSP.Server (MonadLsp)
 import Language.PureScript qualified as P
@@ -20,8 +12,7 @@ import Language.PureScript.Lsp.NameType (LspNameType (..))
 import Language.PureScript.Lsp.ServerConfig (ServerConfig)
 import Language.PureScript.Lsp.State (cachedRebuild)
 import Language.PureScript.Lsp.Types (LspEnvironment, OpenFile (..))
-import Language.PureScript.Lsp.Util (declsAtLine, getDeclarationAtPos, onDeclsAtLine, posInSpan, sourcePosToPosition)
-import Language.PureScript.Traversals (defS)
+import Language.PureScript.Lsp.Util (declsAtLine, onDeclsAtLine, posInSpan, sourcePosToPosition)
 import Language.PureScript.Types (getAnnForType)
 import Protolude
 import Safe qualified
@@ -200,14 +191,6 @@ addDeclValuesAtPos pos = \case
         P.DerivedInstancePlaceholder {} -> True
         _ -> False
 
-traceToErr :: Text -> b -> b
-traceToErr a b = trace a b
-
-traceWith :: Text -> (b -> Text) -> b -> b
-traceWith label f a = traceToErr (label <> ": " <> f a) a
-
-traceShow' :: (Show b) => Text -> b -> b
-traceShow' l = traceWith l show
 
 addDecl :: P.Declaration -> EverythingAtPos -> EverythingAtPos
 addDecl decl atPos = atPos {apDecls = decl : apDecls atPos}
