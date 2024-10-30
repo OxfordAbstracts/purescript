@@ -53,6 +53,7 @@ import Protolude hiding (handle, to)
 import Safe qualified
 import Text.Blaze.Html5 (mark)
 import Text.PrettyPrint.Boxes (render)
+import Language.PureScript.Sugar.Names.Env qualified as P
 
 hoverHandler :: Server.Handlers HandlerM
 hoverHandler = Server.requestHandler Message.SMethod_TextDocumentHover $ \req res -> do
@@ -167,7 +168,7 @@ hoverHandler = Server.requestHandler Message.SMethod_TextDocumentHover $ \req re
         Just (ss, importedModuleName, _, ref) -> do
           respondWithImport ss importedModuleName ref
         _ -> do
-          case smallestExpr' (view _3) $ filter (not . generatedExpr . view _3) $ apExprs everything of
+          case smallestExpr' (view _3) $ filter (not . (isAbs <||> generatedExpr) . view _3) $ apExprs everything of
             Just (_, _, P.Literal ss literal) | isLiteralNode literal -> handleLiteral ss literal
             Just (ss, _, foundExpr) -> do
               debugLsp $ "Found expr: " <> ellipsis 512 (debugExpr foundExpr)
@@ -201,17 +202,23 @@ hoverHandler = Server.requestHandler Message.SMethod_TextDocumentHover $ \req re
                       debugLsp $ "Found type op: " <> show name
                       respondWithDeclInModule (fst ann) TyOpNameType mName (P.runOpName name)
                     _ -> do
+                      debugLsp $ "Smallest type printed: " <> show (fmap prettyPrintTypeSingleLine $ smallestType $ apTypes everything) 
                       debugLsp "Looking for unsugared types"
                       let typesBeforeSugaring = apTypes $ getEverythingAtPos (P.getModuleDeclarations ofUncheckedModule) startPos
                       case smallestType typesBeforeSugaring of
                         Just ty -> do
+                          exportEnv <- getExportEnv
+                          let 
+                            imports = maybe P.nullImports (view _2) $ M.lookup ofModuleName exportEnv 
+
                           case ty of
-                            P.TypeConstructor ann (P.Qualified _ name) | P.runProperName name /= "Type" -> do
-                              debugLsp $ "Found type constructor: " <> show name
-                              respondWithDeclInModule (fst ann) TyNameType ofModuleName (P.runProperName name)
-                            P.ConstrainedType ann (P.Constraint _ (P.Qualified _ ident) _ _ _) _ -> do
-                              debugLsp $ "Found constrained type: " <> show ident
-                              respondWithDeclInModule (fst ann) TyClassNameType ofModuleName $ P.runProperName ident
+                            P.TypeConstructor ann q@(P.Qualified _ name) | P.runProperName name /= "Type" -> do
+                              debugLsp $ "Found type constructor: " <> show (q, name)
+                              let mName = fromMaybe ofModuleName $ fmap P.importSourceModule . head =<< M.lookup q (P.importedTypes imports)
+                              respondWithDeclInModule (fst ann) TyNameType mName (P.runProperName name)
+                            P.ConstrainedType ann (P.Constraint _ q@(P.Qualified _ ident) _ _ _) _ -> do
+                              let mName = fromMaybe ofModuleName $ fmap P.importSourceModule . head =<< M.lookup q (P.importedTypeClasses imports)
+                              respondWithDeclInModule (fst ann) TyClassNameType mName $ P.runProperName ident
                             _ -> do
                               markdownRes
                                 (Just $ spanToRange $ fst $ P.getAnnForType ty)
@@ -427,6 +434,12 @@ allM _ [] = pure True
 allM f (x : xs) = do
   b <- f x
   if b then allM f xs else pure False
+
+isAbs :: P.Expr -> Bool
+isAbs = \case
+  P.Abs _ _ -> True
+  P.TypedValue _ e _ -> isAbs e
+  _ -> False
 
 generatedExpr :: P.Expr -> Bool
 generatedExpr = \case
