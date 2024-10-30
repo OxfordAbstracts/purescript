@@ -241,7 +241,7 @@ debugExpr =
     . T.replace "SourcePos {sourcePosLine = " ""
     . T.replace "SourceSpan {spanEnd = SourcePos {sourcePosLine =  " "end = "
     . T.replace "SourceSpan {spanStart = SourcePos {sourcePosLine =  " "start = "
-    . T.replace "spanName = \"/Users/rorycampbell/Documents/projects/simple-purs/src/B.purs\", " ""
+    . T.replace "spanName = \"/Users/rorycampbell/Documents/projects/oa/application/purs-projects/lib/oa-common/src/general/AwsLambda.purs\", " ""
     . show
 
 debugSrcSpan :: P.SourceSpan -> Text
@@ -250,7 +250,7 @@ debugSrcSpan =
     . T.replace "SourcePos {sourcePosLine = " ""
     . T.replace "SourceSpan {spanEnd = SourcePos {sourcePosLine =  " "end = "
     . T.replace "SourceSpan {spanStart = SourcePos {sourcePosLine =  " "start = "
-    . T.replace "spanName = \"/Users/rorycampbell/Documents/projects/simple-purs/src/B.purs\", " ""
+    . T.replace "spanName = \"/Users/rorycampbell/Documents/projects/oa/application/purs-projects/lib/oa-common/src/general/AwsLambda.purs\", " ""
     . show
 
 -- getDeclTypesAtPos :: Types.Position -> P.Declaration -> [P.SourceType]
@@ -352,8 +352,11 @@ atPosition nullRes handleDecl handleImportRef handleModule handleExprInModule fi
               _ -> respondWithTypeLocation
 
 smallestExpr :: [P.Expr] -> Maybe P.Expr
-smallestExpr [] = Nothing
-smallestExpr es = Just $ minimumBy (comparing (fromMaybe (maxInt, maxInt) . getExprLinesAndColumns)) es
+smallestExpr = smallestExpr' identity
+
+smallestExpr' :: (a -> P.Expr) -> [a] -> Maybe a
+smallestExpr' f = Safe.minimumByMay (comparing (fromMaybe (maxInt, maxInt) . (getExprLinesAndColumns . f))) 
+
 
 getExprLinesAndColumns :: P.Expr -> Maybe (Int, Int)
 getExprLinesAndColumns expr =

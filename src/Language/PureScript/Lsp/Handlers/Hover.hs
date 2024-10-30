@@ -32,7 +32,7 @@ import Language.PureScript.Docs.Types qualified as Docs
 import Language.PureScript.Environment (tyBoolean, tyChar, tyInt, tyNumber, tyString)
 import Language.PureScript.Errors (Literal (..))
 import Language.PureScript.Ide.Error (prettyPrintTypeSingleLine)
-import Language.PureScript.Lsp.AtPosition (EverythingAtPos (..), binderSourceSpan, debugExpr, getChildExprs, getEverythingAtPos, getImportRefNameType, getTypeLinesAndColumns, modifySmallestBinderAtPos, modifySmallestExprAtPos, showCounts, smallestType, spanSize, spanToRange)
+import Language.PureScript.Lsp.AtPosition (EverythingAtPos (..), binderSourceSpan, debugExpr, getChildExprs, getEverythingAtPos, getImportRefNameType, getTypeLinesAndColumns, modifySmallestBinderAtPos, modifySmallestExprAtPos, showCounts, smallestType, spanSize, spanToRange, smallestExpr, smallestExpr')
 import Language.PureScript.Lsp.Cache (selectDependencies)
 import Language.PureScript.Lsp.Cache.Query (getAstDeclarationTypeInModule)
 import Language.PureScript.Lsp.Docs (readDeclarationDocsAsMarkdown, readDeclarationDocsWithNameType, readModuleDocs)
@@ -143,6 +143,8 @@ hoverHandler = Server.requestHandler Message.SMethod_TextDocumentHover $ \req re
           fmap (showTypeSection modName (P.runProperName dctor)) <$> getAstDeclarationTypeInModule (Just DctorNameType) modName (P.runProperName dctor)
         P.TypedValue _ e _ | not (generatedExpr e) -> do
           lookupExprTypes e
+        P.PositionedValue _ _ e | not (generatedExpr e) -> do
+          lookupExprTypes e
         _ -> pure []
 
       lookupExprDocs :: P.Expr -> HandlerM (Maybe Text)
@@ -165,10 +167,11 @@ hoverHandler = Server.requestHandler Message.SMethod_TextDocumentHover $ \req re
         Just (ss, importedModuleName, _, ref) -> do
           respondWithImport ss importedModuleName ref
         _ -> do
-          case head $ filter (not . generatedExpr . view _3) $ apExprs everything of
+          case smallestExpr' (view _3) $ filter (not . generatedExpr . view _3) $ apExprs everything of
             Just (_, _, P.Literal ss literal) | isLiteralNode literal -> handleLiteral ss literal
             Just (ss, _, foundExpr) -> do
-              debugLsp $ "Found expr: " <> show foundExpr
+              debugLsp $ "Found expr: " <> ellipsis 512 (debugExpr foundExpr)
+              debugLsp $ "Show expr: " <> dispayExprOnHover foundExpr
               inferredRes <- inferExprViaTypeHoleText filePath startPos
               foundTypes <- lookupExprTypes foundExpr
               docs <- lookupExprDocs foundExpr
@@ -180,7 +183,6 @@ hoverHandler = Server.requestHandler Message.SMethod_TextDocumentHover $ \req re
                   ]
             Nothing -> do
               binderInferredRes <- inferBinderViaTypeHole filePath startPos
-
               case binderInferredRes of
                 Just (binder, ty) -> do
                   debugLsp $ "Found binder: " <> show binder
@@ -211,7 +213,6 @@ hoverHandler = Server.requestHandler Message.SMethod_TextDocumentHover $ \req re
                               debugLsp $ "Found constrained type: " <> show ident
                               respondWithDeclInModule (fst ann) TyClassNameType ofModuleName $ P.runProperName ident
                             _ -> do
-                              debugLsp $ "Found type: " <> show ty
                               markdownRes
                                 (Just $ spanToRange $ fst $ P.getAnnForType ty)
                                 (pursTypeStr (prettyPrintTypeSingleLine ty) Nothing [])
@@ -434,6 +435,7 @@ generatedExpr = \case
   P.App e e' -> generatedExpr e || generatedExpr e'
   P.TypedValue _ e _ -> generatedExpr e
   P.PositionedValue _ _ e -> generatedExpr e
+  P.Case es _ -> any generatedExpr es
   _ -> False
 
 sortDeclsBySize :: [P.Declaration] -> [P.Declaration]
