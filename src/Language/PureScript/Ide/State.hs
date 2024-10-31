@@ -237,10 +237,9 @@ populateVolatileStateSync :: (Ide m, MonadLogger m) => m ()
 populateVolatileStateSync = do
   st <- ideStateVar <$> ask
   results <- liftIO (atomically (populateVolatileStateSTM st))
-  void $
-    Map.traverseWithKey
-      (\mn -> logWarnN . prettyPrintReexportResult (const (P.runModuleName mn)))
-      (Map.filter reexportHasFailures results)
+  void $ Map.traverseWithKey
+    (\mn -> logWarnN . prettyPrintReexportResult (const (P.runModuleName mn)))
+    (Map.filter reexportHasFailures results)
 
 populateVolatileState :: (Ide m) => m (Async ())
 populateVolatileState = do
