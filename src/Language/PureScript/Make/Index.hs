@@ -1,5 +1,4 @@
 {-# LANGUAGE BlockArguments #-}
-{-# LANGUAGE PackageImports #-}
 
 module Language.PureScript.Make.Index where
 
@@ -29,7 +28,7 @@ addAllIndexing conn ma =
 addAstModuleIndexing :: (MonadIO m) => Connection -> P.MakeActions m -> P.MakeActions m
 addAstModuleIndexing conn ma =
   ma
-    { P.codegen = \prevEnv endEnv astM m docs ext -> lift (indexAstModule conn endEnv astM ext (getExportedNames ext)) <* P.codegen ma prevEnv endEnv astM m docs ext
+    { P.codegen = \prevEnv checkSt astM m docs ext -> lift (indexAstModule conn (P.checkEnv checkSt) astM ext (getExportedNames ext)) <* P.codegen ma prevEnv checkSt astM m docs ext
     }
 
 indexAstModule :: (MonadIO m) => Connection -> Environment -> P.Module -> ExternsFile -> Set P.Name -> m ()

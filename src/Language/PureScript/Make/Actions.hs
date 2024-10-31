@@ -59,6 +59,7 @@ import System.FilePath (makeRelative, normalise, splitDirectories, splitPath, (<
 import System.FilePath.Posix qualified as Posix
 import System.IO (stderr)
 import Prelude
+import Language.PureScript.TypeChecker (CheckState)
 
 -- | Determines when to rebuild a module
 data RebuildPolicy
@@ -114,7 +115,7 @@ data MakeActions m = MakeActions
     -- path for the file.
     readExterns :: ModuleName -> m (FilePath, Maybe ExternsFile),
     -- | Run the code generator for the module and write any required output files.
-    codegen :: Environment -> Environment -> Module -> CF.Module CF.Ann -> Docs.Module -> ExternsFile -> SupplyT m (),
+    codegen :: Environment -> CheckState -> Module -> CF.Module CF.Ann -> Docs.Module -> ExternsFile -> SupplyT m (),
     -- | Check ffi and print it in the output directory.
     ffiCodegen :: CF.Module CF.Ann -> m (),
     -- | Respond to a progress update.
@@ -247,7 +248,7 @@ buildMakeActions outputDir filePathMap foreigns usePrefix =
       when (S.member Docs codegenTargets) $ for_ Docs.Prim.primModules $ \docsMod@Docs.Module {..} ->
         writeJSONFile (outputFilename modName "docs.json") docsMod
 
-    codegen :: Environment -> Environment -> Module -> CF.Module CF.Ann -> Docs.Module -> ExternsFile -> SupplyT Make ()
+    codegen :: Environment -> CheckState -> Module -> CF.Module CF.Ann -> Docs.Module -> ExternsFile -> SupplyT Make ()
     codegen _prevEnv _endEnv _m m docs exts = do
       let mn = CF.moduleName m
       lift $ writeCborFile (outputFilename mn externsFileName) exts

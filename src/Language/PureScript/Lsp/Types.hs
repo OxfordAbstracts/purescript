@@ -19,6 +19,7 @@ import Language.PureScript.Lsp.ServerConfig (ServerConfig, defaultConfig)
 import Language.PureScript.Lsp.LogLevel (LspLogLevel)
 import Codec.Serialise (deserialise, serialise)
 import Language.PureScript.Lsp.NameType (LspNameType)
+import Language.PureScript.TypeChecker qualified as P
 
 data LspEnvironment = LspEnvironment
   { lspDbConnectionVar :: TVar (FilePath, Connection),
@@ -56,10 +57,10 @@ data OpenFile = OpenFile
     ofDependencies :: [ExternDependency],
     ofStartingEnv :: P.Environment,
     ofEndEnv :: P.Environment,
+    ofEndCheckState :: P.CheckState,
     ofUncheckedModule :: P.Module,
     ofModule ::  P.Module
   }
-  deriving (Show)
 
   
 data ExternDependency = ExternDependency

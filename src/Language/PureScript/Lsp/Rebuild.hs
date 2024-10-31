@@ -30,6 +30,7 @@ import Language.PureScript.Names qualified as P
 import Language.PureScript.Options qualified as P
 import Language.PureScript.Sugar.Names qualified as P
 import Protolude hiding (moduleName, race, race_, threadDelay)
+import Language.PureScript.TypeChecker qualified as P
 
 rebuildFile ::
   forall m.
@@ -78,7 +79,7 @@ rebuildFromOpenFileCache ::
   P.Module ->
   OpenFile ->
   m RebuildResult
-rebuildFromOpenFileCache fp pwarnings stVar mkMakeActions m (OpenFile moduleName _ externDeps env _ _ _) = do
+rebuildFromOpenFileCache fp pwarnings stVar mkMakeActions m (OpenFile moduleName _ externDeps env _ _ _ _) = do
   outputDirectory <- outputPath <$> getConfig
   let externs = fmap edExtern externDeps
   foreigns <- P.inferForeignModules (M.singleton moduleName (Right fp))
@@ -218,5 +219,5 @@ broadcastProgress chan ma = do
 addRebuildCaching :: TVar LspState -> Int -> [ExternDependency] -> P.Module -> P.MakeActions P.Make -> P.MakeActions P.Make
 addRebuildCaching stVar maxCache deps unchecked ma =
   ma
-    { P.codegen = \prevEnv endEnv astM m docs ext -> lift (liftIO $ cacheRebuild' stVar maxCache ext deps prevEnv endEnv unchecked astM) <* P.codegen ma prevEnv endEnv astM m docs ext
+    { P.codegen = \prevEnv checkSt astM m docs ext -> lift (liftIO $ cacheRebuild' stVar maxCache ext deps prevEnv (P.checkEnv checkSt) checkSt unchecked astM) <* P.codegen ma prevEnv checkSt astM m docs ext
     }

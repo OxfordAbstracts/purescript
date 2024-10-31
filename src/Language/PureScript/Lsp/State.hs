@@ -47,21 +47,22 @@ import Language.PureScript.Names qualified as P
 import Language.PureScript.Sugar.Names (externsEnv)
 import Language.PureScript.Sugar.Names.Env qualified as P
 import Protolude hiding (moduleName, unzip)
+import Language.PureScript.TypeChecker qualified as P
 
 getDbConn :: (MonadReader LspEnvironment m, MonadIO m) => m Connection
 getDbConn = liftIO . fmap snd . readTVarIO . lspDbConnectionVar =<< ask
 
 -- | Sets rebuild cache to the given ExternsFile
-cacheRebuild :: (MonadReader LspEnvironment m, MonadLsp ServerConfig m) => ExternsFile -> [ExternDependency] -> P.Environment -> P.Environment -> P.Module -> P.Module -> m ()
-cacheRebuild ef deps prevEnv endEnv unchecked module' = do
+cacheRebuild :: (MonadReader LspEnvironment m, MonadLsp ServerConfig m) => ExternsFile -> [ExternDependency] -> P.Environment -> P.Environment -> P.CheckState -> P.Module -> P.Module -> m ()
+cacheRebuild ef deps prevEnv endEnv checkSt unchecked module' = do
   st <- lspStateVar <$> ask
   maxFiles <- getMaxFilesInCache
-  liftIO $ cacheRebuild' st maxFiles ef deps prevEnv endEnv unchecked module'
+  liftIO $ cacheRebuild' st maxFiles ef deps prevEnv endEnv checkSt unchecked module'
 
-cacheRebuild' :: TVar LspState -> Int -> ExternsFile -> [ExternDependency] -> P.Environment -> P.Environment -> P.Module -> P.Module -> IO ()
-cacheRebuild' st maxFiles ef deps prevEnv endEnv unchecked module' = atomically . modifyTVar st $ \x ->
+cacheRebuild' :: TVar LspState -> Int -> ExternsFile -> [ExternDependency] -> P.Environment -> P.Environment -> P.CheckState -> P.Module -> P.Module -> IO ()
+cacheRebuild' st maxFiles ef deps prevEnv endEnv checkSt unchecked module' = atomically . modifyTVar st $ \x ->
   x
-    { openFiles = List.take maxFiles $ (fp, OpenFile (efModuleName ef) ef deps prevEnv endEnv unchecked module') : filter ((/= fp) . fst) (openFiles x)
+    { openFiles = List.take maxFiles $ (fp, OpenFile (efModuleName ef) ef deps prevEnv endEnv checkSt unchecked module') : filter ((/= fp) . fst) (openFiles x)
     }
   where
     fp = P.spanName $ efSourceSpan ef

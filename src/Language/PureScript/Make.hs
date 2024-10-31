@@ -56,6 +56,7 @@ import Language.PureScript.TypeChecker (CheckState (..), emptyCheckState, typeCh
 import System.Directory (doesFileExist)
 import System.FilePath (replaceExtension)
 import Prelude
+import Language.PureScript.TypeChecker qualified as P
 
 -- | Rebuild a single module.
 --
@@ -109,7 +110,8 @@ rebuildModuleWithProvidedEnv onDesugared MakeActions {..} exEnv env externs m@(M
   progress $ CompilingModule moduleName moduleIndex
   let withPrim = importPrim m
   lint withPrim
-  ((Module ss coms _ elaborated exps, env'), nextVar) <- desugarAndTypeCheck onDesugared moduleName externs withPrim exEnv env
+  ((Module ss coms _ elaborated exps, checkSt), nextVar) <- desugarAndTypeCheck onDesugared moduleName externs withPrim exEnv env
+  let env' = P.checkEnv checkSt
 
   -- desugar case declarations *after* type- and exhaustiveness checking
   -- since pattern guards introduces cases which the exhaustiveness checker
@@ -141,7 +143,7 @@ rebuildModuleWithProvidedEnv onDesugared MakeActions {..} exEnv env externs m@(M
               ++ prettyPrintMultipleErrors defaultPPEOptions errs
         Right d -> d
 
-  evalSupplyT nextVar'' $ codegen env env' mod' renamed docs exts
+  evalSupplyT nextVar'' $ codegen env checkSt mod' renamed docs exts
   return exts
 
 desugarAndTypeCheck ::
@@ -152,12 +154,12 @@ desugarAndTypeCheck ::
   Module ->
   Env ->
   Environment ->
-  m ((Module, Environment), Integer)
+  m ((Module, CheckState), Integer)
 desugarAndTypeCheck onDesugared moduleName externs withPrim exEnv env = runSupplyT 0 $ do
   (desugared, (exEnv', usedImports)) <- runStateT (desugar externs withPrim) (exEnv, mempty)
   for_ onDesugared $ lift . \f -> f desugared
   let modulesExports = (\(_, _, exports) -> exports) <$> exEnv'
-  (checked, CheckState {..}) <- runStateT (typeCheckModule modulesExports desugared) $ emptyCheckState env
+  (checked, checkSt@(CheckState {..})) <- runStateT (typeCheckModule modulesExports desugared) $ emptyCheckState env
   let usedImports' =
         foldl'
           ( flip $ \(fromModuleName, newtypeCtorName) ->
@@ -169,7 +171,7 @@ desugarAndTypeCheck onDesugared moduleName externs withPrim exEnv env = runSuppl
   -- known which newtype constructors are used to solve Coercible
   -- constraints in order to not report them as unused.
   censor (addHint (ErrorInModule moduleName)) $ lintImports checked exEnv' usedImports'
-  return (checked, checkEnv)
+  return (checked, checkSt)
 
 -- It may seem more obvious to write `docs <- Docs.convertModule m env' here,
 -- but I have not done so for two reasons:
