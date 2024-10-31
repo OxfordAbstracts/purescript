@@ -1,4 +1,5 @@
 {-# LANGUAGE BlockArguments #-}
+
 module Language.PureScript.Lsp.AtPosition where
 
 import Control.Lens (Field1 (_1), Field2 (_2), Field3 (_3), view)
@@ -49,7 +50,7 @@ instance Semigroup EverythingAtPos where
 
 instance Monoid EverythingAtPos where
   mempty = nullEverythingAtPos
-  
+
 showCounts :: EverythingAtPos -> Text
 showCounts EverythingAtPos {..} =
   "decls: "
@@ -190,7 +191,6 @@ addDeclValuesAtPos pos = \case
         P.DeferredDictionary {} -> True
         P.DerivedInstancePlaceholder {} -> True
         _ -> False
-
 
 addDecl :: P.Declaration -> EverythingAtPos -> EverythingAtPos
 addDecl decl atPos = atPos {apDecls = decl : apDecls atPos}
@@ -338,8 +338,7 @@ smallestExpr :: [P.Expr] -> Maybe P.Expr
 smallestExpr = smallestExpr' identity
 
 smallestExpr' :: (a -> P.Expr) -> [a] -> Maybe a
-smallestExpr' f = Safe.minimumByMay (comparing (fromMaybe (maxInt, maxInt) . (getExprLinesAndColumns . f))) 
-
+smallestExpr' f = Safe.minimumByMay (comparing (fromMaybe (maxInt, maxInt) . (getExprLinesAndColumns . f)))
 
 getExprLinesAndColumns :: P.Expr -> Maybe (Int, Int)
 getExprLinesAndColumns expr =
@@ -406,10 +405,18 @@ getExprsAtPos pos declaration = execState (goDecl declaration) []
       pure expr
 
 modifySmallestExprAtPos :: (P.Expr -> P.Expr) -> Types.Position -> P.Module -> (P.Module, Maybe (P.Expr, P.Expr))
-modifySmallestExprAtPos fn pos@(Types.Position {..}) (P.Module ss c mName decls refs) =
+modifySmallestExprAtPos fn pos m@(P.Module ss c mName _ refs) =
   (P.Module ss c mName (fmap fst declsAndExpr) refs, asum $ snd <$> declsAndExpr)
   where
-    declsAndExpr = onDeclsAtLine (pure . modifySmallestDeclExprAtPos fn pos) (\d -> [(d, Nothing)]) (fromIntegral _line + 1) decls
+    declsAndExpr = modifySmallestExprAtPosWithDecl fn pos m
+
+modifySmallestExprAtPosWithDecl :: (P.Expr -> P.Expr) -> Types.Position -> P.Module -> [(P.Declaration, Maybe (P.Expr, P.Expr))]
+modifySmallestExprAtPosWithDecl fn pos@(Types.Position {..}) (P.Module _ _ _ decls _) =
+  onDeclsAtLine (pure . modifySmallestDeclExprAtPos fn pos) (\d -> [(d, Nothing)]) (fromIntegral _line + 1) decls
+
+modifySmallestExprDropOthers :: (P.Expr -> P.Expr) -> Types.Position -> P.Module -> Maybe (P.Declaration, Maybe (P.Expr, P.Expr))
+modifySmallestExprDropOthers fn pos@(Types.Position {..}) (P.Module _ _ _ decls _) =
+  find (isJust . snd) $ onDeclsAtLine (pure . modifySmallestDeclExprAtPos fn pos) (const []) (fromIntegral _line + 1) decls
 
 modifySmallestDeclExprAtPos :: (P.Expr -> P.Expr) -> Types.Position -> P.Declaration -> (P.Declaration, Maybe (P.Expr, P.Expr))
 modifySmallestDeclExprAtPos fn pos declaration = runState (onDecl declaration) Nothing

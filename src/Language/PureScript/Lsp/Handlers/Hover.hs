@@ -20,7 +20,7 @@ import Language.PureScript.Docs.Convert.Single (convertComments)
 import Language.PureScript.Docs.Types qualified as Docs
 import Language.PureScript.Errors (Literal (..))
 import Language.PureScript.Ide.Error (prettyPrintTypeSingleLine)
-import Language.PureScript.Lsp.AtPosition (EverythingAtPos (..), binderSourceSpan, getEverythingAtPos, getImportRefNameType, modifySmallestBinderAtPos, modifySmallestExprAtPos, showCounts, smallestType, spanToRange, smallestExpr')
+import Language.PureScript.Lsp.AtPosition (EverythingAtPos (..), binderSourceSpan, getEverythingAtPos, getImportRefNameType, modifySmallestBinderAtPos, showCounts, smallestExpr', smallestType, spanToRange, modifySmallestExprAtPos)
 import Language.PureScript.Lsp.Cache (selectDependencies)
 import Language.PureScript.Lsp.Cache.Query (getAstDeclarationTypeInModule)
 import Language.PureScript.Lsp.Docs (readDeclarationDocsWithNameType, readModuleDocs)
@@ -32,9 +32,9 @@ import Language.PureScript.Lsp.Rebuild (buildExportEnvCacheAndHandleErrors)
 import Language.PureScript.Lsp.ServerConfig (getInferExpressions)
 import Language.PureScript.Lsp.State (cachedRebuild, getExportEnv)
 import Language.PureScript.Lsp.Types (ExternDependency (edExtern), OpenFile (..))
+import Language.PureScript.Sugar.Names.Env qualified as P
 import Protolude hiding (handle, to)
 import Text.PrettyPrint.Boxes (render)
-import Language.PureScript.Sugar.Names.Env qualified as P
 
 hoverHandler :: Server.Handlers HandlerM
 hoverHandler = Server.requestHandler Message.SMethod_TextDocumentHover $ \req res -> do
@@ -162,8 +162,7 @@ hoverHandler = Server.requestHandler Message.SMethod_TextDocumentHover $ \req re
                       case smallestType typesBeforeSugaring of
                         Just ty -> do
                           exportEnv <- getExportEnv
-                          let 
-                            imports = maybe P.nullImports (view _2) $ M.lookup ofModuleName exportEnv 
+                          let imports = maybe P.nullImports (view _2) $ M.lookup ofModuleName exportEnv
 
                           case ty of
                             P.TypeConstructor ann q@(P.Qualified _ name) | P.runProperName name /= "Type" -> do
@@ -239,6 +238,72 @@ inferViaTypeHole addHole filePath pos = do
               Left errs -> do
                 pure $
                   (valueBefore,) <$> findHoleType (warnings <> errs)
+
+-- inferOnDeclViaTypeHole ::
+--   ( Types.Position ->
+--     P.Module ->
+--     Maybe (P.Declaration, Maybe (a, a))
+--   ) ->
+--   FilePath ->
+--   Types.Position ->
+--   HandlerM (Maybe (a, P.SourceType))
+-- inferOnDeclViaTypeHole addHole filePath pos = do
+--   shouldInferUsingTypeHole <- getInferExpressions
+--   if not shouldInferUsingTypeHole
+--     then pure Nothing
+--     else do
+--       cacheOpenMb <- cachedRebuild filePath
+--       cacheOpenMb & maybe (pure Nothing) \OpenFile {..} -> do
+--         let module' = P.importPrim ofUncheckedModule
+--             withHole = addHole pos module'
+--         case withHole of
+--           Just (declWithHole, Just (valueBefore, _valueAfter)) -> do
+--             let externs = fmap edExtern ofDependencies
+--             (exEnv, _) <- buildExportEnvCacheAndHandleErrors (selectDependencies module') module' externs
+--             (checkRes, warnings) <-
+--               runWriterT $
+--                 runExceptT $
+--                   evalSupplyT 0 $
+--                     evalStateT
+--                       (typeCheckDecl (view _3 <$> exEnv) ofModuleName (P.getModuleDeclarations module') declWithHole)
+--                       ((P.emptyCheckState $ removeDeclFromEnv ofModuleName declWithHole ofEndEnv) {P.checkCurrentModule = Just ofModuleName})
+
+--             case checkRes of
+--               Right _ -> do
+--                 debugLsp "Decl hole error not found"
+--                 pure $ (valueBefore,) <$> findHoleType warnings
+--               Left errs -> do
+--                 debugLsp $ "Errors: \n" <> T.pack (P.prettyPrintMultipleErrors P.noColorPPEOptions errs)
+--                 pure $
+--                   (valueBefore,) <$> findHoleType (warnings <> errs)
+--           _ -> do
+--             warnLsp "Decl with hole not found"
+--             pure Nothing
+--   where
+--     typeCheckDecl modulesExports mn decls decl = do
+--       let (_, imports) = partitionEithers $ fromImportDecl modulesExports <$> decls
+--       modify (\s -> s {P.checkCurrentModule = Just mn, P.checkCurrentModuleImports = imports})
+--       P.typeCheckAll mn [ignoreWildcardsUnderCompleteTypeSignatures decl]
+
+--     fromImportDecl ::
+--       M.Map P.ModuleName P.Exports ->
+--       P.Declaration ->
+--       Either
+--         P.Declaration
+--         ( P.SourceAnn,
+--           P.ModuleName,
+--           P.ImportDeclarationType,
+--           Maybe P.ModuleName,
+--           M.Map (P.ProperName 'P.TypeName) ([P.ProperName 'P.ConstructorName], P.ExportSource)
+--         )
+--     fromImportDecl modulesExports (P.ImportDeclaration sa moduleName' importDeclarationType asModuleName) =
+--       Right (sa, moduleName', importDeclarationType, asModuleName, foldMap P.exportedTypes $ M.lookup moduleName' modulesExports)
+--     fromImportDecl _ decl = Left decl
+
+-- removeDeclFromEnv :: P.ModuleName -> P.Declaration -> P.Environment -> P.Environment
+-- removeDeclFromEnv mName decl env = case decl of
+--   P.ValueDecl _ ident _ _ _ -> env {E.names = M.delete (P.Qualified (P.ByModuleName mName) ident) (E.names env)}
+--   _ -> env
 
 findHoleType :: P.MultipleErrors -> Maybe P.SourceType
 findHoleType = P.runMultipleErrors >>> findMap getHoverHoleType
