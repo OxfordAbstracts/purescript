@@ -1,3 +1,4 @@
+{-# LANGUAGE BlockArguments #-}
 -- |
 -- This module implements the type checker
 --
@@ -6,7 +7,6 @@ module Language.PureScript.TypeChecker.Types
   , TypedValue'(..)
   , typesOf
   , checkTypeKind
-  , infer'
   ) where
 
 {-
@@ -14,7 +14,7 @@ module Language.PureScript.TypeChecker.Types
 
     infer
       Synthesize a type for a value
-
+f
     check
       Check a value has a given type
 
@@ -26,7 +26,7 @@ module Language.PureScript.TypeChecker.Types
 -}
 
 import Prelude
-import Protolude (ordNub, fold, atMay)
+import Protolude (ordNub, fold, atMay, (>=>))
 
 import Control.Arrow (first, second, (***))
 import Control.Monad (forM, forM_, guard, replicateM, unless, when, zipWithM, (<=<))
@@ -189,8 +189,15 @@ typesOf bindingGroupType moduleName vals = withFreshSubstitution $ do
     raisePreviousWarnings False wInfer
     forM_ tys $ \(shouldGeneralize, ((_, (_, _)), w)) ->
       raisePreviousWarnings shouldGeneralize w
+      
 
-    return (map fst inferred)
+    let typedExprs = map fst inferred 
+
+    forM_ typedExprs \((ann, ident), (expr, ty) ) ->  do
+      addIdeExpr expr ty
+      addIdeIdent (fst ann) ident ty
+
+    return typedExprs
   where
     replaceTypes
       :: Substitution
@@ -361,11 +368,23 @@ insertUnkName' (TUnknown _ i) n = insertUnkName i n
 insertUnkName' _ _ = internalCompilerError "type is not TUnknown"
 
 -- | Infer a type for a value, rethrowing any error to provide a more useful error message
+-- | and add the inferred type to the IDE artifacts if necessary.
 infer
   :: (MonadSupply m, MonadState CheckState m, MonadError MultipleErrors m, MonadWriter MultipleErrors m)
   => Expr
   -> m TypedValue'
-infer val = withErrorMessageHint (ErrorInferringType val) $ infer' val
+infer val = withErrorMessageHint (ErrorInferringType val) $ inferAndAddToIde val
+
+
+inferAndAddToIde  :: (MonadSupply m, MonadState CheckState m, MonadError MultipleErrors m, MonadWriter MultipleErrors m)
+  => Expr
+  -> m TypedValue'
+inferAndAddToIde = infer' >=> addTypedValueToIde
+
+addTypedValueToIde :: MonadState CheckState m => TypedValue' -> m TypedValue'
+addTypedValueToIde tv@(TypedValue' _ expr ty)  = do 
+  addIdeExpr expr ty 
+  pure tv
 
 -- | Infer a type for a value
 infer'
@@ -453,7 +472,7 @@ infer' (Abs binder ret)
   | VarBinder ss arg <- binder = do
       ty <- freshTypeWithKind kindType
       withBindingGroupVisible $ bindLocalVariables [(ss, arg, ty, Defined)] $ do
-        body@(TypedValue' _ _ bodyTy) <- infer' ret
+        body@(TypedValue' _ _ bodyTy) <- inferAndAddToIde ret
         (body', bodyTy') <- instantiatePolyTypeWithUnknowns (tvToExpr body) bodyTy
         return $ TypedValue' True (Abs (VarBinder ss arg) body') (function ty bodyTy')
   | otherwise = internalError "Binder was not desugared"
@@ -532,7 +551,7 @@ infer' (Hole name) = do
   tell . errorMessage $ HoleInferredType name ty ctx . Just $ TSBefore env
   return $ TypedValue' True (Hole name) ty
 infer' (PositionedValue pos c val) = warnAndRethrowWithPositionTC pos $ do
-  TypedValue' t v ty <- infer' val
+  TypedValue' t v ty <- inferAndAddToIde val
   return $ TypedValue' t (PositionedValue pos c v) ty
 infer' v = internalError $ "Invalid argument to infer: " ++ show v
 
@@ -593,6 +612,7 @@ inferLetBinding seen (ValueDecl sa@(ss, _) ident nameKind [] [MkUnguarded (Typed
     if checkType
       then withScopedTypeVars moduleName args (bindNames dict (check val ty'))
       else return (TypedValue' checkType val elabTy)
+  addIdeIdent ss ident ty''
   bindNames (M.singleton (Qualified (BySourcePos $ spanStart ss) ident) (ty'', nameKind, Defined))
     $ inferLetBinding (seen ++ [ValueDecl sa ident nameKind [] [MkUnguarded (TypedValue checkType val' ty'')]]) rest ret j
 inferLetBinding seen (ValueDecl sa@(ss, _) ident nameKind [] [MkUnguarded val] : rest) ret j = do
@@ -601,6 +621,7 @@ inferLetBinding seen (ValueDecl sa@(ss, _) ident nameKind [] [MkUnguarded val] :
     let dict = M.singleton (Qualified (BySourcePos $ spanStart ss) ident) (valTy, nameKind, Undefined)
     bindNames dict $ infer val
   warnAndRethrowWithPositionTC ss $ unifyTypes valTy valTy'
+  addIdeIdent ss ident valTy'
   bindNames (M.singleton (Qualified (BySourcePos $ spanStart ss) ident) (valTy', nameKind, Defined))
     $ inferLetBinding (seen ++ [ValueDecl sa ident nameKind [] [MkUnguarded val']]) rest ret j
 inferLetBinding seen (BindingGroupDeclaration ds : rest) ret j = do
@@ -614,21 +635,34 @@ inferLetBinding seen (BindingGroupDeclaration ds : rest) ret j = do
     inferLetBinding (seen ++ [BindingGroupDeclaration ds']) rest ret j
 inferLetBinding _ _ _ _ = internalError "Invalid argument to inferLetBinding"
 
--- | Infer the types of variables brought into scope by a binder
-inferBinder
+inferBinder 
   :: forall m
    . (MonadState CheckState m, MonadError MultipleErrors m, MonadWriter MultipleErrors m)
   => SourceType
   -> Binder
   -> m (M.Map Ident (SourceSpan, SourceType))
-inferBinder _ NullBinder = return M.empty
-inferBinder val (LiteralBinder _ (StringLiteral _)) = unifyTypes val tyString >> return M.empty
-inferBinder val (LiteralBinder _ (CharLiteral _)) = unifyTypes val tyChar >> return M.empty
-inferBinder val (LiteralBinder _ (NumericLiteral (Left _))) = unifyTypes val tyInt >> return M.empty
-inferBinder val (LiteralBinder _ (NumericLiteral (Right _))) = unifyTypes val tyNumber >> return M.empty
-inferBinder val (LiteralBinder _ (BooleanLiteral _)) = unifyTypes val tyBoolean >> return M.empty
-inferBinder val (VarBinder ss name) = return $ M.singleton name (ss, val)
-inferBinder val (ConstructorBinder ss ctor binders) = do
+inferBinder val binder = do 
+  addIdeBinder binder val
+  m <- inferBinder' val binder
+  forM_ (M.toList m) $ \(ident, (ss, ty)) -> do
+    addIdeIdent ss ident ty
+  pure m
+
+-- | Infer the types of variables brought into scope by a binder
+inferBinder'
+  :: forall m
+   . (MonadState CheckState m, MonadError MultipleErrors m, MonadWriter MultipleErrors m)
+  => SourceType
+  -> Binder
+  -> m (M.Map Ident (SourceSpan, SourceType))
+inferBinder' _ NullBinder = return M.empty
+inferBinder' val (LiteralBinder _ (StringLiteral _)) = unifyTypes val tyString >> return M.empty
+inferBinder' val (LiteralBinder _ (CharLiteral _)) = unifyTypes val tyChar >> return M.empty
+inferBinder' val (LiteralBinder _ (NumericLiteral (Left _))) = unifyTypes val tyInt >> return M.empty
+inferBinder' val (LiteralBinder _ (NumericLiteral (Right _))) = unifyTypes val tyNumber >> return M.empty
+inferBinder' val (LiteralBinder _ (BooleanLiteral _)) = unifyTypes val tyBoolean >> return M.empty
+inferBinder' val (VarBinder ss name) = return $ M.singleton name (ss, val)
+inferBinder' val (ConstructorBinder ss ctor binders) = do
   env <- getEnv
   case M.lookup ctor (dataConstructors env) of
     Just (_, _, ty, _) -> do
@@ -647,7 +681,7 @@ inferBinder val (ConstructorBinder ss ctor binders) = do
     where
     go args (TypeApp _ (TypeApp _ fn arg) ret) | eqType fn tyFunction = go (arg : args) ret
     go args ret = (args, ret)
-inferBinder val (LiteralBinder _ (ObjectLiteral props)) = do
+inferBinder' val (LiteralBinder _ (ObjectLiteral props)) = do
   row <- freshTypeWithKind (kindRow kindType)
   rest <- freshTypeWithKind (kindRow kindType)
   m1 <- inferRowProperties row rest props
@@ -661,29 +695,29 @@ inferBinder val (LiteralBinder _ (ObjectLiteral props)) = do
     m1 <- inferBinder propTy binder
     m2 <- inferRowProperties nrow (srcRCons (Label name) propTy row) binders
     return $ m1 `M.union` m2
-inferBinder val (LiteralBinder _ (ArrayLiteral binders)) = do
+inferBinder' val (LiteralBinder _ (ArrayLiteral binders)) = do
   el <- freshTypeWithKind kindType
   m1 <- M.unions <$> traverse (inferBinder el) binders
   unifyTypes val (srcTypeApp tyArray el)
   return m1
-inferBinder val (NamedBinder ss name binder) =
+inferBinder' val (NamedBinder ss name binder) =
   warnAndRethrowWithPositionTC ss $ do
-    m <- inferBinder val binder
+    m <- inferBinder' val binder
     return $ M.insert name (ss, val) m
-inferBinder val (PositionedBinder pos _ binder) =
+inferBinder' val (PositionedBinder pos _ binder) =
   warnAndRethrowWithPositionTC pos $ inferBinder val binder
-inferBinder val (TypedBinder ty binder) = do
+inferBinder' val (TypedBinder ty binder) = do
   (elabTy, kind) <- kindOf ty
   checkTypeKind ty kind
   ty1 <- introduceSkolemScope <=< replaceAllTypeSynonyms <=< replaceTypeWildcards $ elabTy
   unifyTypes val ty1
-  inferBinder ty1 binder
-inferBinder _ OpBinder{} =
-  internalError "OpBinder should have been desugared before inferBinder"
-inferBinder _ BinaryNoParensBinder{} =
-  internalError "BinaryNoParensBinder should have been desugared before inferBinder"
-inferBinder _ ParensInBinder{} =
-  internalError "ParensInBinder should have been desugared before inferBinder"
+  inferBinder' ty1 binder
+inferBinder' _ OpBinder{} =
+  internalError "OpBinder should have been desugared before inferBinder'"
+inferBinder' _ BinaryNoParensBinder{} =
+  internalError "BinaryNoParensBinder should have been desugared before inferBinder'"
+inferBinder' _ ParensInBinder{} =
+  internalError "ParensInBinder should have been desugared before inferBinder'"
 
 -- | Returns true if a binder requires its argument type to be a monotype.
 -- | If this is the case, we need to instantiate any polymorphic types before checking binders.

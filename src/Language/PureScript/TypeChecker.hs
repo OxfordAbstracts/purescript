@@ -257,7 +257,7 @@ typeCheckAll
 typeCheckAll moduleName = traverse go
   where
   go :: Declaration -> m Declaration
-  go (DataDeclaration sa@(ss, _) dtype name args dctors) = do
+  go d@(DataDeclaration sa@(ss, _) dtype name args dctors) = do
     warnAndRethrow (addHint (ErrorInTypeConstructor name) . addHint (positionedError ss)) $ do
       when (dtype == Newtype) $ void $ checkNewtype name dctors
       checkDuplicateTypeArguments $ map fst args
@@ -267,6 +267,7 @@ typeCheckAll moduleName = traverse go
       dctors' <- traverse (replaceTypeSynonymsInDataConstructor . fst) dataCtors
       let args'' = args' `withRoles` inferRoles env moduleName name args' dctors'
       addDataType moduleName dtype name args'' dataCtors ctorKind
+      addIdeDecl d ctorKind
     return $ DataDeclaration sa dtype name args dctors
   go d@(DataBindingGroupDeclaration tys) = do
     let tysList = NEL.toList tys
@@ -283,6 +284,7 @@ typeCheckAll moduleName = traverse go
         checkDuplicateTypeArguments $ map fst args
         let args' = args `withKinds` kind
         addTypeSynonym moduleName name args' elabTy kind
+        addIdeType elabTy kind
       let dataDeclsWithKinds = zipWith (\(dtype, (_, name, args, _)) (dataCtors, ctorKind) ->
             (dtype, name, args `withKinds` ctorKind, dataCtors, ctorKind)) dataDecls data_ks
       inferRoles' <- fmap (inferDataBindingGroupRoles env moduleName roleDecls) .
@@ -293,6 +295,7 @@ typeCheckAll moduleName = traverse go
         checkDuplicateTypeArguments $ map fst args'
         let args'' = args' `withRoles` inferRoles' name args'
         addDataType moduleName dtype name args'' dataCtors ctorKind
+        -- addIdeTypeName (Just moduleName) _ name ctorKind
       for_ roleDecls $ checkRoleDeclaration moduleName
       for_ (zip clss cls_ks) $ \((deps, (sa, pn, _, _, _)), (args', implies', tys', kind)) -> do
         let qualifiedClassName = Qualified (ByModuleName moduleName) pn
@@ -309,12 +312,13 @@ typeCheckAll moduleName = traverse go
     toRoleDecl _ = Nothing
     toClassDecl (TypeClassDeclaration sa nm args implies deps decls) = Just (deps, (sa, nm, args, implies, decls))
     toClassDecl _ = Nothing
-  go (TypeSynonymDeclaration sa@(ss, _) name args ty) = do
+  go d@(TypeSynonymDeclaration sa@(ss, _) name args ty) = do
     warnAndRethrow (addHint (ErrorInTypeSynonym name) . addHint (positionedError ss) ) $ do
       checkDuplicateTypeArguments $ map fst args
       (elabTy, kind) <- kindOfTypeSynonym moduleName (sa, name, args, ty)
       let args' = args `withKinds` kind
       addTypeSynonym moduleName name args' elabTy kind
+      addIdeDecl d kind
     return $ TypeSynonymDeclaration sa name args ty
   go (KindDeclaration sa@(ss, _) kindFor name ty) = do
     warnAndRethrow (addHint (ErrorInKindDeclaration name) . addHint (positionedError ss)) $ do
@@ -327,7 +331,7 @@ typeCheckAll moduleName = traverse go
     return d
   go TypeDeclaration{} =
     internalError "Type declarations should have been removed before typeCheckAlld"
-  go (ValueDecl sa@(ss, _) name nameKind [] [MkUnguarded val]) = do
+  go d@(ValueDecl sa@(ss, _) name nameKind [] [MkUnguarded val]) = do
     env <- getEnv
     let declHint = if isPlainIdent name then addHint (ErrorInValueDeclaration name) else id
     warnAndRethrow (declHint . addHint (positionedError ss)) $ do
@@ -336,6 +340,7 @@ typeCheckAll moduleName = traverse go
       typesOf NonRecursiveBindingGroup moduleName [((sa, name), val')] >>= \case
         [(_, (val'', ty))] -> do
           addValue moduleName name ty nameKind
+          addIdeDecl d ty
           return $ ValueDecl sa name nameKind [] [MkUnguarded val'']
         _ -> internalError "typesOf did not return a singleton"
   go ValueDeclaration{} = internalError "Binders were not desugared"
@@ -351,8 +356,9 @@ typeCheckAll moduleName = traverse go
                      | (sai@(_, name), nameKind, _) <- vals'
                      , ((_, name'), (val, ty)) <- tys
                      , name == name'
-                     ] $ \(sai@(_, name), val, nameKind, ty) -> do
+                     ] $ \(sai@((ss, _), name), val, nameKind, ty) -> do
         addValue moduleName name ty nameKind
+        addIdeIdent ss name ty
         return (sai, nameKind, val)
       return . BindingGroupDeclaration $ NEL.fromList vals''
   go d@(ExternDataDeclaration (ss, _) name kind) = do

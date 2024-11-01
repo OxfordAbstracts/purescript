@@ -1,4 +1,5 @@
 {-# LANGUAGE GADTs #-}
+{-# OPTIONS_GHC -Wno-deprecations #-}
 
 -- |
 -- Monads for type checking and type inference and associated data types
@@ -28,6 +29,10 @@ import Language.PureScript.Pretty.Values (prettyPrintValue)
 import Language.PureScript.TypeClassDictionaries (NamedDict, TypeClassDictionaryInScope(..))
 import Language.PureScript.Types (Constraint(..), SourceType, Type(..), srcKindedType, srcTypeVar)
 import Text.PrettyPrint.Boxes (render)
+import Language.PureScript.TypeChecker.IdeArtifacts (IdeArtifacts, emptyIdeArtifacts, insertIaExpr, insertIaBinder, insertIaIdent, insertIaDecl, insertIaType, insertIaTypeName, insertIaClassName, moduleNameFromQual)
+import Protolude (whenM)
+import Language.PureScript.AST.Binders (Binder)
+import Language.PureScript.AST.Declarations (Declaration)
 
 newtype UnkLevel = UnkLevel (NEL.NonEmpty Unknown)
   deriving (Eq, Show)
@@ -105,11 +110,15 @@ data CheckState = CheckState
   , checkConstructorImportsForCoercible :: S.Set (ModuleName, Qualified (ProperName 'ConstructorName))
   -- ^ Newtype constructors imports required to solve Coercible constraints.
   -- We have to keep track of them so that we don't emit unused import warnings.
+  , checkAddIdeArtifacts :: Bool
+  -- ^ Whether to add IDE artifacts to the environment
+  , checkIdeArtifacts :: IdeArtifacts
+  -- ^ The IDE artifacts
   }
 
 -- | Create an empty @CheckState@
 emptyCheckState :: Environment -> CheckState
-emptyCheckState env = CheckState env 0 0 0 Nothing [] emptySubstitution [] mempty
+emptyCheckState env = CheckState env 0 0 0 Nothing [] emptySubstitution [] mempty False emptyIdeArtifacts
 
 -- | Unification variables
 type Unknown = Int
@@ -373,6 +382,37 @@ unsafeCheckCurrentModule
 unsafeCheckCurrentModule = gets checkCurrentModule >>= \case
   Nothing -> internalError "No module name set in scope"
   Just name -> pure name
+
+addIdeDecl :: MonadState CheckState m => Declaration -> SourceType -> m ()
+addIdeDecl declaration ty = onIdeArtifacts $ insertIaDecl declaration ty
+
+addIdeBinder :: MonadState CheckState m => Binder -> SourceType -> m ()
+addIdeBinder binder ty = onIdeArtifacts $ insertIaBinder binder ty
+
+addIdeIdent :: MonadState CheckState m => SourceSpan -> Ident -> SourceType -> m ()
+addIdeIdent ss ident ty  = onIdeArtifacts $ insertIaIdent ss ident ty 
+
+addIdeExpr ::  MonadState CheckState m => Expr -> SourceType -> m ()
+addIdeExpr expr ty = onIdeArtifacts $ insertIaExpr expr ty
+
+addIdeType ::  MonadState CheckState m => SourceType -> SourceType -> m ()
+addIdeType expr ty = onIdeArtifacts $ insertIaType expr ty
+
+addIdeTypeName :: MonadState CheckState m => Maybe ModuleName -> SourceSpan -> ProperName 'TypeName -> SourceType -> m ()
+addIdeTypeName mName ss name ty = onIdeArtifacts $ insertIaTypeName ss name mName ty
+
+addIdeTypeNameQual :: MonadState CheckState m => SourceSpan -> Qualified (ProperName 'TypeName) -> SourceType -> m ()
+addIdeTypeNameQual ss name ty = onIdeArtifacts $ insertIaTypeName ss (disqualify name) (moduleNameFromQual name) ty
+
+addIdeClassName :: MonadState CheckState m => Maybe ModuleName -> SourceSpan -> ProperName 'ClassName -> SourceType -> m ()
+addIdeClassName mName ss name ty = onIdeArtifacts $ insertIaClassName ss name mName ty
+
+addIdeClassNameQual :: MonadState CheckState m => SourceSpan -> Qualified ( ProperName 'ClassName) -> SourceType -> m ()
+addIdeClassNameQual ss name ty = onIdeArtifacts $ insertIaClassName ss (disqualify name) (moduleNameFromQual name) ty
+
+onIdeArtifacts :: MonadState CheckState m => (IdeArtifacts -> IdeArtifacts) -> m ()
+onIdeArtifacts f = whenM (gets checkAddIdeArtifacts)  
+  $ modify $ \env -> env { checkIdeArtifacts = f (checkIdeArtifacts env) }
 
 debugEnv :: Environment -> [String]
 debugEnv env = join

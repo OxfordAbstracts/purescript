@@ -53,10 +53,10 @@ import Language.PureScript.Names (ModuleName, isBuiltinModuleName, runModuleName
 import Language.PureScript.Renamer (renameInModule)
 import Language.PureScript.Sugar (Env, collapseBindingGroups, createBindingGroups, desugar, desugarCaseGuards, externsEnv, primEnv)
 import Language.PureScript.TypeChecker (CheckState (..), emptyCheckState, typeCheckModule)
+import Language.PureScript.TypeChecker qualified as P
 import System.Directory (doesFileExist)
 import System.FilePath (replaceExtension)
 import Prelude
-import Language.PureScript.TypeChecker qualified as P
 
 -- | Rebuild a single module.
 --
@@ -93,11 +93,12 @@ rebuildModuleWithIndex ::
   m ExternsFile
 rebuildModuleWithIndex act exEnv externs m moduleIndex = do
   let env = foldl' (flip applyExternsFileToEnvironment) initEnvironment externs
-  rebuildModuleWithProvidedEnv Nothing act exEnv env externs m moduleIndex
+  rebuildModuleWithProvidedEnv emptyCheckState Nothing act exEnv env externs m moduleIndex
 
 rebuildModuleWithProvidedEnv ::
   forall m.
   (MonadError MultipleErrors m, MonadWriter MultipleErrors m) =>
+  (Environment -> CheckState) ->
   Maybe (Module -> m ()) ->
   MakeActions m ->
   Env ->
@@ -106,11 +107,11 @@ rebuildModuleWithProvidedEnv ::
   Module ->
   Maybe (Int, Int) ->
   m ExternsFile
-rebuildModuleWithProvidedEnv onDesugared MakeActions {..} exEnv env externs m@(Module _ _ moduleName _ _) moduleIndex = do
+rebuildModuleWithProvidedEnv initialCheckState onDesugared MakeActions {..} exEnv env externs m@(Module _ _ moduleName _ _) moduleIndex = do
   progress $ CompilingModule moduleName moduleIndex
   let withPrim = importPrim m
   lint withPrim
-  ((Module ss coms _ elaborated exps, checkSt), nextVar) <- desugarAndTypeCheck onDesugared moduleName externs withPrim exEnv env
+  ((Module ss coms _ elaborated exps, checkSt), nextVar) <- desugarAndTypeCheck initialCheckState onDesugared moduleName externs withPrim exEnv env
   let env' = P.checkEnv checkSt
 
   -- desugar case declarations *after* type- and exhaustiveness checking
@@ -148,6 +149,7 @@ rebuildModuleWithProvidedEnv onDesugared MakeActions {..} exEnv env externs m@(M
 
 desugarAndTypeCheck ::
   (MonadError MultipleErrors m, MonadWriter MultipleErrors m, Foldable t) =>
+  (Environment -> CheckState) ->
   t (Module -> m b) ->
   ModuleName ->
   [ExternsFile] ->
@@ -155,11 +157,11 @@ desugarAndTypeCheck ::
   Env ->
   Environment ->
   m ((Module, CheckState), Integer)
-desugarAndTypeCheck onDesugared moduleName externs withPrim exEnv env = runSupplyT 0 $ do
+desugarAndTypeCheck initialCheckState onDesugared moduleName externs withPrim exEnv env = runSupplyT 0 $ do
   (desugared, (exEnv', usedImports)) <- runStateT (desugar externs withPrim) (exEnv, mempty)
   for_ onDesugared $ lift . \f -> f desugared
   let modulesExports = (\(_, _, exports) -> exports) <$> exEnv'
-  (checked, checkSt@(CheckState {..})) <- runStateT (typeCheckModule modulesExports desugared) $ emptyCheckState env
+  (checked, checkSt@(CheckState {..})) <- runStateT (typeCheckModule modulesExports desugared) $ initialCheckState env
   let usedImports' =
         foldl'
           ( flip $ \(fromModuleName, newtypeCtorName) ->
@@ -172,73 +174,6 @@ desugarAndTypeCheck onDesugared moduleName externs withPrim exEnv env = runSuppl
   -- constraints in order to not report them as unused.
   censor (addHint (ErrorInModule moduleName)) $ lintImports checked exEnv' usedImports'
   return (checked, checkSt)
-
--- It may seem more obvious to write `docs <- Docs.convertModule m env' here,
--- but I have not done so for two reasons:
--- 1. This should never fail; any genuine errors in the code should have been
--- caught earlier in this function. Therefore if we
-
--- rebuildModuleUsingDbEnv ::
---   forall m.
---   (MonadIO m, MonadError MultipleErrors m, MonadWriter MultipleErrors m) =>
---   MakeActions m ->
---   Module ->
---   m ExternsFile
--- rebuildModuleUsingDbEnv MakeActions {..} m@(Module _ _ moduleName _ _) = do
---   let withPrim = importPrim m
---   lint withPrim
---   ((Module ss coms _ elaborated exps, env'), nextVar) <- runSupplyT 0 $ do
-
---     desugared <- desugarLsp withPrim
---     -- (desugared, (exEnv', usedImports)) <- runStateT (desugarLsp externs withPrim) (exEnv, mempty)
-
---     let modulesExports = (\(_, _, exports) -> exports) <$> exEnv'
---     (checked, CheckState {..}) <- runStateT (typeCheckModule modulesExports desugared) $ emptyCheckState env
---     let usedImports' =
---           foldl'
---             ( flip $ \(fromModuleName, newtypeCtorName) ->
---                 M.alter (Just . (fmap DctorName newtypeCtorName :) . fold) fromModuleName
---             )
---             usedImports
---             checkConstructorImportsForCoercible
---     -- Imports cannot be linted before type checking because we need to
---     -- known which newtype constructors are used to solve Coercible
---     -- constraints in order to not report them as unused.
---     censor (addHint (ErrorInModule moduleName)) $ lintImports checked exEnv' usedImports'
---     return (checked, checkEnv)
-
---   -- desugar case declarations *after* type- and exhaustiveness checking
---   -- since pattern guards introduces cases which the exhaustiveness checker
---   -- reports as not-exhaustive.
---   (deguarded, nextVar') <- runSupplyT nextVar $ do
---     desugarCaseGuards elaborated
-
---   regrouped <- createBindingGroups moduleName . collapseBindingGroups $ deguarded
---   let mod' = Module ss coms moduleName regrouped exps
---       corefn = CF.moduleToCoreFn env' mod'
---       (optimized, nextVar'') = runSupply nextVar' $ CF.optimizeCoreFn corefn
---       (renamedIdents, renamed) = renameInModule optimized
---       exts = moduleToExternsFile mod' env' renamedIdents
---   ffiCodegen renamed
---   -- It may seem more obvious to write `docs <- Docs.convertModule m env' here,
---   -- but I have not done so for two reasons:
---   -- 1. This should never fail; any genuine errors in the code should have been
---   -- caught earlier in this function. Therefore if we do fail here it indicates
---   -- a bug in the compiler, which should be reported as such.
---   -- 2. We do not want to perform any extra work generating docs unless the
---   -- user has asked for docs to be generated.
---   let docs = undefined
---     -- case Docs.convertModule externs exEnv env' withPrim of
---     --     Left errs ->
---     --       internalError $
---     --         "Failed to produce docs for "
---     --           ++ T.unpack (runModuleName moduleName)
---     --           ++ "; details:\n"
---     --           ++ prettyPrintMultipleErrors defaultPPEOptions errs
---     --     Right d -> d
-
---   evalSupplyT nextVar'' $ codegen env' mod' renamed docs exts
---   return exts
 
 -- | Compiles in "make" mode, compiling each module separately to a @.js@ file and an @externs.cbor@ file.
 --

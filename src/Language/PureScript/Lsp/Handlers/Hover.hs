@@ -20,7 +20,7 @@ import Language.PureScript.Docs.Convert.Single (convertComments)
 import Language.PureScript.Docs.Types qualified as Docs
 import Language.PureScript.Errors (Literal (..))
 import Language.PureScript.Ide.Error (prettyPrintTypeSingleLine)
-import Language.PureScript.Lsp.AtPosition (EverythingAtPos (..), binderSourceSpan, getEverythingAtPos, getImportRefNameType, modifySmallestBinderAtPos, showCounts, smallestExpr', smallestType, spanToRange, modifySmallestExprAtPos)
+import Language.PureScript.Lsp.AtPosition (EverythingAtPos (..), binderSourceSpan, getEverythingAtPos, getImportRefNameType, modifySmallestBinderAtPos, modifySmallestExprAtPos, showCounts, smallestExpr', smallestType, spanToRange)
 import Language.PureScript.Lsp.Cache (selectDependencies)
 import Language.PureScript.Lsp.Cache.Query (getAstDeclarationTypeInModule)
 import Language.PureScript.Lsp.Docs (readDeclarationDocsWithNameType, readModuleDocs)
@@ -32,7 +32,9 @@ import Language.PureScript.Lsp.Rebuild (buildExportEnvCacheAndHandleErrors)
 import Language.PureScript.Lsp.ServerConfig (getInferExpressions)
 import Language.PureScript.Lsp.State (cachedRebuild, getExportEnv)
 import Language.PureScript.Lsp.Types (ExternDependency (edExtern), OpenFile (..))
+import Language.PureScript.Lsp.Util (positionToSourcePos)
 import Language.PureScript.Sugar.Names.Env qualified as P
+import Language.PureScript.TypeChecker.IdeArtifacts (IdeArtifact (..), IdeArtifactValue (..), getArtifactsAtPosition, smallestArtifact)
 import Protolude hiding (handle, to)
 import Text.PrettyPrint.Boxes (render)
 
@@ -120,63 +122,113 @@ hoverHandler = Server.requestHandler Message.SMethod_TextDocumentHover $ \req re
     forLsp cacheOpenMb \OpenFile {..} -> do
       let everything = getEverythingAtPos (P.getModuleDeclarations ofModule) startPos
           respondWithCounts = markdownRes Nothing $ showCounts everything
-      debugLsp $ showCounts everything
-      case head $ apImport everything of
-        Just (ss, importedModuleName, _, ref) -> do
-          respondWithImport ss importedModuleName ref
-        _ -> do
-          case smallestExpr' (view _3) $ filter (not . (isAbs <||> generatedExpr) . view _3) $ apExprs everything of
-            Just (_, _, P.Literal ss literal) | isLiteralNode literal -> handleLiteral ss literal
-            Just (ss, _, foundExpr) -> do
-              inferredRes <- inferExprViaTypeHoleText filePath startPos
-              foundTypes <- lookupExprTypes foundExpr
-              docs <- lookupExprDocs foundExpr
-              markdownRes (Just $ spanToRange ss) $
+          atPos = getArtifactsAtPosition (positionToSourcePos startPos) (P.checkIdeArtifacts ofEndCheckState)
+      -- debugLsp $ showCounts everything
+      debugLsp $ "at pos len: " <> show (length atPos)
+      debugLsp $ "smallest: " <> (ellipsis 512 . show) (iaValue <$> smallestArtifact atPos)
+      case smallestArtifact atPos of
+        Just (IdeArtifact {..}) ->
+          case iaValue of
+            IaExpr expr -> do
+              let inferredRes = pursTypeStr (dispayExprOnHover expr) (Just $ prettyPrintTypeSingleLine iaType) []
+              foundTypes <- lookupExprTypes expr
+              docs <- lookupExprDocs expr
+              markdownRes (Just $ spanToRange iaSpan) $
                 joinMarkup
-                  [ inferredRes <|> Just (dispayExprOnHover foundExpr),
+                  [ Just inferredRes,
                     head foundTypes,
                     showDocs <$> docs
                   ]
-            Nothing -> do
-              binderInferredRes <- inferBinderViaTypeHole filePath startPos
-              case binderInferredRes of
-                Just (binder, ty) -> do
-                  debugLsp $ "Found binder: " <> show binder
-                  markdownRes
-                    (spanToRange <$> binderSourceSpan binder)
-                    (pursTypeStr (dispayBinderOnHover binder) (Just $ prettyPrintTypeSingleLine ty) [])
+            IaTypeName name -> do
+              let name' = P.runProperName name
+                  inferredRes = pursTypeStr name' (Just $ prettyPrintTypeSingleLine iaType) []
+                  modName = fromMaybe ofModuleName iaDefinitionModule
+              docs <- readDeclarationDocsWithNameType modName TyNameType name'
+              foundTypes <- getAstDeclarationTypeInModule (Just TyNameType) modName name'
+              markdownRes (Just $ spanToRange iaSpan) $
+                joinMarkup
+                  [ Just inferredRes,
+                    showTypeSection modName (P.runProperName name) <$> head foundTypes,
+                    showDocs <$> docs
+                  ]
+            IaClassName name -> do
+              let name' = P.runProperName name
+                  inferredRes = pursTypeStr name' (Just $ prettyPrintTypeSingleLine iaType) []
+                  modName = fromMaybe ofModuleName iaDefinitionModule
+              docs <- readDeclarationDocsWithNameType modName TyClassNameType name'
+              foundTypes <- getAstDeclarationTypeInModule (Just TyClassNameType) modName name'
+              markdownRes (Just $ spanToRange iaSpan) $
+                joinMarkup
+                  [ Just inferredRes,
+                    showTypeSection modName (P.runProperName name) <$> head foundTypes,
+                    showDocs <$> docs
+                  ]
+            IaIdent ident -> do
+              markdownRes (Just $ spanToRange iaSpan) $ pursTypeStr ident (Just $ prettyPrintTypeSingleLine iaType) []
+            IaBinder binder -> do
+              let inferredRes = pursTypeStr (dispayBinderOnHover binder) (Just $ prettyPrintTypeSingleLine iaType) []
+              markdownRes (spanToRange <$> binderSourceSpan binder) inferredRes
+            IaDecl decl -> do
+              markdownRes (Just $ spanToRange iaSpan) $ pursTypeStr (maybe "_" printName $ P.declName decl) (Just $ prettyPrintTypeSingleLine iaType) []
+            IaType ty -> do
+              markdownRes (Just $ spanToRange iaSpan) $ pursTypeStr (prettyPrintTypeSingleLine ty) (Just $ prettyPrintTypeSingleLine iaType) []
+        _ ->
+          case head $ apImport everything of
+            Just (ss, importedModuleName, _, ref) -> do
+              respondWithImport ss importedModuleName ref
+            _ -> do
+              case smallestExpr' (view _3) $ filter (not . (isAbs <||> generatedExpr) . view _3) $ apExprs everything of
+                Just (_, _, P.Literal ss literal) | isLiteralNode literal -> handleLiteral ss literal
+                Just (ss, _, foundExpr) -> do
+                  inferredRes <- inferExprViaTypeHoleText filePath startPos
+                  foundTypes <- lookupExprTypes foundExpr
+                  docs <- lookupExprDocs foundExpr
+                  markdownRes (Just $ spanToRange ss) $
+                    joinMarkup
+                      [ inferredRes <|> Just (dispayExprOnHover foundExpr),
+                        head foundTypes,
+                        showDocs <$> docs
+                      ]
                 Nothing -> do
-                  case smallestType $ apTypes everything of
-                    Just (P.ConstrainedType ann (P.Constraint _ (P.Qualified (P.ByModuleName mName) ident) _ _ _) _) -> do
-                      debugLsp $ "Found constrained type: " <> show ident
-                      respondWithDeclInModule (fst ann) TyClassNameType mName $ P.runProperName ident
-                    Just (P.TypeConstructor ann (P.Qualified (P.ByModuleName mName) name)) | P.runProperName name /= "Type" -> do
-                      debugLsp $ "Found type constructor: " <> show name
-                      respondWithDeclInModule (fst ann) TyNameType mName (P.runProperName name)
-                    Just (P.TypeOp ann (P.Qualified (P.ByModuleName mName) name)) -> do
-                      debugLsp $ "Found type op: " <> show name
-                      respondWithDeclInModule (fst ann) TyOpNameType mName (P.runOpName name)
-                    _ -> do
-                      debugLsp "Looking for unsugared types"
-                      let typesBeforeSugaring = apTypes $ getEverythingAtPos (P.getModuleDeclarations ofUncheckedModule) startPos
-                      case smallestType typesBeforeSugaring of
-                        Just ty -> do
-                          exportEnv <- getExportEnv
-                          let imports = maybe P.nullImports (view _2) $ M.lookup ofModuleName exportEnv
+                  binderInferredRes <- inferBinderViaTypeHole filePath startPos
+                  case binderInferredRes of
+                    Just (binder, ty) -> do
+                      debugLsp $ "Found binder: " <> show binder
+                      markdownRes
+                        (spanToRange <$> binderSourceSpan binder)
+                        (pursTypeStr (dispayBinderOnHover binder) (Just $ prettyPrintTypeSingleLine ty) [])
+                    Nothing -> do
+                      case smallestType $ apTypes everything of
+                        Just (P.ConstrainedType ann (P.Constraint _ (P.Qualified (P.ByModuleName mName) ident) _ _ _) _) -> do
+                          debugLsp $ "Found constrained type: " <> show ident
+                          respondWithDeclInModule (fst ann) TyClassNameType mName $ P.runProperName ident
+                        Just (P.TypeConstructor ann (P.Qualified (P.ByModuleName mName) name)) | P.runProperName name /= "Type" -> do
+                          debugLsp $ "Found type constructor: " <> show name
+                          respondWithDeclInModule (fst ann) TyNameType mName (P.runProperName name)
+                        Just (P.TypeOp ann (P.Qualified (P.ByModuleName mName) name)) -> do
+                          debugLsp $ "Found type op: " <> show name
+                          respondWithDeclInModule (fst ann) TyOpNameType mName (P.runOpName name)
+                        _ -> do
+                          debugLsp "Looking for unsugared types"
+                          let typesBeforeSugaring = apTypes $ getEverythingAtPos (P.getModuleDeclarations ofUncheckedModule) startPos
+                          case smallestType typesBeforeSugaring of
+                            Just ty -> do
+                              exportEnv <- getExportEnv
+                              let imports = maybe P.nullImports (view _2) $ M.lookup ofModuleName exportEnv
 
-                          case ty of
-                            P.TypeConstructor ann q@(P.Qualified _ name) | P.runProperName name /= "Type" -> do
-                              let mName = fromMaybe ofModuleName $ fmap P.importSourceModule . head =<< M.lookup q (P.importedTypes imports)
-                              respondWithDeclInModule (fst ann) TyNameType mName (P.runProperName name)
-                            P.ConstrainedType ann (P.Constraint _ q@(P.Qualified _ ident) _ _ _) _ -> do
-                              let mName = fromMaybe ofModuleName $ fmap P.importSourceModule . head =<< M.lookup q (P.importedTypeClasses imports)
-                              respondWithDeclInModule (fst ann) TyClassNameType mName $ P.runProperName ident
-                            _ -> do
-                              markdownRes
-                                (Just $ spanToRange $ fst $ P.getAnnForType ty)
-                                (pursTypeStr (prettyPrintTypeSingleLine ty) Nothing [])
-                        Nothing -> do
-                          respondWithCounts
+                              case ty of
+                                P.TypeConstructor ann q@(P.Qualified _ name) | P.runProperName name /= "Type" -> do
+                                  let mName = fromMaybe ofModuleName $ fmap P.importSourceModule . head =<< M.lookup q (P.importedTypes imports)
+                                  respondWithDeclInModule (fst ann) TyNameType mName (P.runProperName name)
+                                P.ConstrainedType ann (P.Constraint _ q@(P.Qualified _ ident) _ _ _) _ -> do
+                                  let mName = fromMaybe ofModuleName $ fmap P.importSourceModule . head =<< M.lookup q (P.importedTypeClasses imports)
+                                  respondWithDeclInModule (fst ann) TyClassNameType mName $ P.runProperName ident
+                                _ -> do
+                                  markdownRes
+                                    (Just $ spanToRange $ fst $ P.getAnnForType ty)
+                                    (pursTypeStr (prettyPrintTypeSingleLine ty) Nothing [])
+                            Nothing -> do
+                              respondWithCounts
 
 showTypeSection :: P.ModuleName -> Text -> Text -> Text
 showTypeSection mName expr ty = "*" <> P.runModuleName mName <> "*\n" <> pursMd (expr <> " :: " <> ty)
@@ -202,7 +254,6 @@ inferExprViaTypeHoleText filePath pos =
 
 inferExprViaTypeHole :: FilePath -> Types.Position -> HandlerM (Maybe (P.Expr, P.SourceType))
 inferExprViaTypeHole = inferViaTypeHole (modifySmallestExprAtPos addExprTypeHoleAnnotation)
-
 
 inferBinderViaTypeHole :: FilePath -> Types.Position -> HandlerM (Maybe (P.Binder, P.SourceType))
 inferBinderViaTypeHole = inferViaTypeHole (modifySmallestBinderAtPos addBinderTypeHoleAnnotation)
@@ -232,7 +283,7 @@ inferViaTypeHole addHole filePath pos = do
             (checkRes, warnings) <-
               runWriterT $
                 runExceptT $
-                  P.desugarAndTypeCheck Nothing ofModuleName externs moduleWithHole exportEnv ofStartingEnv
+                  P.desugarAndTypeCheck P.emptyCheckState Nothing ofModuleName externs moduleWithHole exportEnv ofStartingEnv
             case checkRes of
               Right _ -> pure $ (valueBefore,) <$> findHoleType warnings
               Left errs -> do
@@ -356,7 +407,7 @@ generatedIdent = \case
 dispayExprOnHover :: P.Expr -> T.Text
 dispayExprOnHover (P.Op _ (P.Qualified _ op)) = P.runOpName op -- Op's hit an infinite loop when pretty printed by themselves
 dispayExprOnHover (P.Case _ _) = "<case expr>" -- case expressions are too large to pretty print in hover and are on mulitple lines
-dispayExprOnHover expr = ellipsis 32 $ on1Line $ T.strip $ T.pack $ render $ P.prettyPrintValue 2 expr
+dispayExprOnHover expr = ellipsis 64 $ on1Line $ T.strip $ T.pack $ render $ P.prettyPrintValue 4 expr
 
 dispayBinderOnHover :: P.Binder -> T.Text
 dispayBinderOnHover binder = ellipsis 32 $ on1Line $ T.strip $ P.prettyPrintBinder binder

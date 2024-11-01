@@ -31,6 +31,8 @@ import Language.PureScript.Options qualified as P
 import Language.PureScript.Sugar.Names qualified as P
 import Protolude hiding (moduleName, race, race_, threadDelay)
 import Language.PureScript.TypeChecker qualified as P
+import Language.PureScript.Environment qualified as P
+import Language.PureScript.Externs qualified as P
 
 rebuildFile ::
   forall m.
@@ -87,7 +89,7 @@ rebuildFromOpenFileCache fp pwarnings stVar mkMakeActions m (OpenFile moduleName
   for_ externsMb (cacheDependencies moduleName)
   res <- logPerfStandard "Rebuild Module with provided env" $ liftIO $ do
     P.runMake (P.defaultOptions {P.optionsCodegenTargets = codegenTargets}) do
-      newExtern <- P.rebuildModuleWithProvidedEnv (Just $ updateCachedModule' stVar) (mkMakeActions foreigns externDeps) exportEnv env externs m Nothing
+      newExtern <- P.rebuildModuleWithProvidedEnv ideCheckState (Just $ updateCachedModule' stVar) (mkMakeActions foreigns externDeps) exportEnv env externs m Nothing
       updateCacheDb codegenTargets outputDirectory fp Nothing moduleName
       pure newExtern
   case fst res of
@@ -98,6 +100,12 @@ rebuildFromOpenFileCache fp pwarnings stVar mkMakeActions m (OpenFile moduleName
       warnLsp "Module not found error detected, rebuilding without cache"
       rebuildWithoutCache moduleName mkMakeActions fp pwarnings m
     _ -> handleRebuildResult fp pwarnings res
+
+ideCheckState :: P.Environment -> P.CheckState
+ideCheckState env =
+  (P.emptyCheckState env)
+    { P.checkAddIdeArtifacts = True
+    }
 
 rebuildWithoutCache ::
   (MonadLsp ServerConfig m, MonadReader LspEnvironment m, MonadThrow m) =>
@@ -115,10 +123,17 @@ rebuildWithoutCache moduleName mkMakeActions fp pwarnings m = do
   exportEnv <- logPerfStandard "build export cache" $ addExternsToExportEnvOrThrow primEnv externs
   res <- logPerfStandard "Rebuild Module" $ liftIO $ do
     P.runMake (P.defaultOptions {P.optionsCodegenTargets = codegenTargets}) do
-      newExtern <- P.rebuildModule' (mkMakeActions foreigns externDeps) exportEnv externs m
+      newExtern <- rebuildModule' (mkMakeActions foreigns externDeps) exportEnv externs m
       updateCacheDb codegenTargets outputDirectory fp Nothing moduleName
       pure newExtern
   handleRebuildResult fp pwarnings res
+  where 
+    rebuildModule' act env ext mdl = rebuildModuleWithIndex act env ext mdl Nothing
+
+    rebuildModuleWithIndex act exEnv externs m' moduleIndex = do
+      let env = foldl' (flip P.applyExternsFileToEnvironment) P.initEnvironment externs
+      P.rebuildModuleWithProvidedEnv ideCheckState Nothing act exEnv env externs m' moduleIndex
+
 
 handleRebuildResult :: (MonadLsp ServerConfig f, MonadReader LspEnvironment f) => FilePath -> [CST.ParserWarning] -> (Either P.MultipleErrors ExternsFile, P.MultipleErrors) -> f RebuildResult
 handleRebuildResult fp pwarnings (result, warnings) = do
