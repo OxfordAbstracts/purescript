@@ -697,7 +697,7 @@ inferBinder' val (LiteralBinder _ (ArrayLiteral binders)) = do
   return m1
 inferBinder' val (NamedBinder ss name binder) =
   warnAndRethrowWithPositionTC ss $ do
-    m <- inferBinder' val binder
+    m <- inferBinder val binder
     return $ M.insert name (ss, val) m
 inferBinder' val (PositionedBinder pos _ binder) =
   warnAndRethrowWithPositionTC pos $ inferBinder val binder
@@ -706,7 +706,7 @@ inferBinder' val (TypedBinder ty binder) = do
   checkTypeKind ty kind
   ty1 <- introduceSkolemScope <=< replaceAllTypeSynonyms <=< replaceTypeWildcards $ elabTy
   unifyTypes val ty1
-  inferBinder' ty1 binder
+  inferBinder ty1 binder
 inferBinder' _ OpBinder{} =
   internalError "OpBinder should have been desugared before inferBinder'"
 inferBinder' _ BinaryNoParensBinder{} =
