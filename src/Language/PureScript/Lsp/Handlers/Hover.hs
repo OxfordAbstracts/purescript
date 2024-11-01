@@ -34,7 +34,7 @@ import Language.PureScript.Lsp.State (cachedRebuild, getExportEnv)
 import Language.PureScript.Lsp.Types (ExternDependency (edExtern), OpenFile (..))
 import Language.PureScript.Lsp.Util (positionToSourcePos)
 import Language.PureScript.Sugar.Names.Env qualified as P
-import Language.PureScript.TypeChecker.IdeArtifacts (IdeArtifact (..), IdeArtifactValue (..), getArtifactsAtPosition, smallestArtifact)
+import Language.PureScript.TypeChecker.IdeArtifacts (IdeArtifact (..), IdeArtifactValue (..), getArtifactsAtPosition, smallestArtifact, debugIdeArtifact)
 import Protolude hiding (handle, to)
 import Text.PrettyPrint.Boxes (render)
 
@@ -126,6 +126,7 @@ hoverHandler = Server.requestHandler Message.SMethod_TextDocumentHover $ \req re
       -- debugLsp $ showCounts everything
       debugLsp $ "at pos len: " <> show (length atPos)
       debugLsp $ "smallest: " <> (ellipsis 512 . show) (iaValue <$> smallestArtifact atPos)
+      for_ atPos \a -> debugLsp $ debugIdeArtifact a
       case smallestArtifact atPos of
         Just (IdeArtifact {..}) ->
           case iaValue of
@@ -407,7 +408,7 @@ generatedIdent = \case
 dispayExprOnHover :: P.Expr -> T.Text
 dispayExprOnHover (P.Op _ (P.Qualified _ op)) = P.runOpName op -- Op's hit an infinite loop when pretty printed by themselves
 dispayExprOnHover (P.Case _ _) = "<case expr>" -- case expressions are too large to pretty print in hover and are on mulitple lines
-dispayExprOnHover expr = ellipsis 64 $ on1Line $ T.strip $ T.pack $ render $ P.prettyPrintValue 4 expr
+dispayExprOnHover expr = ellipsis 128 $ on1Line $ T.strip $ T.pack $ render $ P.prettyPrintValue 8 expr
 
 dispayBinderOnHover :: P.Binder -> T.Text
 dispayBinderOnHover binder = ellipsis 32 $ on1Line $ T.strip $ P.prettyPrintBinder binder

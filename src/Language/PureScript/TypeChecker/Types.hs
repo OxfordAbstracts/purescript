@@ -177,6 +177,8 @@ typesOf bindingGroupType moduleName vals = withFreshSubstitution $ do
 
       -- Check skolem variables did not escape their scope
       skolemEscapeCheck val'
+      addIdeIdent ss ident generalized
+      addIdeExpr val' generalized
       return ((sai, (foldr (Abs . VarBinder nullSourceSpan . (\(x, _, _) -> x)) val' unsolved, generalized)), unsolved)
 
     -- Show warnings here, since types in wildcards might have been solved during
@@ -190,14 +192,7 @@ typesOf bindingGroupType moduleName vals = withFreshSubstitution $ do
     forM_ tys $ \(shouldGeneralize, ((_, (_, _)), w)) ->
       raisePreviousWarnings shouldGeneralize w
       
-
-    let typedExprs = map fst inferred 
-
-    forM_ typedExprs \((ann, ident), (expr, ty) ) ->  do
-      addIdeExpr expr ty
-      addIdeIdent (fst ann) ident ty
-
-    return typedExprs
+    return $  map fst inferred 
   where
     replaceTypes
       :: Substitution
@@ -792,8 +787,13 @@ check
   => Expr
   -> SourceType
   -> m TypedValue'
-check val ty = withErrorMessageHint' val (ErrorCheckingType val ty) $ check' val ty
+check val ty = withErrorMessageHint' val (ErrorCheckingType val ty) $ checkAndAddToIde val ty
 
+checkAndAddToIde :: (MonadSupply m, MonadState CheckState m, MonadError MultipleErrors m, MonadWriter MultipleErrors m) 
+  => Expr -> SourceType -> m TypedValue'
+checkAndAddToIde val ty = do
+  tv <- check' val ty
+  addTypedValueToIde tv
 -- |
 -- Check the type of a value
 --
@@ -908,7 +908,7 @@ check' e@(Literal ss (ObjectLiteral ps)) t@(TypeApp _ obj row) | obj == tyRecord
   return $ TypedValue' True (Literal ss (ObjectLiteral ps')) t
 check' (DerivedInstancePlaceholder name strategy) t = do
   d <- deriveInstance t name strategy
-  d' <- tvToExpr <$> check' d t
+  d' <- tvToExpr <$> checkAndAddToIde d t
   return $ TypedValue' True d' t
 check' e@(ObjectUpdate obj ps) t@(TypeApp _ o row) | o == tyRecord = do
   ensureNoDuplicateProperties ps
@@ -938,10 +938,10 @@ check' (Let w ds val) ty = do
   return $ TypedValue' True (Let w ds' (tvToExpr val')) ty
 check' val kt@(KindedType _ ty kind) = do
   checkTypeKind ty kind
-  val' <- tvToExpr <$> check' val ty
+  val' <- tvToExpr <$> checkAndAddToIde val ty
   return $ TypedValue' True val' kt
 check' (PositionedValue pos c val) ty = warnAndRethrowWithPositionTC pos $ do
-  TypedValue' t v ty' <- check' val ty
+  TypedValue' t v ty' <- checkAndAddToIde val ty
   return $ TypedValue' t (PositionedValue pos c v) ty'
 check' val ty = do
   TypedValue' _ val' ty' <- infer val
