@@ -27,7 +27,7 @@ import Language.PureScript.Names (Ident(..), ModuleName, ProperName(..), ProperN
 import Language.PureScript.Pretty.Types (prettyPrintType)
 import Language.PureScript.Pretty.Values (prettyPrintValue)
 import Language.PureScript.TypeClassDictionaries (NamedDict, TypeClassDictionaryInScope(..))
-import Language.PureScript.Types (Constraint(..), SourceType, Type(..), srcKindedType, srcTypeVar, replaceAllTypeVars)
+import Language.PureScript.Types (Constraint(..), SourceType, Type(..), srcKindedType, srcTypeVar)
 import Text.PrettyPrint.Boxes (render)
 import Language.PureScript.TypeChecker.IdeArtifacts (IdeArtifacts, emptyIdeArtifacts, insertIaExpr, insertIaBinder, insertIaIdent, insertIaDecl, insertIaType, insertIaTypeName, insertIaClassName, moduleNameFromQual)
 import Protolude (whenM)
@@ -393,9 +393,7 @@ addIdeIdent :: MonadState CheckState m => SourceSpan -> Ident -> SourceType -> m
 addIdeIdent ss ident ty  = onIdeArtifacts $ insertIaIdent ss ident ty 
 
 addIdeExpr ::  MonadState CheckState m => Expr -> SourceType -> m ()
-addIdeExpr expr ty = do 
-  vars <- gets $ substUnsolved . checkSubstitution
-  onIdeArtifacts $ insertIaExpr expr (replaceAllTypeVars vars ty)
+addIdeExpr expr ty = onIdeArtifacts $ insertIaExpr expr ty
 
 addIdeType ::  MonadState CheckState m => SourceType -> SourceType -> m ()
 addIdeType expr ty = onIdeArtifacts $ insertIaType expr ty
