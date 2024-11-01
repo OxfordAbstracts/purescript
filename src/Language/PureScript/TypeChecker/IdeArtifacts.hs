@@ -93,7 +93,17 @@ artifactInterest (IdeArtifact {..}) = case iaValue of
   IaBinder {} -> 1
   IaTypeName {} -> 1
   IaClassName {} -> 1
+  IaExpr _ -> negate (countUnkownsAndVars iaType) -- Prefer expressions with fewer unknowns and type vars
   _ -> 0
+
+
+countUnkownsAndVars :: P.Type a -> Int
+countUnkownsAndVars = P.everythingOnTypes (+) go where
+  go :: P.Type a -> Int
+  go (P.TUnknown _ _) = 1
+  go (P.TypeVar _ _) = 1
+  go _ = 0
+
 
 getArtifactsAtPosition :: P.SourcePos -> IdeArtifacts -> [IdeArtifact]
 getArtifactsAtPosition pos (IdeArtifacts m) =
@@ -176,12 +186,16 @@ linesFromSpan ss = [P.sourcePosLine $ P.spanStart ss .. P.sourcePosLine $ P.span
 generatedExpr :: P.Expr -> Bool
 generatedExpr = \case
   P.Var _ ident -> generatedIdent $ P.disqualify ident
+  P.Constructor _ q -> generatedName $ P.disqualify q
   P.Abs b e -> generatedBinder b || generatedExpr e
   P.App e e' -> generatedExpr e || generatedExpr e'
   P.TypedValue _ e _ -> generatedExpr e
   P.PositionedValue _ _ e -> generatedExpr e
   P.Case es _ -> any generatedExpr es
   _ -> False
+
+generatedName :: P.ProperName a -> Bool
+generatedName = T.isSuffixOf "$Dict" . P.runProperName
 
 generatedBinder :: P.Binder -> Bool
 generatedBinder = \case
@@ -212,11 +226,11 @@ debugIdeArtifact (IdeArtifact {..}) =
 
 debugIdeArtifactValue :: IdeArtifactValue -> Text
 debugIdeArtifactValue = \case
-  IaExpr expr -> "Expr: " <> T.pack (take 32 $ render $ P.prettyPrintValue 5 expr) <> ")"
+  IaExpr expr -> "Expr: " <> T.pack (take 64 $ render $ P.prettyPrintValue 5 expr) 
   IaDecl d -> "Decl: " <> maybe "_" printName (P.declName d)
   IaBinder binder -> "Binder: " <> show binder
   IaIdent ident -> "Ident: " <> ident
-  IaType t -> "Type " <> debugType t <> ")"
+  IaType t -> "Type " <> debugType t 
   IaTypeName name -> "TypeName: " <> P.runProperName name
   IaClassName name -> "ClassName: " <> P.runProperName name
 
