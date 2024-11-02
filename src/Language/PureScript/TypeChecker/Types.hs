@@ -1031,7 +1031,7 @@ checkFunctionApplication' fn (TypeApp ann (TypeApp ann' tyFunction' argTy) retTy
     let 
         retTy' = case argTy of
           TypeVar _ v -> replaceTypeVars v argTy' retTy
-          TUnknown _ u -> replaceUnknown u argTy' retTy
+          TUnknown _ u -> replaceUnknowns u argTy' retTy
           _ -> retTy
     addIdeExpr ("1028: " <> T.pack (show argTy)) fn (TypeApp ann (TypeApp ann' tyFunction' argTy') retTy')
   return (retTy, App fn arg')
@@ -1045,6 +1045,18 @@ checkFunctionApplication' fn (KindedType _ ty _) arg =
 checkFunctionApplication' fn (ConstrainedType _ con fnTy) arg = do
   dicts <- getTypeClassDictionaries
   hints <- getHints
+  whenM (gets checkAddIdeArtifacts) do
+    case fnTy of 
+      TypeApp ann (TypeApp ann' tyFunction' argTy) retTy -> do
+        (TypedValue' _ _ argTy') <- check arg argTy
+        let 
+          retTy' = case argTy' of
+            TypeVar _ v -> replaceTypeVars v argTy' retTy
+            TUnknown _ u -> replaceUnknowns u argTy' retTy
+            _ -> retTy
+        addIdeExpr ("1056: " <> T.pack (show argTy)) fn (TypeApp ann (TypeApp ann' tyFunction' argTy') retTy')
+      _ -> pure ()
+    -- addIdeExpr "1049" fn (ConstrainedType con fnTy)
   checkFunctionApplication' (App fn (TypeClassDictionary con dicts hints)) fnTy arg
 checkFunctionApplication' fn fnTy dict@TypeClassDictionary{} =
   return (fnTy, App fn dict)
@@ -1055,11 +1067,12 @@ checkFunctionApplication' fn u arg = do
     return $ TypedValue' True arg'' t'
   ret <- freshTypeWithKind kindType
   unifyTypes u (function ty ret)
-  addIdeExpr "1050" fn (function ty ret)
+  addIdeExpr "69" fn (function ty ret)
   return (ret, App fn (tvToExpr tv))
 
-replaceUnknown :: Int -> SourceType -> Type SourceAnn -> Type SourceAnn
-replaceUnknown i replacement  = everywhereOnTypes go
+
+replaceUnknowns :: Int -> SourceType -> Type SourceAnn -> Type SourceAnn
+replaceUnknowns i replacement  = everywhereOnTypes go
   where
   go (TUnknown _ j) | i == j = replacement
   go other = other
