@@ -175,10 +175,10 @@ inferKind = \tyToInfer ->
           throwError . errorMessage' (fst ann) . UnknownName . fmap TyName $ v
         Just (kind, E.LocalTypeVariable) -> do
           kind' <- apply kind
-          addIdeTypeNameQual (fst ann) v kind'
+          addIdeTypeNameQual (fst ann) v (kind' $> ann)
           pure (ty, kind' $> ann)
         Just (kind, _) -> do
-          addIdeTypeNameQual (fst ann) v kind
+          addIdeTypeNameQual (fst ann) v (kind $> ann)
           pure (ty, kind $> ann)
     ConstrainedType ann' con@(Constraint ann v _ _ _) ty -> do
       env <- getEnv

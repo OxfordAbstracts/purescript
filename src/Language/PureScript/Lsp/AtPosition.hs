@@ -224,7 +224,7 @@ debugExpr =
     . T.replace "SourcePos {sourcePosLine = " ""
     . T.replace "SourceSpan {spanEnd = SourcePos {sourcePosLine =  " "end = "
     . T.replace "SourceSpan {spanStart = SourcePos {sourcePosLine =  " "start = "
-    . T.replace "spanName = \"/Users/rorycampbell/Documents/projects/oa/application/purs-projects/lib/oa-common/src/general/AwsLambda.purs\", " ""
+    . T.replace "spanName = \"/Users/rorycampbell/Documents/projects/simple-purs/src/B.purs\", " ""
     . show
 
 debugSrcSpan :: P.SourceSpan -> Text
@@ -233,7 +233,7 @@ debugSrcSpan =
     . T.replace "SourcePos {sourcePosLine = " ""
     . T.replace "SourceSpan {spanEnd = SourcePos {sourcePosLine =  " "end = "
     . T.replace "SourceSpan {spanStart = SourcePos {sourcePosLine =  " "start = "
-    . T.replace "spanName = \"/Users/rorycampbell/Documents/projects/oa/application/purs-projects/lib/oa-common/src/general/AwsLambda.purs\", " ""
+    . T.replace "spanName = \"/Users/rorycampbell/Documents/projects/simple-purs/src/B.purs\", " ""
     . show
 
 -- getDeclTypesAtPos :: Types.Position -> P.Declaration -> [P.SourceType]

@@ -26,7 +26,7 @@ f
 -}
 
 import Prelude
-import Protolude (ordNub, fold, atMay, (>=>))
+import Protolude (ordNub, fold, atMay, (>=>), whenM)
 
 import Control.Arrow (first, second, (***))
 import Control.Monad (forM, forM_, guard, replicateM, unless, when, zipWithM, (<=<))
@@ -64,6 +64,7 @@ import Language.PureScript.TypeChecker.Unify (freshTypeWithKind, replaceTypeWild
 import Language.PureScript.Types
 import Language.PureScript.Label (Label(..))
 import Language.PureScript.PSString (PSString)
+import Data.Text qualified as T
 
 data BindingGroupType
   = RecursiveBindingGroup
@@ -178,7 +179,7 @@ typesOf bindingGroupType moduleName vals = withFreshSubstitution $ do
       -- Check skolem variables did not escape their scope
       skolemEscapeCheck val'
       addIdeIdent ss ident generalized
-      addIdeExpr val' generalized
+      addIdeExpr "181" val' generalized
       return ((sai, (foldr (Abs . VarBinder nullSourceSpan . (\(x, _, _) -> x)) val' unsolved, generalized)), unsolved)
 
     -- Show warnings here, since types in wildcards might have been solved during
@@ -378,7 +379,7 @@ inferAndAddToIde = infer' >=> addTypedValueToIde
 
 addTypedValueToIde :: MonadState CheckState m => TypedValue' -> m TypedValue'
 addTypedValueToIde tv@(TypedValue' _ expr ty)  = do 
-  addIdeExpr expr ty 
+  addIdeExpr "standard" expr ty 
   pure tv
 
 -- | Infer a type for a value
@@ -932,6 +933,7 @@ check' v@(Constructor _ c) ty = do
       repl <- introduceSkolemScope <=< replaceAllTypeSynonyms $ ty1
       ty' <- introduceSkolemScope <=< replaceAllTypeSynonyms $ ty
       elaborate <- subsumes repl ty'
+      addIdeExpr "935" v repl
       return $ TypedValue' True (elaborate v) ty'
 check' (Let w ds val) ty = do
   (ds', val') <- inferLetBinding [] ds val (`check` ty)
@@ -1021,9 +1023,17 @@ checkFunctionApplication'
   -> SourceType
   -> Expr
   -> m (SourceType, Expr)
-checkFunctionApplication' fn (TypeApp _ (TypeApp _ tyFunction' argTy) retTy) arg = do
+checkFunctionApplication' fn (TypeApp ann (TypeApp ann' tyFunction' argTy) retTy) arg = do
   unifyTypes tyFunction' tyFunction
-  arg' <- tvToExpr <$> check arg argTy
+  tv@(TypedValue' _ _ argTy') <- check arg argTy
+  let arg' = tvToExpr tv
+  whenM (gets checkAddIdeArtifacts) do
+    let 
+        retTy' = case argTy of
+          TypeVar _ v -> replaceTypeVars v argTy' retTy
+          TUnknown _ u -> replaceUnknown u argTy' retTy
+          _ -> retTy
+    addIdeExpr ("1028: " <> T.pack (show argTy)) fn (TypeApp ann (TypeApp ann' tyFunction' argTy') retTy')
   return (retTy, App fn arg')
 checkFunctionApplication' fn (ForAll _ _ ident mbK ty _) arg = do
   u <- maybe (internalCompilerError "Unelaborated forall") freshTypeWithKind mbK
@@ -1045,7 +1055,14 @@ checkFunctionApplication' fn u arg = do
     return $ TypedValue' True arg'' t'
   ret <- freshTypeWithKind kindType
   unifyTypes u (function ty ret)
+  addIdeExpr "1050" fn (function ty ret)
   return (ret, App fn (tvToExpr tv))
+
+replaceUnknown :: Int -> SourceType -> Type SourceAnn -> Type SourceAnn
+replaceUnknown i replacement  = everywhereOnTypes go
+  where
+  go (TUnknown _ j) | i == j = replacement
+  go other = other
 
 -- |
 -- Ensure a set of property names and value does not contain duplicate labels

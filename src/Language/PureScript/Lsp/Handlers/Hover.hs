@@ -20,7 +20,7 @@ import Language.PureScript.Docs.Convert.Single (convertComments)
 import Language.PureScript.Docs.Types qualified as Docs
 import Language.PureScript.Errors (Literal (..))
 import Language.PureScript.Ide.Error (prettyPrintTypeSingleLine)
-import Language.PureScript.Lsp.AtPosition (EverythingAtPos (..), binderSourceSpan, getEverythingAtPos, getImportRefNameType, modifySmallestBinderAtPos, modifySmallestExprAtPos, showCounts, smallestExpr', smallestType, spanToRange)
+import Language.PureScript.Lsp.AtPosition (EverythingAtPos (..), binderSourceSpan, getEverythingAtPos, getImportRefNameType, modifySmallestBinderAtPos, modifySmallestExprAtPos, showCounts, smallestExpr', smallestType, spanToRange, debugExpr)
 import Language.PureScript.Lsp.Cache (selectDependencies)
 import Language.PureScript.Lsp.Cache.Query (getAstDeclarationTypeInModule)
 import Language.PureScript.Lsp.Docs (readDeclarationDocsWithNameType, readModuleDocs)
@@ -125,12 +125,16 @@ hoverHandler = Server.requestHandler Message.SMethod_TextDocumentHover $ \req re
           atPos = getArtifactsAtPosition (positionToSourcePos startPos) (P.checkIdeArtifacts ofEndCheckState)
       -- debugLsp $ showCounts everything
       debugLsp $ "at pos len: " <> show (length atPos)
-      debugLsp $ "smallest: " <> (ellipsis 512 . show) (iaValue <$> smallestArtifact atPos)
-      for_ atPos \a -> debugLsp $ debugIdeArtifact a
+      debugLsp $ "smallest: " <> (ellipsis 512 . show) (debugExpr . iaValue <$> smallestArtifact atPos)
+      for_ atPos \a -> do 
+        debugLsp $ debugIdeArtifact a
+        case iaValue a of 
+          IaExpr label e -> debugLsp $ "Expr: " <> label <> "\n" <> debugExpr e
+          _ -> pure ()
       case smallestArtifact atPos of
         Just (IdeArtifact {..}) ->
           case iaValue of
-            IaExpr expr -> do
+            IaExpr _ expr -> do
               let inferredRes = pursTypeStr (dispayExprOnHover expr) (Just $ prettyPrintTypeSingleLine iaType) []
               foundTypes <- lookupExprTypes expr
               docs <- lookupExprDocs expr

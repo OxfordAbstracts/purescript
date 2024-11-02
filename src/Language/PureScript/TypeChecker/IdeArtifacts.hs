@@ -61,7 +61,7 @@ data IdeArtifact = IdeArtifact
   deriving (Show)
 
 data IdeArtifactValue
-  = IaExpr P.Expr
+  = IaExpr Text P.Expr
   | IaDecl P.Declaration
   | IaBinder P.Binder
   | IaIdent Text
@@ -93,7 +93,7 @@ artifactInterest (IdeArtifact {..}) = case iaValue of
   IaBinder {} -> 1
   IaTypeName {} -> 1
   IaClassName {} -> 1
-  IaExpr _ -> negate (countUnkownsAndVars iaType) -- Prefer expressions with fewer unknowns and type vars
+  IaExpr _ _ -> negate (countUnkownsAndVars iaType) -- Prefer expressions with fewer unknowns and type vars
   _ -> 0
 
 
@@ -113,9 +113,9 @@ getArtifactsAtPosition pos (IdeArtifacts m) =
   where
     posCol = P.sourcePosColumn pos
 
-insertIaExpr :: P.Expr -> P.SourceType -> IdeArtifacts -> IdeArtifacts
-insertIaExpr expr ty = case ss of
-  Just span | not (generatedExpr expr) -> insertAtLines span (IaExpr expr) ty mName defSpan
+insertIaExpr :: Text -> P.Expr -> P.SourceType -> IdeArtifacts -> IdeArtifacts
+insertIaExpr label expr ty = case ss of
+  Just span | not (generatedExpr expr) -> insertAtLines span (IaExpr label expr) ty mName defSpan
   _ -> identity
   where
     ss = P.exprSourceSpan expr
@@ -226,7 +226,7 @@ debugIdeArtifact (IdeArtifact {..}) =
 
 debugIdeArtifactValue :: IdeArtifactValue -> Text
 debugIdeArtifactValue = \case
-  IaExpr expr -> "Expr: " <> T.pack (take 64 $ render $ P.prettyPrintValue 5 expr) 
+  IaExpr label expr -> "Expr: " <> label <> "\n" <> T.pack (take 64 $ render $ P.prettyPrintValue 5 expr) 
   IaDecl d -> "Decl: " <> maybe "_" printName (P.declName d)
   IaBinder binder -> "Binder: " <> show binder
   IaIdent ident -> "Ident: " <> ident
