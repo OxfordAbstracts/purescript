@@ -65,6 +65,7 @@ import Language.PureScript.Types
 import Language.PureScript.Label (Label(..))
 import Language.PureScript.PSString (PSString)
 import Data.Text qualified as T
+import Language.PureScript.TypeChecker.IdeArtifacts (UnResolvedExpr(urType))
 
 data BindingGroupType
   = RecursiveBindingGroup
@@ -106,6 +107,7 @@ typesOf bindingGroupType moduleName vals = withFreshSubstitution $ do
       currentSubst <- gets checkSubstitution
       let ty' = substituteType currentSubst ty
           ty'' = constrain unsolved ty'
+      addIdeExpr "constrained" val ty
       unsolvedTypeVarsWithKinds <- unknownsWithKinds . IS.toList . unknowns $ constrain unsolved ty''
       let unsolvedTypeVars = IS.toList $ unknowns ty'
 
@@ -172,7 +174,7 @@ typesOf bindingGroupType moduleName vals = withFreshSubstitution $ do
         unsolvedVarNames <- traverse lookupUnkName' (S.toList unsolvedVars)
         unless (S.null unsolvedVars) .
           throwError
-            . onErrorMessages (replaceTypes currentSubst)
+            . onErrorMessages (replaceErrorTypes currentSubst)
             . errorMessage' ss
             $ AmbiguousTypeVariables generalized unsolvedVarNames
 
@@ -185,21 +187,31 @@ typesOf bindingGroupType moduleName vals = withFreshSubstitution $ do
     -- Show warnings here, since types in wildcards might have been solved during
     -- instance resolution (by functional dependencies).
     finalState <- get
-    let replaceTypes' = replaceTypes (checkSubstitution finalState)
+    let replaceErrorTypes' = replaceErrorTypes (checkSubstitution finalState)
         runTypeSearch' gen = runTypeSearch (guard gen $> foldMap snd inferred) finalState
-        raisePreviousWarnings gen = escalateWarningWhen isHoleError . tell . onErrorMessages (runTypeSearch' gen . replaceTypes')
+        raisePreviousWarnings gen = escalateWarningWhen isHoleError . tell . onErrorMessages (runTypeSearch' gen . replaceErrorTypes')
+
+        -- replaceIdeTypes = 
 
     raisePreviousWarnings False wInfer
-    forM_ tys $ \(shouldGeneralize, ((_, (_, _)), w)) ->
+    forM_ tys $ \(shouldGeneralize, ((_, (_, _)), w)) -> do
       raisePreviousWarnings shouldGeneralize w
-      
+      onUnresolvedIdeExprs $ replaceIdeExprTypes (checkSubstitution finalState)
+    
+    resolveIdeExprs
     return $  map fst inferred 
   where
-    replaceTypes
+    replaceIdeExprTypes
+      :: Substitution
+      -> UnResolvedExpr
+      -> UnResolvedExpr
+    replaceIdeExprTypes subst e = e { urType = substituteType subst (urType e) }
+
+    replaceErrorTypes
       :: Substitution
       -> ErrorMessage
       -> ErrorMessage
-    replaceTypes subst = onTypesInErrorMessage (substituteType subst)
+    replaceErrorTypes subst = onTypesInErrorMessage (substituteType subst)
 
     -- Run type search to complete any typed hole error messages
     runTypeSearch
@@ -1045,18 +1057,20 @@ checkFunctionApplication' fn (KindedType _ ty _) arg =
 checkFunctionApplication' fn (ConstrainedType _ con fnTy) arg = do
   dicts <- getTypeClassDictionaries
   hints <- getHints
-  whenM (gets checkAddIdeArtifacts) do
-    case fnTy of 
-      TypeApp ann (TypeApp ann' tyFunction' argTy) retTy -> do
-        (TypedValue' _ _ argTy') <- check arg argTy
-        let 
-          retTy' = case argTy' of
-            TypeVar _ v -> replaceTypeVars v argTy' retTy
-            TUnknown _ u -> replaceUnknowns u argTy' retTy
-            _ -> retTy
-        addIdeExpr ("1056: " <> T.pack (show argTy)) fn (TypeApp ann (TypeApp ann' tyFunction' argTy') retTy')
-      _ -> pure ()
-    -- addIdeExpr "1049" fn (ConstrainedType con fnTy)
+  let addAppliedType ty argE =
+        whenM (gets checkAddIdeArtifacts) do
+          case ty of
+            TypeApp ann (TypeApp ann' tyFunction' argTy) retTy -> do
+              (TypedValue' _ _ argTy') <- check argE argTy
+              let retTy' = case argTy of
+                    TypeVar _ v -> replaceTypeVars v argTy' retTy
+                    TUnknown _ u -> replaceUnknowns u argTy' retTy
+                    _ -> retTy
+              addIdeExpr ("1056: \n" <> T.pack (show argTy) <> "\n\n" <> T.pack (show retTy)) fn (TypeApp ann (TypeApp ann' tyFunction' argTy') retTy')
+              
+            _ -> pure ()
+
+  addAppliedType fnTy arg
   checkFunctionApplication' (App fn (TypeClassDictionary con dicts hints)) fnTy arg
 checkFunctionApplication' fn fnTy dict@TypeClassDictionary{} =
   return (fnTy, App fn dict)

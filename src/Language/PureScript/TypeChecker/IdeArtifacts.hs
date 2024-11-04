@@ -4,6 +4,7 @@ module Language.PureScript.TypeChecker.IdeArtifacts
   ( IdeArtifacts,
     IdeArtifact (..),
     IdeArtifactValue (..),
+    UnResolvedExpr (..),
     getArtifactsAtPosition,
     emptyIdeArtifacts,
     insertIaExpr,
@@ -17,6 +18,8 @@ module Language.PureScript.TypeChecker.IdeArtifacts
     insertIaClassName,
     moduleNameFromQual,
     debugIdeArtifact,
+    onUnresolvedExprs,
+    resolveExprs,
   )
 where
 
@@ -36,12 +39,16 @@ import Protolude
 import Safe (minimumByMay)
 import Text.PrettyPrint.Boxes (render)
 
-data IdeArtifacts = IdeArtifacts (Map Line [IdeArtifact]) deriving (Show)
+data IdeArtifacts
+  = IdeArtifacts
+      (Map Line [IdeArtifact]) -- with substitutions
+      (Map Line [UnResolvedExpr]) -- without substitutions
+  deriving (Show)
 
 type Line = Int
 
 emptyIdeArtifacts :: IdeArtifacts
-emptyIdeArtifacts = IdeArtifacts Map.empty
+emptyIdeArtifacts = IdeArtifacts Map.empty Map.empty
 
 debugIdeArtifacts :: IdeArtifacts -> Text
 debugIdeArtifacts = T.intercalate "\n" . fmap showCount . lineCounts
@@ -49,7 +56,7 @@ debugIdeArtifacts = T.intercalate "\n" . fmap showCount . lineCounts
     showCount :: (Int, Int) -> Text
     showCount (line, count) = show line <> ": " <> show count
     lineCounts :: IdeArtifacts -> [(Int, Int)]
-    lineCounts (IdeArtifacts m) = Map.toList m <&> fmap length
+    lineCounts (IdeArtifacts m _) = Map.toList m <&> fmap length
 
 data IdeArtifact = IdeArtifact
   { iaSpan :: P.SourceSpan,
@@ -70,13 +77,30 @@ data IdeArtifactValue
   | IaClassName (P.ProperName 'P.ClassName)
   deriving (Show)
 
--- valueCtr :: IdeArtifactValue -> Text
--- valueCtr = \case
---   IaExpr {} -> "Expr"
---   IaDecl {} -> "Decl"
---   IaBinder {} -> "Binder"
---   IaIdent {} -> "BinderIdent"
---   IaType {} -> "Type"
+data UnResolvedExpr = UnResolvedExpr
+  { urSpan :: P.SourceSpan,
+    urLabel :: Text,
+    urExpr :: P.Expr,
+    urType :: P.SourceType,
+    urDefinitionModule :: Maybe P.ModuleName,
+    urDefinitionPos :: Maybe (Either P.SourcePos P.SourceSpan)
+  }
+  deriving (Show)
+
+onUnresolvedExprs :: (UnResolvedExpr -> UnResolvedExpr) -> IdeArtifacts -> IdeArtifacts
+onUnresolvedExprs f (IdeArtifacts m u) = IdeArtifacts m (Map.map (fmap f) u)
+
+resolveExprs :: IdeArtifacts -> IdeArtifacts
+resolveExprs (IdeArtifacts m u) = IdeArtifacts (Map.unionWith (<>) m exprArtifacts) Map.empty
+  where
+    exprArtifacts :: Map Line [IdeArtifact]
+    exprArtifacts = Map.foldrWithKey resolve Map.empty u
+
+    resolve line exprs = Map.insertWith (<>) line newArtifacts
+      where
+        newArtifacts = fmap newArtifact exprs
+        newArtifact  (UnResolvedExpr {..}) = IdeArtifact urSpan (IaExpr urLabel urExpr) urType urDefinitionModule urDefinitionPos
+
 
 smallestArtifact :: [IdeArtifact] -> Maybe IdeArtifact
 smallestArtifact = minimumByMay (compare `on` (\a -> (artifactSize a, negate $ artifactInterest a)))
@@ -96,17 +120,16 @@ artifactInterest (IdeArtifact {..}) = case iaValue of
   IaExpr _ _ -> negate (countUnkownsAndVars iaType) -- Prefer expressions with fewer unknowns and type vars
   _ -> 0
 
-
 countUnkownsAndVars :: P.Type a -> Int
-countUnkownsAndVars = P.everythingOnTypes (+) go where
-  go :: P.Type a -> Int
-  go (P.TUnknown _ _) = 1
-  go (P.TypeVar _ _) = 1
-  go _ = 0
-
+countUnkownsAndVars = P.everythingOnTypes (+) go
+  where
+    go :: P.Type a -> Int
+    go (P.TUnknown _ _) = 1
+    go (P.TypeVar _ _) = 1
+    go _ = 0
 
 getArtifactsAtPosition :: P.SourcePos -> IdeArtifacts -> [IdeArtifact]
-getArtifactsAtPosition pos (IdeArtifacts m) =
+getArtifactsAtPosition pos (IdeArtifacts m _) =
   Map.lookup (P.sourcePosLine pos) m
     & fromMaybe []
     & filter (\ia -> P.sourcePosColumn (P.spanStart (iaSpan ia)) <= posCol && P.sourcePosColumn (P.spanEnd (iaSpan ia)) >= posCol)
@@ -115,7 +138,7 @@ getArtifactsAtPosition pos (IdeArtifacts m) =
 
 insertIaExpr :: Text -> P.Expr -> P.SourceType -> IdeArtifacts -> IdeArtifacts
 insertIaExpr label expr ty = case ss of
-  Just span | not (generatedExpr expr) -> insertAtLines span (IaExpr label expr) ty mName defSpan
+  Just span | not (generatedExpr expr) -> insertUnresolvedExprAtLines (UnResolvedExpr span label expr ty mName defSpan)
   _ -> identity
   where
     ss = P.exprSourceSpan expr
@@ -176,9 +199,12 @@ moduleNameFromQual (P.Qualified (P.ByModuleName mn) _) = Just mn
 moduleNameFromQual _ = Nothing
 
 insertAtLines :: P.SourceSpan -> IdeArtifactValue -> P.SourceType -> Maybe P.ModuleName -> Maybe (Either P.SourcePos P.SourceSpan) -> IdeArtifacts -> IdeArtifacts
-insertAtLines span value ty mName defSpan (IdeArtifacts m) = IdeArtifacts $ foldr insert m (linesFromSpan span)
+insertAtLines span value ty mName defSpan (IdeArtifacts m u) = IdeArtifacts (foldr insert m (linesFromSpan span)) u
   where
     insert line = Map.insertWith (<>) line [IdeArtifact span value ty mName defSpan]
+
+insertUnresolvedExprAtLines :: UnResolvedExpr -> IdeArtifacts -> IdeArtifacts
+insertUnresolvedExprAtLines expr (IdeArtifacts m u) = IdeArtifacts m (Map.insertWith (<>) (P.sourcePosLine $ P.spanStart $ urSpan expr) [expr] u)
 
 linesFromSpan :: P.SourceSpan -> [Line]
 linesFromSpan ss = [P.sourcePosLine $ P.spanStart ss .. P.sourcePosLine $ P.spanEnd ss]
@@ -226,11 +252,11 @@ debugIdeArtifact (IdeArtifact {..}) =
 
 debugIdeArtifactValue :: IdeArtifactValue -> Text
 debugIdeArtifactValue = \case
-  IaExpr label expr -> "Expr: " <> label <> "\n" <> T.pack (take 64 $ render $ P.prettyPrintValue 5 expr) 
+  IaExpr label expr -> "Expr: " <> label <> "\n" <> T.pack (take 64 $ render $ P.prettyPrintValue 5 expr)
   IaDecl d -> "Decl: " <> maybe "_" printName (P.declName d)
   IaBinder binder -> "Binder: " <> show binder
   IaIdent ident -> "Ident: " <> ident
-  IaType t -> "Type " <> debugType t 
+  IaType t -> "Type " <> debugType t
   IaTypeName name -> "TypeName: " <> P.runProperName name
   IaClassName name -> "ClassName: " <> P.runProperName name
 

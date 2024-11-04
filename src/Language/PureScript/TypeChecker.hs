@@ -341,6 +341,7 @@ typeCheckAll moduleName = traverse go
         [(_, (val'', ty))] -> do
           addValue moduleName name ty nameKind
           addIdeDecl d ty
+          addIdeIdent ss name ty
           return $ ValueDecl sa name nameKind [] [MkUnguarded val'']
         _ -> internalError "typesOf did not return a singleton"
   go ValueDeclaration{} = internalError "Binders were not desugared"

@@ -116,9 +116,10 @@ hoverHandler = Server.requestHandler Message.SMethod_TextDocumentHover $ \req re
         P.Constructor _ (P.Qualified (P.ByModuleName modName) dctor) -> do
           readDeclarationDocsWithNameType modName DctorNameType (P.runProperName dctor)
         _ -> pure Nothing
-
+  debugLsp $ "Hover request for: " <> show filePathMb
   forLsp filePathMb \filePath -> do
     cacheOpenMb <- cachedRebuild filePath
+    debugLsp $ "Cache found: " <> show (isJust cacheOpenMb)
     forLsp cacheOpenMb \OpenFile {..} -> do
       let everything = getEverythingAtPos (P.getModuleDeclarations ofModule) startPos
           respondWithCounts = markdownRes Nothing $ showCounts everything
@@ -129,7 +130,7 @@ hoverHandler = Server.requestHandler Message.SMethod_TextDocumentHover $ \req re
       for_ atPos \a -> do 
         debugLsp $ debugIdeArtifact a
         case iaValue a of 
-          IaExpr label e -> debugLsp $ "Expr: " <> label <> "\n" <> debugExpr e
+          IaExpr label e -> debugLsp $ "Expr: " <> label <> "\n" <>  (ellipsis 256 $ debugExpr e)
           _ -> pure ()
       case smallestArtifact atPos of
         Just (IdeArtifact {..}) ->
