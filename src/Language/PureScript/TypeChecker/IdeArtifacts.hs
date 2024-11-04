@@ -1,3 +1,4 @@
+{-# OPTIONS_GHC -Wno-unused-top-binds #-}
 -- | Stores information about the source code that is useful for the IDE
 -- | This includes value types and source spans
 module Language.PureScript.TypeChecker.IdeArtifacts
@@ -29,6 +30,7 @@ import Data.Text qualified as T
 import Language.PureScript.AST.Binders qualified as P
 import Language.PureScript.AST.Declarations qualified as P
 import Language.PureScript.AST.SourcePos qualified as P
+import Language.PureScript.Lsp.NameType (LspNameType (..))
 import Language.PureScript.Lsp.Print (printName)
 import Language.PureScript.Names qualified as P
 import Language.PureScript.Pretty.Types qualified as P
@@ -67,8 +69,8 @@ data IdeArtifact = IdeArtifact
   deriving (Show)
 
 data IdeArtifactValue
-  = IaExpr Text P.Expr
-  | IaDecl P.Declaration
+  = IaExpr Text (Maybe Text) (Maybe LspNameType)
+  | IaDecl (Maybe Text) (Maybe LspNameType)
   | IaBinder P.Binder
   | IaIdent Text
   | IaType P.SourceType
@@ -85,7 +87,7 @@ onArtifactType f (IdeArtifact {..}) = IdeArtifact iaSpan iaValue (f iaType) iaDe
 endSubstitutions :: IdeArtifacts -> IdeArtifacts
 endSubstitutions (IdeArtifacts m u) = IdeArtifacts (Map.unionWith (<>) m u) Map.empty
 
-smallestArtifact :: Ord a => (IdeArtifact -> a) -> [IdeArtifact] -> Maybe IdeArtifact
+smallestArtifact :: (Ord a) => (IdeArtifact -> a) -> [IdeArtifact] -> Maybe IdeArtifact
 smallestArtifact tieBreaker = minimumByMay (compare `on` (\a -> (artifactSize a, tieBreaker a)))
 
 artifactSize :: IdeArtifact -> (Int, Int)
@@ -93,8 +95,6 @@ artifactSize (IdeArtifact {..}) =
   ( P.sourcePosLine (P.spanEnd iaSpan) - P.sourcePosLine (P.spanStart iaSpan),
     P.sourcePosColumn (P.spanEnd iaSpan) - P.sourcePosColumn (P.spanStart iaSpan)
   )
-
-
 
 getArtifactsAtPosition :: P.SourcePos -> IdeArtifacts -> [IdeArtifact]
 getArtifactsAtPosition pos (IdeArtifacts m _) =
@@ -104,24 +104,50 @@ getArtifactsAtPosition pos (IdeArtifacts m _) =
   where
     posCol = P.sourcePosColumn pos
 
-insertIaExpr :: Text -> P.Expr -> P.SourceType -> IdeArtifacts -> IdeArtifacts
-insertIaExpr label expr ty = case ss of
-  Just span | not (generatedExpr expr) -> insertAtLines span (IaExpr label expr) ty mName defSpan
+insertIaExpr :: P.Expr -> P.SourceType -> IdeArtifacts -> IdeArtifacts
+insertIaExpr expr ty =  case ss of
+  Just span | not (generatedExpr expr) -> insertAtLines span (IaExpr "_" exprIdent exprNameType) ty mName defSpan
+    where
+      defSpan =
+        Left <$> case expr of
+          P.Var _ q -> posFromQual q
+          P.Constructor _ q -> posFromQual q
+          P.Op _ q -> posFromQual q
+          _ -> Nothing
+
+      mName = case expr of
+        P.Var _ q -> moduleNameFromQual q
+        P.Constructor _ q -> moduleNameFromQual q
+        P.Op _ q -> moduleNameFromQual q
+        _ -> Nothing
+
+      exprIdent :: Maybe Text
+      exprIdent = case expr of
+        P.Var _ ident -> Just $ P.runIdent $ P.disqualify ident
+        P.Constructor _ q -> Just $ P.runProperName $ P.disqualify q
+        P.Op _ q -> Just $ P.runOpName $ P.disqualify q
+        _ -> Nothing
+
+      exprNameType :: Maybe LspNameType
+      exprNameType = case expr of
+        P.Var _ _ -> Just IdentNameType
+        P.Constructor _ _ -> Just DctorNameType
+        P.Op _ _ -> Just ValOpNameType
+        _ -> Nothing
   _ -> identity
   where
     ss = P.exprSourceSpan expr
-    defSpan =
-      Left <$> case expr of
-        P.Var _ q -> posFromQual q
-        P.Constructor _ q -> posFromQual q
-        P.Op _ q -> posFromQual q
-        _ -> Nothing
 
-    mName = case expr of
-      P.Var _ q -> moduleNameFromQual q
-      P.Constructor _ q -> moduleNameFromQual q
-      P.Op _ q -> moduleNameFromQual q
-      _ -> Nothing
+printExpr :: P.Expr -> T.Text
+printExpr (P.Op _ (P.Qualified _ op)) = P.runOpName op -- `Op`s hit an infinite loop when pretty printed by themselves
+printExpr (P.Case _ _) = "<case expr>" -- case expressions are too large to pretty print in hover and are on mulitple lines
+printExpr expr = ellipsis 128 $ on1Line $ T.strip $ T.pack $ render $ P.prettyPrintValue 4 expr
+
+ellipsis :: Int -> Text -> Text
+ellipsis n t = if T.length t > n then T.take (n - 3) t <> "..." else t
+
+on1Line :: T.Text -> T.Text
+on1Line = T.intercalate " " . T.lines
 
 insertIaIdent :: P.SourceSpan -> P.Ident -> P.SourceType -> IdeArtifacts -> IdeArtifacts
 insertIaIdent ss ident ty = case ident of
@@ -134,7 +160,20 @@ insertIaBinder binder ty = case binderSourceSpan binder of
   Nothing -> identity
 
 insertIaDecl :: P.Declaration -> P.SourceType -> IdeArtifacts -> IdeArtifacts
-insertIaDecl decl ty = insertAtLines (P.declSourceSpan decl) (IaDecl decl) ty Nothing Nothing
+insertIaDecl decl ty = insertAtLines (P.declSourceSpan decl) (IaDecl (printDecl decl) (declNameType decl)) ty Nothing Nothing
+
+printDecl :: P.Declaration -> Maybe Text
+printDecl = fmap printName . P.declName
+
+declNameType :: P.Declaration -> Maybe LspNameType
+declNameType = \case
+  P.DataDeclaration {} -> Just TyNameType
+  P.TypeSynonymDeclaration {} -> Just TyNameType
+  P.TypeClassDeclaration {} -> Just TyClassNameType
+  P.TypeInstanceDeclaration {} -> Just IdentNameType
+  P.KindDeclaration {} -> Just KindNameType
+  P.ValueDeclaration {} -> Just IdentNameType
+  _ -> Nothing
 
 insertIaType :: P.SourceType -> P.SourceType -> IdeArtifacts -> IdeArtifacts
 insertIaType ty kind = insertAtLines (fst $ P.getAnnForType ty) (IaType ty) kind Nothing Nothing
@@ -170,7 +209,7 @@ insertAtLines :: P.SourceSpan -> IdeArtifactValue -> P.SourceType -> Maybe P.Mod
 insertAtLines span value ty mName defSpan (IdeArtifacts m u) = IdeArtifacts m (foldr insert u (linesFromSpan span))
   where
     insert line = Map.insertWith (<>) line [IdeArtifact span value ty mName defSpan]
-    
+
 linesFromSpan :: P.SourceSpan -> [Line]
 linesFromSpan ss = [P.sourcePosLine $ P.spanStart ss .. P.sourcePosLine $ P.spanEnd ss]
 
@@ -178,11 +217,11 @@ generatedExpr :: P.Expr -> Bool
 generatedExpr = \case
   P.Var _ ident -> generatedIdent $ P.disqualify ident
   P.Constructor _ q -> generatedName $ P.disqualify q
-  P.Abs b e -> generatedBinder b || generatedExpr e
-  P.App e e' -> generatedExpr e || generatedExpr e'
+  P.Abs b _e -> generatedBinder b 
+  -- P.App e e' -> generatedExpr e || generatedExpr e'
   P.TypedValue _ e _ -> generatedExpr e
   P.PositionedValue _ _ e -> generatedExpr e
-  P.Case es _ -> any generatedExpr es
+  -- P.Case es _ -> any generatedExpr es
   _ -> False
 
 generatedName :: P.ProperName a -> Bool
@@ -217,8 +256,8 @@ debugIdeArtifact (IdeArtifact {..}) =
 
 debugIdeArtifactValue :: IdeArtifactValue -> Text
 debugIdeArtifactValue = \case
-  IaExpr label expr -> "Expr: " <> label <> "\n" <> T.pack (take 64 $ render $ P.prettyPrintValue 5 expr)
-  IaDecl d -> "Decl: " <> maybe "_" printName (P.declName d)
+  IaExpr t _ _ -> "Expr: " <> t
+  IaDecl d _ -> "Decl: " <> fromMaybe "_" d
   IaBinder binder -> "Binder: " <> show binder
   IaIdent ident -> "Ident: " <> ident
   IaType t -> "Type " <> debugType t

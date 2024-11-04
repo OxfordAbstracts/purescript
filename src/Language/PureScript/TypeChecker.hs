@@ -295,7 +295,6 @@ typeCheckAll moduleName = traverse go
         checkDuplicateTypeArguments $ map fst args'
         let args'' = args' `withRoles` inferRoles' name args'
         addDataType moduleName dtype name args'' dataCtors ctorKind
-        -- addIdeTypeName (Just moduleName) _ name ctorKind
       for_ roleDecls $ checkRoleDeclaration moduleName
       for_ (zip clss cls_ks) $ \((deps, (sa, pn, _, _, _)), (args', implies', tys', kind)) -> do
         let qualifiedClassName = Qualified (ByModuleName moduleName) pn

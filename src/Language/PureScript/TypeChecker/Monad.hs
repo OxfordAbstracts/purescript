@@ -392,8 +392,8 @@ addIdeBinder binder ty = onIdeArtifacts $ insertIaBinder binder ty
 addIdeIdent :: MonadState CheckState m => SourceSpan -> Ident -> SourceType -> m ()
 addIdeIdent ss ident ty  = onIdeArtifacts $ insertIaIdent ss ident ty 
 
-addIdeExpr ::  MonadState CheckState m => Text -> Expr -> SourceType -> m ()
-addIdeExpr t expr ty = onIdeArtifacts $ insertIaExpr t expr ty
+addIdeExpr ::  MonadState CheckState m => Expr -> SourceType -> m ()
+addIdeExpr expr ty = onIdeArtifacts $ insertIaExpr expr ty
 
 addIdeType ::  MonadState CheckState m => SourceType -> SourceType -> m ()
 addIdeType expr ty = onIdeArtifacts $ insertIaType expr ty

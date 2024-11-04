@@ -1,5 +1,7 @@
 {-# LANGUAGE BlockArguments #-}
 {-# OPTIONS_GHC -Wno-unused-matches #-}
+{-# OPTIONS_GHC -Wno-unused-top-binds #-}
+{-# OPTIONS_GHC -Wno-unused-imports #-}
 -- |
 -- This module implements the type checker
 --
@@ -65,7 +67,6 @@ import Language.PureScript.TypeChecker.Unify (freshTypeWithKind, replaceTypeWild
 import Language.PureScript.Types
 import Language.PureScript.Label (Label(..))
 import Language.PureScript.PSString (PSString)
-import Data.Text qualified as T
 
 data BindingGroupType
   = RecursiveBindingGroup
@@ -107,7 +108,6 @@ typesOf bindingGroupType moduleName vals = withFreshSubstitution $ do
       currentSubst <- gets checkSubstitution
       let ty' = substituteType currentSubst ty
           ty'' = constrain unsolved ty'
-      addIdeExpr "constrained" val ty
       unsolvedTypeVarsWithKinds <- unknownsWithKinds . IS.toList . unknowns $ constrain unsolved ty''
       let unsolvedTypeVars = IS.toList $ unknowns ty'
 
@@ -181,7 +181,6 @@ typesOf bindingGroupType moduleName vals = withFreshSubstitution $ do
       -- Check skolem variables did not escape their scope
       skolemEscapeCheck val'
       addIdeIdent ss ident generalized
-      addIdeExpr "181" val' generalized
       return ((sai, (foldr (Abs . VarBinder nullSourceSpan . (\(x, _, _) -> x)) val' unsolved, generalized)), unsolved)
 
     -- Show warnings here, since types in wildcards might have been solved during
@@ -196,7 +195,8 @@ typesOf bindingGroupType moduleName vals = withFreshSubstitution $ do
     raisePreviousWarnings False wInfer
     forM_ tys $ \(shouldGeneralize, ((_, (_, _)), w)) -> do
       raisePreviousWarnings shouldGeneralize w
-      substituteIdeTypes $ substituteType (checkSubstitution finalState)
+      -- when shouldGeneralize do 
+      --   substituteIdeTypes $ substituteType (checkSubstitution finalState)
     
     return $  map fst inferred 
   where
@@ -384,7 +384,7 @@ inferAndAddToIde = infer' >=> addTypedValueToIde
 
 addTypedValueToIde :: MonadState CheckState m => TypedValue' -> m TypedValue'
 addTypedValueToIde tv@(TypedValue' _ expr ty)  = do 
-  addIdeExpr "standard" expr ty 
+  addIdeExpr expr ty 
   pure tv
 
 -- | Infer a type for a value
@@ -938,7 +938,6 @@ check' v@(Constructor _ c) ty = do
       repl <- introduceSkolemScope <=< replaceAllTypeSynonyms $ ty1
       ty' <- introduceSkolemScope <=< replaceAllTypeSynonyms $ ty
       elaborate <- subsumes repl ty'
-      addIdeExpr "935" v repl
       return $ TypedValue' True (elaborate v) ty'
 check' (Let w ds val) ty = do
   (ds', val') <- inferLetBinding [] ds val (`check` ty)
@@ -1050,20 +1049,20 @@ checkFunctionApplication' fn (KindedType _ ty _) arg =
 checkFunctionApplication' fn (ConstrainedType _ con fnTy) arg = do
   dicts <- getTypeClassDictionaries
   hints <- getHints
-  let addAppliedType ty argE =
-        whenM (gets checkAddIdeArtifacts) do
-          case ty of
-            TypeApp ann (TypeApp ann' tyFunction' argTy) retTy -> do
-              (TypedValue' _ _ argTy') <- check argE argTy
-              let retTy' = case argTy of
-                    TypeVar _ v -> replaceTypeVars v argTy' retTy
-                    TUnknown _ u -> replaceUnknowns u argTy' retTy
-                    _ -> retTy
-              addIdeExpr ("1056: \n" <> T.pack (show argTy) <> "\n\n" <> T.pack (show retTy)) fn (TypeApp ann (TypeApp ann' tyFunction' argTy') retTy')
+  -- let addAppliedType ty argE =
+  --       whenM (gets checkAddIdeArtifacts) do
+  --         case ty of
+  --           TypeApp ann (TypeApp ann' tyFunction' argTy) retTy -> do
+  --             (TypedValue' _ _ argTy') <- check argE argTy
+  --             let retTy' = case argTy of
+  --                   TypeVar _ v -> replaceTypeVars v argTy' retTy
+  --                   TUnknown _ u -> replaceUnknowns u argTy' retTy
+  --                   _ -> retTy
+  --             addIdeExpr fn (TypeApp ann (TypeApp ann' tyFunction' argTy') retTy')
               
-            _ -> pure ()
+  --           _ -> pure ()
 
-  addAppliedType fnTy arg
+  -- addAppliedType fnTy arg
   checkFunctionApplication' (App fn (TypeClassDictionary con dicts hints)) fnTy arg
 checkFunctionApplication' fn fnTy dict@TypeClassDictionary{} =
   return (fnTy, App fn dict)

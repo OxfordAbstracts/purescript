@@ -20,13 +20,11 @@ import Language.PureScript.Lsp.Docs (readDeclarationDocsWithNameType)
 import Language.PureScript.Lsp.Log (debugLsp)
 import Language.PureScript.Lsp.Monad (HandlerM)
 import Language.PureScript.Lsp.NameType (LspNameType (..))
-import Language.PureScript.Lsp.Print (printName)
 import Language.PureScript.Lsp.State (cachedRebuild)
 import Language.PureScript.Lsp.Types (OpenFile (..))
 import Language.PureScript.Lsp.Util (positionToSourcePos)
 import Language.PureScript.TypeChecker.IdeArtifacts (IdeArtifact (..), IdeArtifactValue (..), getArtifactsAtPosition, smallestArtifact)
 import Protolude hiding (handle, to)
-import Text.PrettyPrint.Boxes (render)
 
 hoverHandler :: Server.Handlers HandlerM
 hoverHandler = Server.requestHandler Message.SMethod_TextDocumentHover $ \req res -> do
@@ -41,29 +39,16 @@ hoverHandler = Server.requestHandler Message.SMethod_TextDocumentHover $ \req re
       forLsp :: Maybe a -> (a -> HandlerM ()) -> HandlerM ()
       forLsp val f = maybe nullRes f val
 
-      lookupExprTypes :: P.Expr -> HandlerM [Text]
-      lookupExprTypes = \case
-        P.Var _ (P.Qualified (P.ByModuleName modName) ident) -> do
-          fmap (showTypeSection modName (P.runIdent ident)) <$> getAstDeclarationTypeInModule (Just IdentNameType) modName (P.runIdent ident)
-        P.Op _ (P.Qualified (P.ByModuleName modName) op) -> do
-          fmap (showTypeSection modName (P.runOpName op)) <$> getAstDeclarationTypeInModule (Just ValOpNameType) modName (P.runOpName op)
-        P.Constructor _ (P.Qualified (P.ByModuleName modName) dctor) -> do
-          fmap (showTypeSection modName (P.runProperName dctor)) <$> getAstDeclarationTypeInModule (Just DctorNameType) modName (P.runProperName dctor)
-        P.TypedValue _ e _ | not (generatedExpr e) -> do
-          lookupExprTypes e
-        P.PositionedValue _ _ e | not (generatedExpr e) -> do
-          lookupExprTypes e
-        _ -> pure []
+      lookupExprTypes :: Maybe Text -> Maybe P.ModuleName -> Maybe LspNameType -> HandlerM [Text]
+      lookupExprTypes (Just ident) (Just modName) nameType = 
+          fmap (showTypeSection modName  ident) <$> getAstDeclarationTypeInModule nameType modName ident
+      lookupExprTypes _ _ _ = pure []
 
-      lookupExprDocs :: P.Expr -> HandlerM (Maybe Text)
-      lookupExprDocs = \case
-        P.Var _ (P.Qualified (P.ByModuleName modName) ident) -> do
-          readDeclarationDocsWithNameType modName IdentNameType (P.runIdent ident)
-        P.Op _ (P.Qualified (P.ByModuleName modName) op) -> do
-          readDeclarationDocsWithNameType modName ValOpNameType (P.runOpName op)
-        P.Constructor _ (P.Qualified (P.ByModuleName modName) dctor) -> do
-          readDeclarationDocsWithNameType modName DctorNameType (P.runProperName dctor)
-        _ -> pure Nothing
+      lookupExprDocs :: Maybe Text -> Maybe P.ModuleName -> Maybe LspNameType -> HandlerM (Maybe Text)
+      lookupExprDocs (Just ident) (Just modName) (Just nameType) = 
+          readDeclarationDocsWithNameType modName nameType ident
+      lookupExprDocs _ _ _ = pure Nothing
+
   forLsp filePathMb \filePath -> do
     cacheOpenMb <- cachedRebuild filePath
     debugLsp $ "Cache found: " <> show (isJust cacheOpenMb)
@@ -73,10 +58,10 @@ hoverHandler = Server.requestHandler Message.SMethod_TextDocumentHover $ \req re
       case smallestArtifact (negate . artifactInterest) atPos of
         Just (IdeArtifact {..}) ->
           case iaValue of
-            IaExpr _ expr -> do
-              let inferredRes = pursTypeStr (dispayExprOnHover expr) (Just $ prettyPrintTypeSingleLine iaType) []
-              foundTypes <- lookupExprTypes expr
-              docs <- lookupExprDocs expr
+            IaExpr exprTxt ident nameType -> do
+              let inferredRes = pursTypeStr exprTxt (Just $ prettyPrintTypeSingleLine iaType) []
+              foundTypes <- lookupExprTypes ident iaDefinitionModule nameType
+              docs <- lookupExprDocs ident iaDefinitionModule nameType
               markdownRes (Just $ spanToRange iaSpan) $
                 joinMarkup
                   [ Just inferredRes,
@@ -112,8 +97,8 @@ hoverHandler = Server.requestHandler Message.SMethod_TextDocumentHover $ \req re
             IaBinder binder -> do
               let inferredRes = pursTypeStr (dispayBinderOnHover binder) (Just $ prettyPrintTypeSingleLine iaType) []
               markdownRes (spanToRange <$> binderSourceSpan binder) inferredRes
-            IaDecl decl -> do
-              markdownRes (Just $ spanToRange iaSpan) $ pursTypeStr (maybe "_" printName $ P.declName decl) (Just $ prettyPrintTypeSingleLine iaType) []
+            IaDecl decl _ -> do
+              markdownRes (Just $ spanToRange iaSpan) $ pursTypeStr (fromMaybe "_" decl) (Just $ prettyPrintTypeSingleLine iaType) []
             IaType ty -> do
               markdownRes (Just $ spanToRange iaSpan) $ pursTypeStr (prettyPrintTypeSingleLine ty) (Just $ prettyPrintTypeSingleLine iaType) []
         _ -> nullRes
@@ -133,7 +118,7 @@ artifactInterest (IdeArtifact {..}) = case iaValue of
   IaBinder {} -> 1
   IaTypeName {} -> 1
   IaClassName {} -> 1
-  IaExpr _ _ -> negate (countUnkownsAndVars iaType) -- Prefer expressions with fewer unknowns and type vars
+  IaExpr _ _ _ -> negate (countUnkownsAndVars iaType) -- Prefer expressions with fewer unknowns and type vars
   _ -> 0
 
 countUnkownsAndVars :: P.Type a -> Int
@@ -143,32 +128,6 @@ countUnkownsAndVars = P.everythingOnTypes (+) go
     go (P.TUnknown _ _) = 1
     go (P.TypeVar _ _) = 1
     go _ = 0
-
-generatedExpr :: P.Expr -> Bool
-generatedExpr = \case
-  P.Var _ ident -> generatedIdent $ P.disqualify ident
-  P.Abs b e -> generatedBinder b || generatedExpr e
-  P.App e e' -> generatedExpr e || generatedExpr e'
-  P.TypedValue _ e _ -> generatedExpr e
-  P.PositionedValue _ _ e -> generatedExpr e
-  P.Case es _ -> any generatedExpr es
-  _ -> False
-
-generatedBinder :: P.Binder -> Bool
-generatedBinder = \case
-  P.VarBinder ss ident -> (ss == P.nullSourceSpan) || generatedIdent ident
-  P.NamedBinder ss ident _ -> (ss == P.nullSourceSpan) || generatedIdent ident
-  _ -> False
-
-generatedIdent :: P.Ident -> Bool
-generatedIdent = \case
-  P.GenIdent {} -> True
-  _ -> False
-
-dispayExprOnHover :: P.Expr -> T.Text
-dispayExprOnHover (P.Op _ (P.Qualified _ op)) = P.runOpName op -- Op's hit an infinite loop when pretty printed by themselves
-dispayExprOnHover (P.Case _ _) = "<case expr>" -- case expressions are too large to pretty print in hover and are on mulitple lines
-dispayExprOnHover expr = ellipsis 128 $ on1Line $ T.strip $ T.pack $ render $ P.prettyPrintValue 8 expr
 
 dispayBinderOnHover :: P.Binder -> T.Text
 dispayBinderOnHover binder = ellipsis 32 $ on1Line $ T.strip $ P.prettyPrintBinder binder
