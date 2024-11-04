@@ -195,8 +195,8 @@ typesOf bindingGroupType moduleName vals = withFreshSubstitution $ do
     raisePreviousWarnings False wInfer
     forM_ tys $ \(shouldGeneralize, ((_, (_, _)), w)) -> do
       raisePreviousWarnings shouldGeneralize w
-      -- when shouldGeneralize do 
-      --   substituteIdeTypes $ substituteType (checkSubstitution finalState)
+      when shouldGeneralize do 
+        substituteIdeTypes $ substituteType (checkSubstitution finalState)
     
     return $  map fst inferred 
   where
