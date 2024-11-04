@@ -29,7 +29,7 @@ import Language.PureScript.Pretty.Values (prettyPrintValue)
 import Language.PureScript.TypeClassDictionaries (NamedDict, TypeClassDictionaryInScope(..))
 import Language.PureScript.Types (Constraint(..), SourceType, Type(..), srcKindedType, srcTypeVar)
 import Text.PrettyPrint.Boxes (render)
-import Language.PureScript.TypeChecker.IdeArtifacts (IdeArtifacts, emptyIdeArtifacts, insertIaExpr, insertIaBinder, insertIaIdent, insertIaDecl, insertIaType, insertIaTypeName, insertIaClassName, moduleNameFromQual, onUnresolvedExprs, UnResolvedExpr, resolveExprs)
+import Language.PureScript.TypeChecker.IdeArtifacts (IdeArtifacts, emptyIdeArtifacts, insertIaExpr, insertIaBinder, insertIaIdent, insertIaDecl, insertIaType, insertIaTypeName, insertIaClassName, moduleNameFromQual, substituteArtifactTypes, endSubstitutions)
 import Protolude (whenM)
 import Language.PureScript.AST.Binders (Binder)
 import Language.PureScript.AST.Declarations (Declaration)
@@ -414,11 +414,11 @@ onIdeArtifacts :: MonadState CheckState m => (IdeArtifacts -> IdeArtifacts) -> m
 onIdeArtifacts f = whenM (gets checkAddIdeArtifacts)  
   $ modify $ \env -> env { checkIdeArtifacts = f (checkIdeArtifacts env) }
 
-onUnresolvedIdeExprs :: MonadState CheckState m => (UnResolvedExpr -> UnResolvedExpr) -> m ()
-onUnresolvedIdeExprs = onIdeArtifacts . onUnresolvedExprs
+substituteIdeTypes :: MonadState CheckState m => (SourceType -> SourceType) -> m ()
+substituteIdeTypes = onIdeArtifacts . substituteArtifactTypes
 
-resolveIdeExprs :: MonadState CheckState m => m ()
-resolveIdeExprs = onIdeArtifacts resolveExprs
+endIdeSubstitutions :: MonadState CheckState m => m ()
+endIdeSubstitutions = onIdeArtifacts endSubstitutions
 
 debugEnv :: Environment -> [String]
 debugEnv env = join

@@ -1,4 +1,5 @@
 {-# LANGUAGE BlockArguments #-}
+{-# OPTIONS_GHC -Wno-unused-matches #-}
 -- |
 -- This module implements the type checker
 --
@@ -65,7 +66,6 @@ import Language.PureScript.Types
 import Language.PureScript.Label (Label(..))
 import Language.PureScript.PSString (PSString)
 import Data.Text qualified as T
-import Language.PureScript.TypeChecker.IdeArtifacts (UnResolvedExpr(urType))
 
 data BindingGroupType
   = RecursiveBindingGroup
@@ -196,17 +196,10 @@ typesOf bindingGroupType moduleName vals = withFreshSubstitution $ do
     raisePreviousWarnings False wInfer
     forM_ tys $ \(shouldGeneralize, ((_, (_, _)), w)) -> do
       raisePreviousWarnings shouldGeneralize w
-      onUnresolvedIdeExprs $ replaceIdeExprTypes (checkSubstitution finalState)
+      substituteIdeTypes $ substituteType (checkSubstitution finalState)
     
-    resolveIdeExprs
     return $  map fst inferred 
   where
-    replaceIdeExprTypes
-      :: Substitution
-      -> UnResolvedExpr
-      -> UnResolvedExpr
-    replaceIdeExprTypes subst e = e { urType = substituteType subst (urType e) }
-
     replaceErrorTypes
       :: Substitution
       -> ErrorMessage
@@ -1039,13 +1032,13 @@ checkFunctionApplication' fn (TypeApp ann (TypeApp ann' tyFunction' argTy) retTy
   unifyTypes tyFunction' tyFunction
   tv@(TypedValue' _ _ argTy') <- check arg argTy
   let arg' = tvToExpr tv
-  whenM (gets checkAddIdeArtifacts) do
-    let 
-        retTy' = case argTy of
-          TypeVar _ v -> replaceTypeVars v argTy' retTy
-          TUnknown _ u -> replaceUnknowns u argTy' retTy
-          _ -> retTy
-    addIdeExpr ("1028: " <> T.pack (show argTy)) fn (TypeApp ann (TypeApp ann' tyFunction' argTy') retTy')
+  -- whenM (gets checkAddIdeArtifacts) do
+  --   let 
+  --       retTy' = case argTy of
+  --         TypeVar _ v -> replaceTypeVars v argTy' retTy
+  --         TUnknown _ u -> replaceUnknowns u argTy' retTy
+  --         _ -> retTy
+  --   addIdeExpr ("1028: " <> T.pack (show argTy)) fn (TypeApp ann (TypeApp ann' tyFunction' argTy') retTy')
   return (retTy, App fn arg')
 checkFunctionApplication' fn (ForAll _ _ ident mbK ty _) arg = do
   u <- maybe (internalCompilerError "Unelaborated forall") freshTypeWithKind mbK
@@ -1081,7 +1074,6 @@ checkFunctionApplication' fn u arg = do
     return $ TypedValue' True arg'' t'
   ret <- freshTypeWithKind kindType
   unifyTypes u (function ty ret)
-  addIdeExpr "69" fn (function ty ret)
   return (ret, App fn (tvToExpr tv))
 
 
