@@ -813,7 +813,7 @@ exprCtr (Op _ _) = "Op"
 exprCtr (IfThenElse _ _ _) = "IfThenElse"
 exprCtr (Constructor _ _) = "Constructor"
 exprCtr (Case _ _) = "Case"
-exprCtr (TypedValue _ _ _) = "TypedValue"
+exprCtr (TypedValue _ e _) = "TypedValue " <> exprCtr e
 exprCtr (Let _ _ _) = "Let"
 exprCtr (Do _ _) = "Do"
 exprCtr (Ado _ _ _) = "Ado"
@@ -822,7 +822,7 @@ exprCtr (DeferredDictionary _ _) = "DeferredDictionary"
 exprCtr (DerivedInstancePlaceholder _ _) = "DerivedInstancePlaceholder"
 exprCtr AnonymousArgument = "AnonymousArgument"
 exprCtr (Hole _) = "Hole"
-exprCtr (PositionedValue _ _ _) = "PositionedValue"
+exprCtr (PositionedValue _ _ e) = "PositionedValue " <> exprCtr e
 
 
 exprSourceSpan :: Expr -> Maybe SourceSpan

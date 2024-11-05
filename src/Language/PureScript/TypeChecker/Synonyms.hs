@@ -60,3 +60,5 @@ replaceAllTypeSynonyms :: (e ~ MultipleErrors, MonadState CheckState m, MonadErr
 replaceAllTypeSynonyms d = do
   env <- getEnv
   either throwError return $ replaceAllTypeSynonyms' (typeSynonyms env) (types env) d
+
+-- todo track synonymns

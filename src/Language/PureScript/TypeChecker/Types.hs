@@ -195,8 +195,7 @@ typesOf bindingGroupType moduleName vals = withFreshSubstitution $ do
     raisePreviousWarnings False wInfer
     forM_ tys $ \(shouldGeneralize, ((_, (_, _)), w)) -> do
       raisePreviousWarnings shouldGeneralize w
-      when shouldGeneralize do 
-        substituteIdeTypes $ substituteType (checkSubstitution finalState)
+      substituteIdeTypes $ removeRedundantConstraints . substituteType (checkSubstitution finalState)
     
     return $  map fst inferred 
   where
@@ -233,6 +232,20 @@ typesOf bindingGroupType moduleName vals = withFreshSubstitution $ do
     isHoleError :: ErrorMessage -> Bool
     isHoleError (ErrorMessage _ HoleInferredType{}) = True
     isHoleError _ = False
+
+removeRedundantConstraints :: SourceType -> SourceType
+removeRedundantConstraints = \case 
+  ConstrainedType _ con ty | isRedundant con  -> ty
+  ty -> ty
+  where 
+    isRedundant :: SourceConstraint -> Bool
+    isRedundant (Constraint _ _ _ tys _) = all isTyCtr tys
+
+    isTyCtr :: SourceType -> Bool
+    isTyCtr = \case 
+      TypeConstructor _ _ -> True
+      _ -> False
+
 
 -- | A binding group contains multiple value definitions, some of which are typed
 -- and some which are not.
@@ -501,9 +514,11 @@ infer' (VisibleTypeApp valFn tyArg) = do
       pure $ TypedValue' True valFn''' resTy'
     _ ->
       throwError $ errorMessage $ CannotApplyExpressionOfTypeOnType valTy tyArg
-infer' (Var ss var) = do
+infer' e@(Var ss var) = do
   checkVisibility var
-  ty <- introduceSkolemScope <=< replaceAllTypeSynonyms <=< replaceTypeWildcards <=< lookupVariable $ var
+  tyWithSyns <- replaceTypeWildcards <=< lookupVariable $ var
+  addIdeExpr e tyWithSyns
+  ty <- introduceSkolemScope <=< replaceAllTypeSynonyms $ tyWithSyns
   case ty of
     ConstrainedType _ con ty' -> do
       dicts <- getTypeClassDictionaries
@@ -1018,7 +1033,9 @@ checkFunctionApplication
   -- ^ The result type, and the elaborated term
 checkFunctionApplication fn fnTy arg = withErrorMessageHint' fn (ErrorInApplication fn fnTy arg) $ do
   subst <- gets checkSubstitution
-  checkFunctionApplication' fn (substituteType subst fnTy) arg
+  res <- checkFunctionApplication' fn (substituteType subst fnTy) arg
+  addIdeExpr fn (substituteType subst fnTy)
+  pure res
 
 -- | Check the type of a function application
 checkFunctionApplication'
@@ -1031,13 +1048,10 @@ checkFunctionApplication' fn (TypeApp ann (TypeApp ann' tyFunction' argTy) retTy
   unifyTypes tyFunction' tyFunction
   tv@(TypedValue' _ _ argTy') <- check arg argTy
   let arg' = tvToExpr tv
-  -- whenM (gets checkAddIdeArtifacts) do
-  --   let 
-  --       retTy' = case argTy of
-  --         TypeVar _ v -> replaceTypeVars v argTy' retTy
-  --         TUnknown _ u -> replaceUnknowns u argTy' retTy
-  --         _ -> retTy
-  --   addIdeExpr ("1028: " <> T.pack (show argTy)) fn (TypeApp ann (TypeApp ann' tyFunction' argTy') retTy')
+  -- whenAddingIdeArtifacts do
+  --   subst <- gets checkSubstitution
+  --   addIdeExpr fn (substituteType subst $ TypeApp ann (TypeApp ann' tyFunction' argTy') retTy)
+  -- substituteIdeTypes (substituteType _)
   return (retTy, App fn arg')
 checkFunctionApplication' fn (ForAll _ _ ident mbK ty _) arg = do
   u <- maybe (internalCompilerError "Unelaborated forall") freshTypeWithKind mbK
@@ -1046,23 +1060,12 @@ checkFunctionApplication' fn (ForAll _ _ ident mbK ty _) arg = do
   checkFunctionApplication fn replaced arg
 checkFunctionApplication' fn (KindedType _ ty _) arg =
   checkFunctionApplication fn ty arg
-checkFunctionApplication' fn (ConstrainedType _ con fnTy) arg = do
+checkFunctionApplication' fn (ConstrainedType ann con fnTy) arg = do
   dicts <- getTypeClassDictionaries
   hints <- getHints
-  -- let addAppliedType ty argE =
-  --       whenM (gets checkAddIdeArtifacts) do
-  --         case ty of
-  --           TypeApp ann (TypeApp ann' tyFunction' argTy) retTy -> do
-  --             (TypedValue' _ _ argTy') <- check argE argTy
-  --             let retTy' = case argTy of
-  --                   TypeVar _ v -> replaceTypeVars v argTy' retTy
-  --                   TUnknown _ u -> replaceUnknowns u argTy' retTy
-  --                   _ -> retTy
-  --             addIdeExpr fn (TypeApp ann (TypeApp ann' tyFunction' argTy') retTy')
-              
-  --           _ -> pure ()
-
-  -- addAppliedType fnTy arg
+  whenAddingIdeArtifacts do
+    subst <- gets checkSubstitution
+    addIdeExpr fn (substituteType subst $ ConstrainedType ann con fnTy)
   checkFunctionApplication' (App fn (TypeClassDictionary con dicts hints)) fnTy arg
 checkFunctionApplication' fn fnTy dict@TypeClassDictionary{} =
   return (fnTy, App fn dict)

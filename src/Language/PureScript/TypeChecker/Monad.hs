@@ -30,9 +30,9 @@ import Language.PureScript.TypeClassDictionaries (NamedDict, TypeClassDictionary
 import Language.PureScript.Types (Constraint(..), SourceType, Type(..), srcKindedType, srcTypeVar)
 import Text.PrettyPrint.Boxes (render)
 import Language.PureScript.TypeChecker.IdeArtifacts (IdeArtifacts, emptyIdeArtifacts, insertIaExpr, insertIaBinder, insertIaIdent, insertIaDecl, insertIaType, insertIaTypeName, insertIaClassName, moduleNameFromQual, substituteArtifactTypes, endSubstitutions)
-import Protolude (whenM)
+import Protolude (whenM, isJust)
 import Language.PureScript.AST.Binders (Binder)
-import Language.PureScript.AST.Declarations (Declaration)
+import Language.PureScript.AST.Declarations (Declaration, Expr (..))
 
 newtype UnkLevel = UnkLevel (NEL.NonEmpty Unknown)
   deriving (Eq, Show)
@@ -110,15 +110,18 @@ data CheckState = CheckState
   , checkConstructorImportsForCoercible :: S.Set (ModuleName, Qualified (ProperName 'ConstructorName))
   -- ^ Newtype constructors imports required to solve Coercible constraints.
   -- We have to keep track of them so that we don't emit unused import warnings.
-  , checkAddIdeArtifacts :: Bool
+  , checkAddIdeArtifacts :: Maybe AddIdeArtifacts
   -- ^ Whether to add IDE artifacts to the environment
   , checkIdeArtifacts :: IdeArtifacts
   -- ^ The IDE artifacts
   }
 
+data AddIdeArtifacts = AllIdeExprs | IdentIdeExprs
+  deriving (Eq)
+
 -- | Create an empty @CheckState@
 emptyCheckState :: Environment -> CheckState
-emptyCheckState env = CheckState env 0 0 0 Nothing [] emptySubstitution [] mempty False emptyIdeArtifacts
+emptyCheckState env = CheckState env 0 0 0 Nothing [] emptySubstitution [] mempty Nothing emptyIdeArtifacts
 
 -- | Unification variables
 type Unknown = Int
@@ -393,7 +396,21 @@ addIdeIdent :: MonadState CheckState m => SourceSpan -> Ident -> SourceType -> m
 addIdeIdent ss ident ty  = onIdeArtifacts $ insertIaIdent ss ident ty 
 
 addIdeExpr ::  MonadState CheckState m => Expr -> SourceType -> m ()
-addIdeExpr expr ty = onIdeArtifacts $ insertIaExpr expr ty
+addIdeExpr expr ty = do 
+  addAllExprs <- shouldAddAllIdeExprs 
+  when (addAllExprs || allowedExpr expr) 
+   $ onIdeArtifacts $ insertIaExpr expr ty
+  where 
+    allowedExpr = \case 
+      Literal{} -> True
+      Abs{} -> True
+      Var{} -> True 
+      Op{} -> True 
+      Constructor{} -> True
+      TypedValue _ e _ -> allowedExpr e
+      PositionedValue _ _ e -> allowedExpr e
+      App e TypeClassDictionary{} -> allowedExpr e
+      _ -> False 
 
 addIdeType ::  MonadState CheckState m => SourceType -> SourceType -> m ()
 addIdeType expr ty = onIdeArtifacts $ insertIaType expr ty
@@ -411,7 +428,7 @@ addIdeClassNameQual :: MonadState CheckState m => SourceSpan -> Qualified ( Prop
 addIdeClassNameQual ss name ty = onIdeArtifacts $ insertIaClassName ss (disqualify name) (moduleNameFromQual name) ty
 
 onIdeArtifacts :: MonadState CheckState m => (IdeArtifacts -> IdeArtifacts) -> m ()
-onIdeArtifacts f = whenM (gets checkAddIdeArtifacts)  
+onIdeArtifacts f = whenAddingIdeArtifacts  
   $ modify $ \env -> env { checkIdeArtifacts = f (checkIdeArtifacts env) }
 
 substituteIdeTypes :: MonadState CheckState m => (SourceType -> SourceType) -> m ()
@@ -419,6 +436,12 @@ substituteIdeTypes = onIdeArtifacts . substituteArtifactTypes
 
 endIdeSubstitutions :: MonadState CheckState m => m ()
 endIdeSubstitutions = onIdeArtifacts endSubstitutions
+
+whenAddingIdeArtifacts :: MonadState CheckState m => m () -> m ()
+whenAddingIdeArtifacts = whenM (gets (isJust . checkAddIdeArtifacts)) 
+
+shouldAddAllIdeExprs ::  MonadState CheckState m => m  Bool
+shouldAddAllIdeExprs =  gets ((==) (Just AllIdeExprs) . checkAddIdeArtifacts)
 
 debugEnv :: Environment -> [String]
 debugEnv env = join

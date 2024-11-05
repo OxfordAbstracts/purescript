@@ -102,16 +102,14 @@ rebuildFromOpenFileCache fp pwarnings stVar mkMakeActions m (OpenFile moduleName
       rebuildWithoutCache moduleName mkMakeActions fp pwarnings m
     _ -> handleRebuildResult fp pwarnings res
 
-getIdeCheckState :: (MonadLsp ServerConfig m) => m (P.Environment  -> P.CheckState)
-getIdeCheckState = 
+getIdeCheckState :: (MonadLsp ServerConfig m) => m (P.Environment -> P.CheckState)
+getIdeCheckState =
   ideCheckState <$> getInferExpressions
-
-  where 
-
+  where
     ideCheckState :: Bool -> P.Environment -> P.CheckState
     ideCheckState infer env =
       (P.emptyCheckState env)
-        { P.checkAddIdeArtifacts = infer
+        { P.checkAddIdeArtifacts = Just if infer then P.AllIdeExprs else P.IdentIdeExprs
         }
 
 rebuildWithoutCache ::
@@ -157,7 +155,7 @@ couldBeFromNewImports =
     P.ModuleNotFound {} -> True
     P.UnknownImport {} -> True
     P.UnknownImportDataConstructor {} -> True
-    P.UnknownName qName | (P.ModName _) <- P.disqualify qName -> True
+    P.NameIsUndefined _ -> True
     _ -> False
 
 cachedImportsAreInActual ::

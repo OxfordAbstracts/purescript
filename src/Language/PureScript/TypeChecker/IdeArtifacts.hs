@@ -1,10 +1,12 @@
 {-# OPTIONS_GHC -Wno-unused-top-binds #-}
+
 -- | Stores information about the source code that is useful for the IDE
 -- | This includes value types and source spans
 module Language.PureScript.TypeChecker.IdeArtifacts
   ( IdeArtifacts,
     IdeArtifact (..),
     IdeArtifactValue (..),
+    artifactsAtSpan,
     getArtifactsAtPosition,
     emptyIdeArtifacts,
     insertIaExpr,
@@ -12,6 +14,7 @@ module Language.PureScript.TypeChecker.IdeArtifacts
     insertIaDecl,
     insertIaType,
     insertIaIdent,
+    insertTypeSynonym,
     smallestArtifact,
     debugIdeArtifacts,
     insertIaTypeName,
@@ -34,22 +37,21 @@ import Language.PureScript.Lsp.NameType (LspNameType (..))
 import Language.PureScript.Lsp.Print (printName)
 import Language.PureScript.Names qualified as P
 import Language.PureScript.Pretty.Types qualified as P
-import Language.PureScript.Pretty.Values qualified as P
 import Language.PureScript.Types qualified as P
 import Protolude
 import Safe (minimumByMay)
-import Text.PrettyPrint.Boxes (render)
 
 data IdeArtifacts
   = IdeArtifacts
-      (Map Line [IdeArtifact]) -- with substitutions
-      (Map Line [IdeArtifact]) -- without substitutions
+      (Map Line [IdeArtifact]) -- with type var substitutions
+      (Map Line [IdeArtifact]) -- without var substitutions
+      (Map P.SourceType [P.SourceType]) -- type synonym substitutions
   deriving (Show)
 
 type Line = Int
 
 emptyIdeArtifacts :: IdeArtifacts
-emptyIdeArtifacts = IdeArtifacts Map.empty Map.empty
+emptyIdeArtifacts = IdeArtifacts Map.empty Map.empty Map.empty
 
 debugIdeArtifacts :: IdeArtifacts -> Text
 debugIdeArtifacts = T.intercalate "\n" . fmap showCount . lineCounts
@@ -57,7 +59,7 @@ debugIdeArtifacts = T.intercalate "\n" . fmap showCount . lineCounts
     showCount :: (Int, Int) -> Text
     showCount (line, count) = show line <> ": " <> show count
     lineCounts :: IdeArtifacts -> [(Int, Int)]
-    lineCounts (IdeArtifacts m _) = Map.toList m <&> fmap length
+    lineCounts (IdeArtifacts m _ _) = Map.toList m <&> fmap length
 
 data IdeArtifact = IdeArtifact
   { iaSpan :: P.SourceSpan,
@@ -79,16 +81,21 @@ data IdeArtifactValue
   deriving (Show)
 
 substituteArtifactTypes :: (P.SourceType -> P.SourceType) -> IdeArtifacts -> IdeArtifacts
-substituteArtifactTypes f (IdeArtifacts m u) = IdeArtifacts m (Map.map (fmap (onArtifactType f)) u)
+substituteArtifactTypes f (IdeArtifacts m u s) = IdeArtifacts m (Map.map (fmap (onArtifactType f)) u) s
 
 onArtifactType :: (P.SourceType -> P.SourceType) -> IdeArtifact -> IdeArtifact
 onArtifactType f (IdeArtifact {..}) = IdeArtifact iaSpan iaValue (f iaType) iaDefinitionModule iaDefinitionPos
 
 endSubstitutions :: IdeArtifacts -> IdeArtifacts
-endSubstitutions (IdeArtifacts m u) = IdeArtifacts (Map.unionWith (<>) m u) Map.empty
+endSubstitutions (IdeArtifacts m u s) = IdeArtifacts (Map.unionWith (<>) m u) Map.empty s
 
 smallestArtifact :: (Ord a) => (IdeArtifact -> a) -> [IdeArtifact] -> Maybe IdeArtifact
 smallestArtifact tieBreaker = minimumByMay (compare `on` (\a -> (artifactSize a, tieBreaker a)))
+
+artifactsAtSpan :: P.SourceSpan -> IdeArtifacts -> [IdeArtifact]
+artifactsAtSpan span (IdeArtifacts m _ _) =
+  Map.lookup (P.sourcePosLine $ P.spanStart span) m
+    & maybe [] (filter ((==) span . iaSpan))
 
 artifactSize :: IdeArtifact -> (Int, Int)
 artifactSize (IdeArtifact {..}) =
@@ -97,7 +104,7 @@ artifactSize (IdeArtifact {..}) =
   )
 
 getArtifactsAtPosition :: P.SourcePos -> IdeArtifacts -> [IdeArtifact]
-getArtifactsAtPosition pos (IdeArtifacts m _) =
+getArtifactsAtPosition pos (IdeArtifacts m _ _) =
   Map.lookup (P.sourcePosLine pos) m
     & fromMaybe []
     & filter (\ia -> P.sourcePosColumn (P.spanStart (iaSpan ia)) <= posCol && P.sourcePosColumn (P.spanEnd (iaSpan ia)) >= posCol)
@@ -105,8 +112,8 @@ getArtifactsAtPosition pos (IdeArtifacts m _) =
     posCol = P.sourcePosColumn pos
 
 insertIaExpr :: P.Expr -> P.SourceType -> IdeArtifacts -> IdeArtifacts
-insertIaExpr expr ty =  case ss of
-  Just span | not (generatedExpr expr) -> insertAtLines span (IaExpr "_" exprIdent exprNameType) ty mName defSpan
+insertIaExpr expr ty = case ss of
+  Just span | not (generatedExpr expr) -> insertAtLines span (IaExpr (exprCtr expr <> ": " <> fromMaybe "_" exprIdent) exprIdent exprNameType) ty mName defSpan
     where
       defSpan =
         Left <$> case expr of
@@ -115,18 +122,21 @@ insertIaExpr expr ty =  case ss of
           P.Op _ q -> posFromQual q
           _ -> Nothing
 
-      mName = case expr of
-        P.Var _ q -> moduleNameFromQual q
-        P.Constructor _ q -> moduleNameFromQual q
-        P.Op _ q -> moduleNameFromQual q
-        _ -> Nothing
+      mName = exprIdentQual expr >>= moduleNameFromQual
 
       exprIdent :: Maybe Text
-      exprIdent = case expr of
-        P.Var _ ident -> Just $ P.runIdent $ P.disqualify ident
-        P.Constructor _ q -> Just $ P.runProperName $ P.disqualify q
-        P.Op _ q -> Just $ P.runOpName $ P.disqualify q
+      exprIdent = P.disqualify <$> exprIdentQual expr
+
+      exprIdentQual :: P.Expr -> Maybe (P.Qualified Text)
+      exprIdentQual = \case 
+        P.Var _ ident -> Just $ P.runIdent <$> ident 
+        P.Constructor _ q -> Just $ P.runProperName <$> q
+        P.Op _ q -> Just $ P.runOpName <$> q
+        P.PositionedValue _ _ e -> exprIdentQual e
+        P.TypedValue _ e _ -> exprIdentQual e
+        P.App e (P.TypeClassDictionary{}) -> exprIdentQual e
         _ -> Nothing
+        
 
       exprNameType :: Maybe LspNameType
       exprNameType = case expr of
@@ -140,8 +150,12 @@ insertIaExpr expr ty =  case ss of
 
 printExpr :: P.Expr -> T.Text
 printExpr (P.Op _ (P.Qualified _ op)) = P.runOpName op -- `Op`s hit an infinite loop when pretty printed by themselves
-printExpr (P.Case _ _) = "<case expr>" -- case expressions are too large to pretty print in hover and are on mulitple lines
-printExpr expr = ellipsis 128 $ on1Line $ T.strip $ T.pack $ render $ P.prettyPrintValue 4 expr
+printExpr (P.Constructor _ n) = P.runProperName $ P.disqualify n
+printExpr (P.Var _ n) = P.runIdent $  P.disqualify n
+-- printExpr 
+printExpr P.Case{} = "<case expr>" -- case expressions are too large to pretty print in hover and are on mulitple lines
+printExpr P.IfThenElse{} = "<if expr>"
+printExpr _ = "_"
 
 ellipsis :: Int -> Text -> Text
 ellipsis n t = if T.length t > n then T.take (n - 3) t <> "..." else t
@@ -158,6 +172,19 @@ insertIaBinder :: P.Binder -> P.SourceType -> IdeArtifacts -> IdeArtifacts
 insertIaBinder binder ty = case binderSourceSpan binder of
   Just ss -> insertAtLines ss (IaBinder binder) ty Nothing (Just $ Right ss)
   Nothing -> identity
+
+binderSourceSpan :: P.Binder -> Maybe P.SourceSpan
+binderSourceSpan = \case
+  P.NullBinder -> Nothing
+  P.LiteralBinder ss _ -> Just ss
+  P.VarBinder ss _ -> Just ss
+  P.ConstructorBinder ss _ _ -> Just ss
+  P.NamedBinder ss _ _ -> Just ss
+  P.PositionedBinder ss _ _ -> Just ss
+  P.TypedBinder _ b -> binderSourceSpan b
+  P.OpBinder ss _ -> Just ss
+  P.BinaryNoParensBinder {} -> Nothing
+  P.ParensInBinder {} -> Nothing
 
 insertIaDecl :: P.Declaration -> P.SourceType -> IdeArtifacts -> IdeArtifacts
 insertIaDecl decl ty = insertAtLines (P.declSourceSpan decl) (IaDecl (printDecl decl) (declNameType decl)) ty Nothing Nothing
@@ -184,18 +211,8 @@ insertIaTypeName ss name mName kind = insertAtLines ss (IaTypeName name) kind mN
 insertIaClassName :: P.SourceSpan -> P.ProperName 'P.ClassName -> Maybe P.ModuleName -> P.SourceType -> IdeArtifacts -> IdeArtifacts
 insertIaClassName ss name mName kind = insertAtLines ss (IaClassName name) kind mName (Just $ Right $ fst $ P.getAnnForType kind)
 
-binderSourceSpan :: P.Binder -> Maybe P.SourceSpan
-binderSourceSpan = \case
-  P.NullBinder -> Nothing
-  P.LiteralBinder ss _ -> Just ss
-  P.VarBinder ss _ -> Just ss
-  P.ConstructorBinder ss _ _ -> Just ss
-  P.NamedBinder ss _ _ -> Just ss
-  P.PositionedBinder ss _ _ -> Just ss
-  P.TypedBinder _ b -> binderSourceSpan b
-  P.OpBinder ss _ -> Just ss
-  P.BinaryNoParensBinder {} -> Nothing
-  P.ParensInBinder {} -> Nothing
+insertTypeSynonym :: P.SourceType -> P.SourceType -> IdeArtifacts -> IdeArtifacts
+insertTypeSynonym syn ty (IdeArtifacts m u s) = IdeArtifacts m u (Map.insertWith (<>) syn [ty] s)
 
 posFromQual :: P.Qualified a -> Maybe P.SourcePos
 posFromQual (P.Qualified (P.BySourcePos pos) _) = Just pos
@@ -206,7 +223,7 @@ moduleNameFromQual (P.Qualified (P.ByModuleName mn) _) = Just mn
 moduleNameFromQual _ = Nothing
 
 insertAtLines :: P.SourceSpan -> IdeArtifactValue -> P.SourceType -> Maybe P.ModuleName -> Maybe (Either P.SourcePos P.SourceSpan) -> IdeArtifacts -> IdeArtifacts
-insertAtLines span value ty mName defSpan (IdeArtifacts m u) = IdeArtifacts m (foldr insert u (linesFromSpan span))
+insertAtLines span value ty mName defSpan (IdeArtifacts m u s) = IdeArtifacts m (foldr insert u (linesFromSpan span)) s
   where
     insert line = Map.insertWith (<>) line [IdeArtifact span value ty mName defSpan]
 
@@ -217,11 +234,13 @@ generatedExpr :: P.Expr -> Bool
 generatedExpr = \case
   P.Var _ ident -> generatedIdent $ P.disqualify ident
   P.Constructor _ q -> generatedName $ P.disqualify q
-  P.Abs b _e -> generatedBinder b 
-  -- P.App e e' -> generatedExpr e || generatedExpr e'
+  P.Abs b _e -> generatedBinder b
   P.TypedValue _ e _ -> generatedExpr e
   P.PositionedValue _ _ e -> generatedExpr e
-  -- P.Case es _ -> any generatedExpr es
+  P.Unused {} -> True
+  P.DeferredDictionary {} -> True
+  P.TypeClassDictionary {} -> True
+  P.DerivedInstancePlaceholder {} -> True
   _ -> False
 
 generatedName :: P.ProperName a -> Bool
@@ -266,3 +285,31 @@ debugIdeArtifactValue = \case
 
 debugType :: P.Type a -> Text
 debugType = T.pack . take 64 . P.prettyPrintType 5
+
+exprCtr :: P.Expr -> Text
+exprCtr (P.Literal _ _) = "Literal"
+exprCtr (P.UnaryMinus _ _) = "UnaryMinus"
+exprCtr (P.BinaryNoParens _ _ _) = "BinaryNoParens"
+exprCtr (P.Parens _) = "Parens"
+exprCtr (P.Accessor _ _) = "Accessor"
+exprCtr (P.ObjectUpdate _ _) = "ObjectUpdate"
+exprCtr (P.ObjectUpdateNested _ _) = "ObjectUpdateNested"
+exprCtr (P.Abs _ _) = "Abs"
+exprCtr (P.App e e') = "App (" <> exprCtr e <> ") (" <> exprCtr e' <> ")"
+exprCtr (P.VisibleTypeApp _ _) = "VisibleTypeApp"
+exprCtr (P.Unused e) = "Unused " <> exprCtr e
+exprCtr (P.Var _ _) = "Var"
+exprCtr (P.Op _ _) = "Op"
+exprCtr (P.IfThenElse _ _ _) = "IfThenElse"
+exprCtr (P.Constructor _ _) = "Constructor"
+exprCtr (P.Case _ _) = "Case"
+exprCtr (P.TypedValue _ e _) = "TypedValue " <> exprCtr e
+exprCtr (P.Let _ _ _) = "Let"
+exprCtr (P.Do _ _) = "Do"
+exprCtr (P.Ado _ _ _) = "Ado"
+exprCtr (P.TypeClassDictionary _ _ _) = "TypeClassDictionary"
+exprCtr (P.DeferredDictionary _ _) = "DeferredDictionary"
+exprCtr (P.DerivedInstancePlaceholder _ _) = "DerivedInstancePlaceholder"
+exprCtr P.AnonymousArgument = "AnonymousArgument"
+exprCtr (P.Hole _) = "Hole"
+exprCtr (P.PositionedValue _ _ e) = "PositionedValue " <> exprCtr e

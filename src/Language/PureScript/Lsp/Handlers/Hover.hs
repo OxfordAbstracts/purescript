@@ -23,7 +23,7 @@ import Language.PureScript.Lsp.NameType (LspNameType (..))
 import Language.PureScript.Lsp.State (cachedRebuild)
 import Language.PureScript.Lsp.Types (OpenFile (..))
 import Language.PureScript.Lsp.Util (positionToSourcePos)
-import Language.PureScript.TypeChecker.IdeArtifacts (IdeArtifact (..), IdeArtifactValue (..), getArtifactsAtPosition, smallestArtifact)
+import Language.PureScript.TypeChecker.IdeArtifacts (IdeArtifact (..), IdeArtifactValue (..), getArtifactsAtPosition, smallestArtifact, artifactsAtSpan)
 import Protolude hiding (handle, to)
 
 hoverHandler :: Server.Handlers HandlerM
@@ -40,31 +40,36 @@ hoverHandler = Server.requestHandler Message.SMethod_TextDocumentHover $ \req re
       forLsp val f = maybe nullRes f val
 
       lookupExprTypes :: Maybe Text -> Maybe P.ModuleName -> Maybe LspNameType -> HandlerM [Text]
-      lookupExprTypes (Just ident) (Just modName) nameType = 
-          fmap (showTypeSection modName  ident) <$> getAstDeclarationTypeInModule nameType modName ident
+      lookupExprTypes (Just ident) (Just modName) nameType =
+        fmap (showTypeSection modName ident) <$> getAstDeclarationTypeInModule nameType modName ident
       lookupExprTypes _ _ _ = pure []
 
       lookupExprDocs :: Maybe Text -> Maybe P.ModuleName -> Maybe LspNameType -> HandlerM (Maybe Text)
-      lookupExprDocs (Just ident) (Just modName) (Just nameType) = 
-          readDeclarationDocsWithNameType modName nameType ident
+      lookupExprDocs (Just ident) (Just modName) (Just nameType) =
+        readDeclarationDocsWithNameType modName nameType ident
       lookupExprDocs _ _ _ = pure Nothing
 
   forLsp filePathMb \filePath -> do
     cacheOpenMb <- cachedRebuild filePath
     debugLsp $ "Cache found: " <> show (isJust cacheOpenMb)
     forLsp cacheOpenMb \OpenFile {..} -> do
-      let atPos = getArtifactsAtPosition (positionToSourcePos startPos) (P.checkIdeArtifacts ofEndCheckState)
+      let allArtifacts = P.checkIdeArtifacts ofEndCheckState
+          atPos = getArtifactsAtPosition (positionToSourcePos startPos) allArtifacts
       debugLsp $ "hover artiacts length: " <> show (length atPos)
-      case smallestArtifact (negate . artifactInterest) atPos of
+      case smallestArtifact (bimap negate negate . artifactInterest) atPos of
         Just (IdeArtifact {..}) ->
           case iaValue of
             IaExpr exprTxt ident nameType -> do
               let inferredRes = pursTypeStr exprTxt (Just $ prettyPrintTypeSingleLine iaType) []
+                  otherArtifacts = artifactsAtSpan iaSpan allArtifacts
+                  otherInferrences = joinMarkup $ otherArtifacts <&> (Just . printOtherInference)
+
               foundTypes <- lookupExprTypes ident iaDefinitionModule nameType
               docs <- lookupExprDocs ident iaDefinitionModule nameType
               markdownRes (Just $ spanToRange iaSpan) $
                 joinMarkup
                   [ Just inferredRes,
+                    Just otherInferrences,
                     head foundTypes,
                     showDocs <$> docs
                   ]
@@ -103,6 +108,18 @@ hoverHandler = Server.requestHandler Message.SMethod_TextDocumentHover $ \req re
               markdownRes (Just $ spanToRange iaSpan) $ pursTypeStr (prettyPrintTypeSingleLine ty) (Just $ prettyPrintTypeSingleLine iaType) []
         _ -> nullRes
 
+printOtherInference :: IdeArtifact ->  Text
+printOtherInference IdeArtifact{..} = pursTypeStr label (Just $ prettyPrintTypeSingleLine iaType) []
+  where 
+    label = case iaValue of 
+       IaExpr t _ _ -> t 
+       IaDecl t _ -> "BINDER " <> fromMaybe "__" t 
+       IaIdent t -> "IDENT " <> t 
+       IaBinder b -> "BINDER " <> dispayBinderOnHover b
+       _ -> "___"
+
+
+
 showTypeSection :: P.ModuleName -> Text -> Text -> Text
 showTypeSection mName expr ty = "*" <> P.runModuleName mName <> "*\n" <> pursMd (expr <> " :: " <> ty)
 
@@ -113,13 +130,16 @@ joinMarkup :: [Maybe Text] -> Text
 joinMarkup = T.intercalate "\n---\n" . catMaybes
 
 -- | Prioritize artifacts that are more likely to be interesting to the developer on hover or click
-artifactInterest :: IdeArtifact -> Int
+artifactInterest :: IdeArtifact -> (Int, Int)
 artifactInterest (IdeArtifact {..}) = case iaValue of
-  IaBinder {} -> 1
-  IaTypeName {} -> 1
-  IaClassName {} -> 1
-  IaExpr _ _ _ -> negate (countUnkownsAndVars iaType) -- Prefer expressions with fewer unknowns and type vars
-  _ -> 0
+  IaBinder {} -> (2, 0)
+  IaTypeName {} -> (3, 0)
+  IaClassName {} -> (3, 0)
+  IaExpr _ ident nt ->
+    ( length $ catMaybes [void ident, void nt],
+      negate (countUnkownsAndVars iaType) 
+    )
+  _ -> (1, 0)
 
 countUnkownsAndVars :: P.Type a -> Int
 countUnkownsAndVars = P.everythingOnTypes (+) go
