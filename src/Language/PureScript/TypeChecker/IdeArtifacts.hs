@@ -119,14 +119,11 @@ getArtifactsAtPosition pos (IdeArtifacts m _ _) =
 
 insertIaExpr :: P.Expr -> P.SourceType -> IdeArtifacts -> IdeArtifacts
 insertIaExpr expr ty = case ss of
-  Just span | not (generatedExpr expr) -> insertAtLines span (IaExpr (exprCtr expr <> ": " <> fromMaybe "_" exprIdent) exprIdent exprNameType) ty mName defSpan
+  Just span | not (generatedExpr expr) -> 
+       insertAtLines span (IaExpr (exprCtr expr <> ": " <> fromMaybe "_" exprIdent) exprIdent (exprNameType expr)) ty mName defSpan
     where
       defSpan =
-        Left <$> case expr of
-          P.Var _ q -> posFromQual q
-          P.Constructor _ q -> posFromQual q
-          P.Op _ q -> posFromQual q
-          _ -> Nothing
+        Left <$> (posFromQual =<< exprIdentQual expr )
 
       mName = exprIdentQual expr >>= moduleNameFromQual
 
@@ -143,12 +140,16 @@ insertIaExpr expr ty = case ss of
         P.App e (P.TypeClassDictionary {}) -> exprIdentQual e
         _ -> Nothing
 
-      exprNameType :: Maybe LspNameType
-      exprNameType = case expr of
+      exprNameType :: P.Expr -> Maybe LspNameType
+      exprNameType = \case 
         P.Var _ _ -> Just IdentNameType
         P.Constructor _ _ -> Just DctorNameType
         P.Op _ _ -> Just ValOpNameType
+        P.PositionedValue _ _ e -> exprNameType e
+        P.TypedValue _ e _ -> exprNameType e
+        P.App e (P.TypeClassDictionary {}) -> exprNameType e
         _ -> Nothing
+        
   _ -> identity
   where
     ss = P.exprSourceSpan expr

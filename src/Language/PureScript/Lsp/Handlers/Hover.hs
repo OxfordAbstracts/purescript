@@ -1,7 +1,5 @@
 {-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE DeriveAnyClass #-}
-{-# LANGUAGE DuplicateRecordFields #-}
-{-# LANGUAGE OverloadedStrings #-}
 
 module Language.PureScript.Lsp.Handlers.Hover (hoverHandler) where
 
@@ -61,7 +59,7 @@ hoverHandler = Server.requestHandler Message.SMethod_TextDocumentHover $ \req re
       let allArtifacts = P.checkIdeArtifacts ofEndCheckState
           atPos = getArtifactsAtPosition (positionToSourcePos startPos) allArtifacts
       debugLsp $ "hover artiacts length: " <> show (length atPos)
-      case smallestArtifact (\a -> (artifactInterest a, negate $ countUnkownsAndVars $ iaType a)) atPos of
+      case smallestArtifact (\a -> (negate $ artifactInterest a, negate $ countUnkownsAndVars $ iaType a)) atPos of
         Just (IdeArtifact {..}) ->
           case iaValue of
             IaExpr exprTxt ident nameType -> do
@@ -147,7 +145,6 @@ artifactInterest (IdeArtifact {..}) = case iaValue of
   IaBinder {} -> 2
   IaTypeName {} -> 3
   IaClassName {} -> 3
-  IaExpr _ _ _ -> negate (countUnkownsAndVars iaType)
   _ -> 1
 
 countUnkownsAndVars :: P.Type a -> Int

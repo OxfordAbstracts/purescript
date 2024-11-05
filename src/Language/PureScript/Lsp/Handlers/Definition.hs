@@ -3,20 +3,24 @@
 module Language.PureScript.Lsp.Handlers.Definition where
 
 import Control.Lens ((^.))
+import Data.Text qualified as T
 import Language.LSP.Protocol.Lens qualified as LSP
 import Language.LSP.Protocol.Message qualified as Message
 import Language.LSP.Protocol.Types qualified as Types
 import Language.LSP.Server qualified as Server
 import Language.PureScript qualified as P
+import Language.PureScript.Lsp.AtPosition (getImportRefNameType, spanToRange)
 import Language.PureScript.Lsp.Cache (selectExternPathFromModuleName)
 import Language.PureScript.Lsp.Cache.Query (getAstDeclarationLocationInModule)
 import Language.PureScript.Lsp.Log (debugLsp)
 import Language.PureScript.Lsp.Monad (HandlerM)
 import Language.PureScript.Lsp.NameType (LspNameType (..))
 import Language.PureScript.Lsp.Print (printName)
-import Language.PureScript.Lsp.Util (posInSpan, sourcePosToPosition)
+import Language.PureScript.Lsp.State (cachedFilePaths, cachedRebuild)
+import Language.PureScript.Lsp.Types (OpenFile (OpenFile, ofEndCheckState))
+import Language.PureScript.Lsp.Util (positionToSourcePos, sourcePosToPosition)
+import Language.PureScript.TypeChecker.IdeArtifacts (IdeArtifact (..), IdeArtifactValue (..), getArtifactsAtPosition, smallestArtifact)
 import Protolude
-import Language.PureScript.Lsp.AtPosition (atPosition, findDeclRefAtPos, getImportRefNameType, spanToRange)
 
 definitionHandler :: Server.Handlers HandlerM
 definitionHandler = Server.requestHandler Message.SMethod_TextDocumentDefinition $ \req res -> do
@@ -29,41 +33,62 @@ definitionHandler = Server.requestHandler Message.SMethod_TextDocumentDefinition
 
       posRes fp srcPos = locationRes fp $ Types.Range (sourcePosToPosition srcPos) (sourcePosToPosition srcPos)
 
+      spanRes span = locationRes (P.spanName span) (spanToRange span)
+
       forLsp :: Maybe a -> (a -> HandlerM ()) -> HandlerM ()
       forLsp val f = maybe nullRes f val
 
       respondWithDeclInOtherModule :: LspNameType -> P.ModuleName -> Text -> HandlerM ()
       respondWithDeclInOtherModule nameType modName ident = do
         declSpans <- getAstDeclarationLocationInModule nameType modName ident
-        forLsp (head declSpans) $ \sourceSpan ->
-          locationRes (P.spanName sourceSpan) (spanToRange sourceSpan)
+        case head declSpans of
+          Just sourceSpan ->
+            locationRes (P.spanName sourceSpan) (spanToRange sourceSpan)
+          Nothing -> nullRes
 
-      respondWithModule :: P.SourceSpan -> P.ModuleName -> HandlerM ()
-      respondWithModule ss modName =
-        if posInSpan pos ss
-          then do
-            modFpMb <- selectExternPathFromModuleName modName
-            forLsp modFpMb \modFp -> do
-              posRes modFp $ P.SourcePos 1 1
-          else nullRes
-
-      respondWithImports ss importedModuleName imports = do
-        case findDeclRefAtPos pos imports of
-          Just import' -> do
-            let name = P.declRefName import'
-                nameType = getImportRefNameType import'
-            debugLsp $ "import: " <> show import'
-            respondWithDeclInOtherModule nameType importedModuleName (printName name)
-          _ -> do
-            debugLsp $ "respondWithModule importedModuleName: " <> show importedModuleName
-            respondWithModule ss importedModuleName
+      respondWithModule :: P.ModuleName -> HandlerM ()
+      respondWithModule modName = do
+        modFpMb <- selectExternPathFromModuleName modName
+        forLsp modFpMb \modFp -> do
+          posRes modFp $ P.SourcePos 1 1
 
   forLsp filePathMb \filePath -> do
-    atPosition
-      nullRes
-      respondWithDeclInOtherModule
-      respondWithImports
-      respondWithModule
-      posRes 
-      filePath 
-      pos
+    cacheOpenMb <- cachedRebuild filePath
+    when (isNothing cacheOpenMb) do
+      debugLsp $ "file path not cached: " <> T.pack filePath
+      debugLsp . show =<< cachedFilePaths
+
+    forLsp cacheOpenMb \OpenFile {..} -> do
+      let allArtifacts = P.checkIdeArtifacts ofEndCheckState
+          atPos = getArtifactsAtPosition (positionToSourcePos pos) allArtifacts
+      debugLsp $ "def artifacts length: " <> show (length atPos)
+      let smallest = smallestArtifact (\a -> (negate $ artifactInterest a, isNothing (iaDefinitionPos a), isNothing (iaDefinitionModule a))) atPos
+      case smallest of
+        Just (IdeArtifact _ (IaModule modName) _ _ _) -> respondWithModule modName
+        Just (IdeArtifact _ (IaImport modName ref) _ _ _) -> do
+          let nameType = getImportRefNameType ref
+              name = P.declRefName ref
+          respondWithDeclInOtherModule nameType modName (printName name)
+        Just (IdeArtifact _ (IaExpr _ (Just ident) (Just nameType)) _ (Just modName) _) -> do
+          respondWithDeclInOtherModule nameType modName ident
+        Just (IdeArtifact _ (IaTypeName name) _ (Just modName) _) -> do
+          respondWithDeclInOtherModule TyNameType modName (P.runProperName name)
+        Just (IdeArtifact _ (IaClassName name) _ (Just modName) _) -> do
+          respondWithDeclInOtherModule TyClassNameType modName (P.runProperName name)
+        Just (IdeArtifact _ _ _ _ (Just (Right defSpan))) -> do
+          spanRes defSpan
+        Just (IdeArtifact _ _ _ (Just modName) (Just (Left defPos))) -> do
+          fpMb <- selectExternPathFromModuleName modName
+          forLsp fpMb \fp -> posRes fp defPos
+        Just (IdeArtifact _ _ _ Nothing (Just (Left defPos))) -> do
+          posRes filePath defPos
+        _ -> do
+          debugLsp $ "No definition found for artifact: " <> show smallest
+          nullRes
+
+artifactInterest :: IdeArtifact -> Int
+artifactInterest (IdeArtifact {..}) = case iaValue of
+  IaBinder {} -> 2
+  IaTypeName {} -> 3
+  IaClassName {} -> 3
+  _ -> 1
