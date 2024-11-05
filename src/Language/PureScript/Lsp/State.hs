@@ -24,6 +24,8 @@ module Language.PureScript.Lsp.State
     putNewEnv,
     putPreviousConfig,
     getPreviousConfig,
+    cachedFiles,
+    cachedFilePaths,
   )
 where
 
@@ -88,6 +90,14 @@ cachedRebuild fp = do
   liftIO . atomically $ do
     st' <- readTVar st
     pure $ List.lookup fp $ openFiles st'
+
+cachedFiles :: (MonadIO m, MonadReader LspEnvironment m) => m [(FilePath, OpenFile)]
+cachedFiles = do
+  st <- lspStateVar <$> ask
+  liftIO . atomically $ openFiles <$> readTVar st
+
+cachedFilePaths :: (MonadIO m, MonadReader LspEnvironment m) => m [FilePath]
+cachedFilePaths = fmap fst <$> cachedFiles
 
 cacheDependencies :: (MonadReader LspEnvironment m, MonadLsp ServerConfig m) => P.ModuleName -> [ExternDependency] -> m ()
 cacheDependencies moduleName deps = do

@@ -15,6 +15,8 @@ module Language.PureScript.TypeChecker.IdeArtifacts
     insertIaType,
     insertIaIdent,
     insertTypeSynonym,
+    useSynonymns,
+    debugSynonyms, 
     smallestArtifact,
     debugIdeArtifacts,
     insertIaTypeName,
@@ -45,7 +47,7 @@ data IdeArtifacts
   = IdeArtifacts
       (Map Line [IdeArtifact]) -- with type var substitutions
       (Map Line [IdeArtifact]) -- without var substitutions
-      (Map P.SourceType [P.SourceType]) -- type synonym substitutions
+      (Map (P.Type ()) (P.Type ())) -- type synonym substitutions
   deriving (Show)
 
 type Line = Int
@@ -128,15 +130,14 @@ insertIaExpr expr ty = case ss of
       exprIdent = P.disqualify <$> exprIdentQual expr
 
       exprIdentQual :: P.Expr -> Maybe (P.Qualified Text)
-      exprIdentQual = \case 
-        P.Var _ ident -> Just $ P.runIdent <$> ident 
+      exprIdentQual = \case
+        P.Var _ ident -> Just $ P.runIdent <$> ident
         P.Constructor _ q -> Just $ P.runProperName <$> q
         P.Op _ q -> Just $ P.runOpName <$> q
         P.PositionedValue _ _ e -> exprIdentQual e
         P.TypedValue _ e _ -> exprIdentQual e
-        P.App e (P.TypeClassDictionary{}) -> exprIdentQual e
+        P.App e (P.TypeClassDictionary {}) -> exprIdentQual e
         _ -> Nothing
-        
 
       exprNameType :: Maybe LspNameType
       exprNameType = case expr of
@@ -151,10 +152,10 @@ insertIaExpr expr ty = case ss of
 printExpr :: P.Expr -> T.Text
 printExpr (P.Op _ (P.Qualified _ op)) = P.runOpName op -- `Op`s hit an infinite loop when pretty printed by themselves
 printExpr (P.Constructor _ n) = P.runProperName $ P.disqualify n
-printExpr (P.Var _ n) = P.runIdent $  P.disqualify n
--- printExpr 
-printExpr P.Case{} = "<case expr>" -- case expressions are too large to pretty print in hover and are on mulitple lines
-printExpr P.IfThenElse{} = "<if expr>"
+printExpr (P.Var _ n) = P.runIdent $ P.disqualify n
+-- printExpr
+printExpr P.Case {} = "<case expr>" -- case expressions are too large to pretty print in hover and are on mulitple lines
+printExpr P.IfThenElse {} = "<if expr>"
 printExpr _ = "_"
 
 ellipsis :: Int -> Text -> Text
@@ -211,9 +212,6 @@ insertIaTypeName ss name mName kind = insertAtLines ss (IaTypeName name) kind mN
 insertIaClassName :: P.SourceSpan -> P.ProperName 'P.ClassName -> Maybe P.ModuleName -> P.SourceType -> IdeArtifacts -> IdeArtifacts
 insertIaClassName ss name mName kind = insertAtLines ss (IaClassName name) kind mName (Just $ Right $ fst $ P.getAnnForType kind)
 
-insertTypeSynonym :: P.SourceType -> P.SourceType -> IdeArtifacts -> IdeArtifacts
-insertTypeSynonym syn ty (IdeArtifacts m u s) = IdeArtifacts m u (Map.insertWith (<>) syn [ty] s)
-
 posFromQual :: P.Qualified a -> Maybe P.SourcePos
 posFromQual (P.Qualified (P.BySourcePos pos) _) = Just pos
 posFromQual _ = Nothing
@@ -256,6 +254,21 @@ generatedIdent :: P.Ident -> Bool
 generatedIdent = \case
   P.GenIdent {} -> True
   _ -> False
+
+insertTypeSynonym :: P.Type a -> P.Type a -> IdeArtifacts -> IdeArtifacts
+insertTypeSynonym syn ty (IdeArtifacts m u s) = IdeArtifacts m u (Map.insert (void syn) (void ty) s)
+
+useSynonymns :: forall a. IdeArtifacts -> P.Type a -> P.Type ()
+useSynonymns (IdeArtifacts _ _ s) ty =  P.everywhereOnTypes go (void ty)
+  where
+    go :: P.Type  () ->  P.Type ()
+    go t = 
+      Map.lookup t s
+        & maybe t go
+
+debugSynonyms :: IdeArtifacts -> Text
+debugSynonyms (IdeArtifacts _ _ s) = show $ Map.toList s <&> bimap
+  (ellipsis 100 . T.pack .  P.prettyPrintType 3) (ellipsis 100 . T.pack .  P.prettyPrintType 3)
 
 debugIdeArtifact :: IdeArtifact -> Text
 debugIdeArtifact (IdeArtifact {..}) =

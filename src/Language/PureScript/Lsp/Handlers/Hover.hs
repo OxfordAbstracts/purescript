@@ -20,10 +20,10 @@ import Language.PureScript.Lsp.Docs (readDeclarationDocsWithNameType)
 import Language.PureScript.Lsp.Log (debugLsp)
 import Language.PureScript.Lsp.Monad (HandlerM)
 import Language.PureScript.Lsp.NameType (LspNameType (..))
-import Language.PureScript.Lsp.State (cachedRebuild)
+import Language.PureScript.Lsp.State (cachedRebuild, cachedFilePaths)
 import Language.PureScript.Lsp.Types (OpenFile (..))
 import Language.PureScript.Lsp.Util (positionToSourcePos)
-import Language.PureScript.TypeChecker.IdeArtifacts (IdeArtifact (..), IdeArtifactValue (..), getArtifactsAtPosition, smallestArtifact, artifactsAtSpan)
+import Language.PureScript.TypeChecker.IdeArtifacts (IdeArtifact (..), IdeArtifactValue (..), getArtifactsAtPosition, smallestArtifact, useSynonymns)
 import Protolude hiding (handle, to)
 
 hoverHandler :: Server.Handlers HandlerM
@@ -52,26 +52,32 @@ hoverHandler = Server.requestHandler Message.SMethod_TextDocumentHover $ \req re
   forLsp filePathMb \filePath -> do
     cacheOpenMb <- cachedRebuild filePath
     debugLsp $ "Cache found: " <> show (isJust cacheOpenMb)
+    when (isNothing cacheOpenMb) do 
+      debugLsp $ "file path not cached: " <> T.pack filePath
+      debugLsp . show =<< cachedFilePaths
     forLsp cacheOpenMb \OpenFile {..} -> do
       let allArtifacts = P.checkIdeArtifacts ofEndCheckState
           atPos = getArtifactsAtPosition (positionToSourcePos startPos) allArtifacts
       debugLsp $ "hover artiacts length: " <> show (length atPos)
-      case smallestArtifact (bimap negate negate . artifactInterest) atPos of
+      case smallestArtifact (\a -> (artifactInterest a, negate $ countUnkownsAndVars $ iaType a)) atPos of
         Just (IdeArtifact {..}) ->
           case iaValue of
             IaExpr exprTxt ident nameType -> do
-              let inferredRes = pursTypeStr exprTxt (Just $ prettyPrintTypeSingleLine iaType) []
-                  otherArtifacts = artifactsAtSpan iaSpan allArtifacts
-                  otherInferrences = joinMarkup $ otherArtifacts <&> (Just . printOtherInference)
-
+              let inferredRes =
+                    pursTypeStr
+                      exprTxt
+                      ( Just $
+                          prettyPrintTypeSingleLine $
+                            useSynonymns allArtifacts iaType
+                      )
+                      []
               foundTypes <- lookupExprTypes ident iaDefinitionModule nameType
               docs <- lookupExprDocs ident iaDefinitionModule nameType
               markdownRes (Just $ spanToRange iaSpan) $
                 joinMarkup
                   [ Just inferredRes,
-                    Just otherInferrences,
-                    head foundTypes,
-                    showDocs <$> docs
+                    showDocs <$> docs,
+                    head foundTypes
                   ]
             IaTypeName name -> do
               let name' = P.runProperName name
@@ -82,8 +88,8 @@ hoverHandler = Server.requestHandler Message.SMethod_TextDocumentHover $ \req re
               markdownRes (Just $ spanToRange iaSpan) $
                 joinMarkup
                   [ Just inferredRes,
-                    showTypeSection modName (P.runProperName name) <$> head foundTypes,
-                    showDocs <$> docs
+                    showDocs <$> docs,
+                    showTypeSection modName (P.runProperName name) <$> head foundTypes
                   ]
             IaClassName name -> do
               let name' = P.runProperName name
@@ -98,26 +104,15 @@ hoverHandler = Server.requestHandler Message.SMethod_TextDocumentHover $ \req re
                     showDocs <$> docs
                   ]
             IaIdent ident -> do
-              markdownRes (Just $ spanToRange iaSpan) $ pursTypeStr ident (Just $ prettyPrintTypeSingleLine iaType) []
+              markdownRes (Just $ spanToRange iaSpan) $ pursTypeStr ident (Just $ prettyPrintTypeSingleLine $ useSynonymns allArtifacts iaType) []
             IaBinder binder -> do
-              let inferredRes = pursTypeStr (dispayBinderOnHover binder) (Just $ prettyPrintTypeSingleLine iaType) []
+              let inferredRes = pursTypeStr (dispayBinderOnHover binder) (Just $ prettyPrintTypeSingleLine $ useSynonymns allArtifacts iaType) []
               markdownRes (spanToRange <$> binderSourceSpan binder) inferredRes
             IaDecl decl _ -> do
-              markdownRes (Just $ spanToRange iaSpan) $ pursTypeStr (fromMaybe "_" decl) (Just $ prettyPrintTypeSingleLine iaType) []
+              markdownRes (Just $ spanToRange iaSpan) $ pursTypeStr (fromMaybe "_" decl) (Just $ prettyPrintTypeSingleLine $ useSynonymns allArtifacts iaType) []
             IaType ty -> do
               markdownRes (Just $ spanToRange iaSpan) $ pursTypeStr (prettyPrintTypeSingleLine ty) (Just $ prettyPrintTypeSingleLine iaType) []
         _ -> nullRes
-
-printOtherInference :: IdeArtifact ->  Text
-printOtherInference IdeArtifact{..} = pursTypeStr label (Just $ prettyPrintTypeSingleLine iaType) []
-  where 
-    label = case iaValue of 
-       IaExpr t _ _ -> t 
-       IaDecl t _ -> "BINDER " <> fromMaybe "__" t 
-       IaIdent t -> "IDENT " <> t 
-       IaBinder b -> "BINDER " <> dispayBinderOnHover b
-       _ -> "___"
-
 
 
 showTypeSection :: P.ModuleName -> Text -> Text -> Text
@@ -130,16 +125,13 @@ joinMarkup :: [Maybe Text] -> Text
 joinMarkup = T.intercalate "\n---\n" . catMaybes
 
 -- | Prioritize artifacts that are more likely to be interesting to the developer on hover or click
-artifactInterest :: IdeArtifact -> (Int, Int)
+artifactInterest :: IdeArtifact -> Int
 artifactInterest (IdeArtifact {..}) = case iaValue of
-  IaBinder {} -> (2, 0)
-  IaTypeName {} -> (3, 0)
-  IaClassName {} -> (3, 0)
-  IaExpr _ ident nt ->
-    ( length $ catMaybes [void ident, void nt],
-      negate (countUnkownsAndVars iaType) 
-    )
-  _ -> (1, 0)
+  IaBinder {} -> 2
+  IaTypeName {} -> 3
+  IaClassName {} -> 3
+  IaExpr _ _ _ -> negate (countUnkownsAndVars iaType)
+  _ -> 1
 
 countUnkownsAndVars :: P.Type a -> Int
 countUnkownsAndVars = P.everythingOnTypes (+) go
@@ -179,18 +171,3 @@ data InferError
   | CompilationError P.MultipleErrors
   | InferException Text
   deriving (Show, Exception)
-
--- inferExprType :: FilePath -> P.Expr -> HandlerM (Either InferError P.SourceType)
--- inferExprType filePath expr = do
---   cacheOpenMb <- cachedRebuild filePath
---   case cacheOpenMb of
---     Nothing -> pure $ Left FileNotCached
---     Just OpenFile {..} -> do
---       inferRes <- runWriterT $ runExceptT $ evalSupplyT 0 $ evalStateT (infer' expr) ((P.emptyCheckState ofStartingEnv) {P.checkCurrentModule = Just ofModuleName})
---       pure $ bimap CompilationError (\(P.TypedValue' _ _ t) -> t) $ fst inferRes
-
--- inferExprType' :: FilePath -> P.Expr -> HandlerM P.SourceType
--- inferExprType' fp =
---   inferExprType fp >=> \case
---     Right t -> pure t
---     Left e -> throwIO e

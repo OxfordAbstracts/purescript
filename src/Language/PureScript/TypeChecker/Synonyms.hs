@@ -12,15 +12,17 @@ module Language.PureScript.TypeChecker.Synonyms
 import Prelude
 
 import Control.Monad.Error.Class (MonadError(..))
-import Control.Monad.State (MonadState)
+import Control.Monad.State (MonadState, StateT (runStateT), modify)
 import Data.Maybe (fromMaybe)
 import Data.Map qualified as M
 import Data.Text (Text)
 import Language.PureScript.Environment (Environment(..), TypeKind)
 import Language.PureScript.Errors (MultipleErrors, SimpleErrorMessage(..), SourceSpan, errorMessage')
 import Language.PureScript.Names (ProperName, ProperNameType(..), Qualified)
-import Language.PureScript.TypeChecker.Monad (CheckState, getEnv)
+import Language.PureScript.TypeChecker.Monad (CheckState, getEnv, addIdeSynonym)
 import Language.PureScript.Types (SourceType, Type(..), completeBinderList, everywhereOnTypesTopDownM, getAnnForType, replaceAllTypeVars)
+import Control.Monad.Except (Except, runExcept)
+import Data.Foldable (for_)
 
 -- | Type synonym information (arguments with kinds, aliased type), indexed by name
 type SynonymMap = M.Map (Qualified (ProperName 'TypeName)) ([(Text, Maybe SourceType)], SourceType)
@@ -31,13 +33,22 @@ replaceAllTypeSynonyms'
   :: SynonymMap
   -> KindMap
   -> SourceType
-  -> Either MultipleErrors SourceType
-replaceAllTypeSynonyms' syns kinds = everywhereOnTypesTopDownM try
+  -> Either MultipleErrors (SourceType, [(SourceType, SourceType)])
+replaceAllTypeSynonyms' syns kinds  ty = runExcept $ runStateT (everywhereOnTypesTopDownM try ty) []
   where
-  try :: SourceType -> Either MultipleErrors SourceType
-  try t = fromMaybe t <$> go (fst $ getAnnForType t) 0 [] [] t
+  try :: SourceType -> StateT [(SourceType, SourceType)] (Except MultipleErrors) SourceType
+  try t = do
+    res <- go (fst $ getAnnForType t) 0 [] [] t
+    case res of
+      Just t' -> do
+        modify ((t, t') :)
+        pure t'
+      Nothing ->
+        pure t
 
-  go :: SourceSpan -> Int -> [SourceType] -> [SourceType] -> SourceType -> Either MultipleErrors (Maybe SourceType)
+  go ::
+    SourceSpan -> Int -> [SourceType] -> [SourceType] -> SourceType ->
+    StateT [(SourceType, SourceType)] (Except MultipleErrors) (Maybe SourceType)
   go ss c kargs args (TypeConstructor _ ctor)
     | Just (synArgs, body) <- M.lookup ctor syns
     , c == length synArgs
@@ -55,10 +66,15 @@ replaceAllTypeSynonyms' syns kinds = everywhereOnTypesTopDownM try
   lookupKindArgs :: Qualified (ProperName 'TypeName) -> [Text]
   lookupKindArgs ctor = fromMaybe [] $ fmap (fmap (fst . snd) . fst) . completeBinderList . fst =<< M.lookup ctor kinds
 
+
 -- | Replace fully applied type synonyms
-replaceAllTypeSynonyms :: (e ~ MultipleErrors, MonadState CheckState m, MonadError e m) => SourceType -> m SourceType
+replaceAllTypeSynonyms :: forall e m. (e ~ MultipleErrors, MonadState CheckState m, MonadError e m) => SourceType -> m SourceType
 replaceAllTypeSynonyms d = do
   env <- getEnv
-  either throwError return $ replaceAllTypeSynonyms' (typeSynonyms env) (types env) d
+  either throwError trackUsedSynonym $ replaceAllTypeSynonyms' (typeSynonyms env) (types env) d
+  where
+    trackUsedSynonym (found, syns) = do
+      for_ syns $ uncurry addIdeSynonym
+      pure found
 
--- todo track synonymns
+
