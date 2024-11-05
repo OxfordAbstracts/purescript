@@ -396,7 +396,7 @@ inferAndAddToIde  :: (MonadSupply m, MonadState CheckState m, MonadError Multipl
 inferAndAddToIde = infer' >=> addTypedValueToIde
 
 addTypedValueToIde :: MonadState CheckState m => TypedValue' -> m TypedValue'
-addTypedValueToIde tv@(TypedValue' _ expr ty)  = do 
+addTypedValueToIde tv@(TypedValue' _ expr ty) = do 
   addIdeExpr expr ty 
   pure tv
 
@@ -516,9 +516,7 @@ infer' (VisibleTypeApp valFn tyArg) = do
       throwError $ errorMessage $ CannotApplyExpressionOfTypeOnType valTy tyArg
 infer' e@(Var ss var) = do
   checkVisibility var
-  tyWithSyns <- replaceTypeWildcards <=< lookupVariable $ var
-  addIdeExpr e tyWithSyns
-  ty <- introduceSkolemScope <=< replaceAllTypeSynonyms $ tyWithSyns
+  ty <- introduceSkolemScope <=< replaceAllTypeSynonyms <=< replaceTypeWildcards <=< lookupVariable $ var
   case ty of
     ConstrainedType _ con ty' -> do
       dicts <- getTypeClassDictionaries
@@ -1048,10 +1046,6 @@ checkFunctionApplication' fn (TypeApp ann (TypeApp ann' tyFunction' argTy) retTy
   unifyTypes tyFunction' tyFunction
   tv@(TypedValue' _ _ argTy') <- check arg argTy
   let arg' = tvToExpr tv
-  -- whenAddingIdeArtifacts do
-  --   subst <- gets checkSubstitution
-  --   addIdeExpr fn (substituteType subst $ TypeApp ann (TypeApp ann' tyFunction' argTy') retTy)
-  -- substituteIdeTypes (substituteType _)
   return (retTy, App fn arg')
 checkFunctionApplication' fn (ForAll _ _ ident mbK ty _) arg = do
   u <- maybe (internalCompilerError "Unelaborated forall") freshTypeWithKind mbK
@@ -1063,9 +1057,6 @@ checkFunctionApplication' fn (KindedType _ ty _) arg =
 checkFunctionApplication' fn (ConstrainedType ann con fnTy) arg = do
   dicts <- getTypeClassDictionaries
   hints <- getHints
-  whenAddingIdeArtifacts do
-    subst <- gets checkSubstitution
-    addIdeExpr fn (substituteType subst $ ConstrainedType ann con fnTy)
   checkFunctionApplication' (App fn (TypeClassDictionary con dicts hints)) fnTy arg
 checkFunctionApplication' fn fnTy dict@TypeClassDictionary{} =
   return (fnTy, App fn dict)
