@@ -15,6 +15,8 @@ module Language.PureScript.TypeChecker.IdeArtifacts
     insertIaType,
     insertIaIdent,
     insertTypeSynonym,
+    insertModule,
+    insertImport,
     useSynonymns,
     debugSynonyms, 
     smallestArtifact,
@@ -80,6 +82,8 @@ data IdeArtifactValue
   | IaType P.SourceType
   | IaTypeName (P.ProperName 'P.TypeName)
   | IaClassName (P.ProperName 'P.ClassName)
+  | IaModule P.ModuleName
+  | IaImport P.ModuleName P.DeclarationRef
   deriving (Show)
 
 substituteArtifactTypes :: (P.SourceType -> P.SourceType) -> IdeArtifacts -> IdeArtifacts
@@ -212,6 +216,12 @@ insertIaTypeName ss name mName kind = insertAtLines ss (IaTypeName name) kind mN
 insertIaClassName :: P.SourceSpan -> P.ProperName 'P.ClassName -> Maybe P.ModuleName -> P.SourceType -> IdeArtifacts -> IdeArtifacts
 insertIaClassName ss name mName kind = insertAtLines ss (IaClassName name) kind mName (Just $ Right $ fst $ P.getAnnForType kind)
 
+insertModule :: P.SourceSpan -> P.ModuleName -> IdeArtifacts -> IdeArtifacts
+insertModule ss name = insertAtLines ss (IaModule name) P.srcREmpty (Just name) Nothing
+
+insertImport :: P.ModuleName -> P.DeclarationRef -> IdeArtifacts -> IdeArtifacts
+insertImport name ref = insertAtLines (P.declRefSourceSpan ref) (IaImport name ref) P.srcREmpty (Just name) Nothing
+
 posFromQual :: P.Qualified a -> Maybe P.SourcePos
 posFromQual (P.Qualified (P.BySourcePos pos) _) = Just pos
 posFromQual _ = Nothing
@@ -295,6 +305,8 @@ debugIdeArtifactValue = \case
   IaType t -> "Type " <> debugType t
   IaTypeName name -> "TypeName: " <> P.runProperName name
   IaClassName name -> "ClassName: " <> P.runProperName name
+  IaModule name -> "Module: " <> P.runModuleName name
+  IaImport name ref -> "Import: " <> P.runModuleName name <> "." <> show ref
 
 debugType :: P.Type a -> Text
 debugType = T.pack . take 64 . P.prettyPrintType 5

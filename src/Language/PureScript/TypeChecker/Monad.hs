@@ -22,14 +22,14 @@ import Data.List.NonEmpty qualified as NEL
 
 import Language.PureScript.Crash (internalError)
 import Language.PureScript.Environment (Environment(..), NameKind(..), NameVisibility(..), TypeClassData(..), TypeKind(..))
-import Language.PureScript.Errors (Context, ErrorMessageHint, ExportSource, Expr, ImportDeclarationType, MultipleErrors, SimpleErrorMessage(..), SourceAnn, SourceSpan(..), addHint, errorMessage, positionedError, rethrow, warnWithPosition)
+import Language.PureScript.Errors (Context, ErrorMessageHint, ExportSource, Expr, ImportDeclarationType, MultipleErrors, SimpleErrorMessage(..), SourceAnn, SourceSpan(..), addHint, errorMessage, positionedError, rethrow, warnWithPosition, DeclarationRef)
 import Language.PureScript.Names (Ident(..), ModuleName, ProperName(..), ProperNameType(..), Qualified(..), QualifiedBy(..), coerceProperName, disqualify, runIdent, runModuleName, showQualified, toMaybeModuleName)
 import Language.PureScript.Pretty.Types (prettyPrintType)
 import Language.PureScript.Pretty.Values (prettyPrintValue)
 import Language.PureScript.TypeClassDictionaries (NamedDict, TypeClassDictionaryInScope(..))
 import Language.PureScript.Types (Constraint(..), SourceType, Type(..), srcKindedType, srcTypeVar)
 import Text.PrettyPrint.Boxes (render)
-import Language.PureScript.TypeChecker.IdeArtifacts (IdeArtifacts, emptyIdeArtifacts, insertIaExpr, insertIaBinder, insertIaIdent, insertIaDecl, insertIaType, insertIaTypeName, insertIaClassName, moduleNameFromQual, substituteArtifactTypes, endSubstitutions, insertTypeSynonym)
+import Language.PureScript.TypeChecker.IdeArtifacts (IdeArtifacts, emptyIdeArtifacts, insertIaExpr, insertIaBinder, insertIaIdent, insertIaDecl, insertIaType, insertIaTypeName, insertIaClassName, moduleNameFromQual, substituteArtifactTypes, endSubstitutions, insertTypeSynonym, insertModule, insertImport)
 import Protolude (whenM, isJust)
 import Language.PureScript.AST.Binders (Binder)
 import Language.PureScript.AST.Declarations (Declaration, Expr (..))
@@ -426,6 +426,12 @@ addIdeClassName mName ss name ty = onIdeArtifacts $ insertIaClassName ss name mN
 
 addIdeClassNameQual :: MonadState CheckState m => SourceSpan -> Qualified ( ProperName 'ClassName) -> SourceType -> m ()
 addIdeClassNameQual ss name ty = onIdeArtifacts $ insertIaClassName ss (disqualify name) (moduleNameFromQual name) ty
+
+addIdeModule :: MonadState CheckState m => SourceSpan -> ModuleName -> m ()
+addIdeModule ss mName = onIdeArtifacts $ insertModule ss mName
+
+addIdeImport :: MonadState CheckState m => ModuleName -> DeclarationRef -> m ()
+addIdeImport mName ref = onIdeArtifacts $ insertImport mName ref
 
 onIdeArtifacts :: MonadState CheckState m => (IdeArtifacts -> IdeArtifacts) -> m ()
 onIdeArtifacts f = whenAddingIdeArtifacts  

@@ -13,14 +13,16 @@ import Language.LSP.Protocol.Types qualified as Types
 import Language.LSP.Server qualified as Server
 import Language.PureScript qualified as P
 import Language.PureScript.Docs.Convert.Single (convertComments)
+import Language.PureScript.Docs.Types qualified as Docs
 import Language.PureScript.Ide.Error (prettyPrintTypeSingleLine)
-import Language.PureScript.Lsp.AtPosition (binderSourceSpan, spanToRange)
+import Language.PureScript.Lsp.AtPosition (binderSourceSpan, getImportRefNameType, spanToRange)
 import Language.PureScript.Lsp.Cache.Query (getAstDeclarationTypeInModule)
-import Language.PureScript.Lsp.Docs (readDeclarationDocsWithNameType)
+import Language.PureScript.Lsp.Docs (readDeclarationDocsWithNameType, readModuleDocs)
 import Language.PureScript.Lsp.Log (debugLsp)
 import Language.PureScript.Lsp.Monad (HandlerM)
 import Language.PureScript.Lsp.NameType (LspNameType (..))
-import Language.PureScript.Lsp.State (cachedRebuild, cachedFilePaths)
+import Language.PureScript.Lsp.Print (printName)
+import Language.PureScript.Lsp.State (cachedFilePaths, cachedRebuild)
 import Language.PureScript.Lsp.Types (OpenFile (..))
 import Language.PureScript.Lsp.Util (positionToSourcePos)
 import Language.PureScript.TypeChecker.IdeArtifacts (IdeArtifact (..), IdeArtifactValue (..), getArtifactsAtPosition, smallestArtifact, useSynonymns)
@@ -52,7 +54,7 @@ hoverHandler = Server.requestHandler Message.SMethod_TextDocumentHover $ \req re
   forLsp filePathMb \filePath -> do
     cacheOpenMb <- cachedRebuild filePath
     debugLsp $ "Cache found: " <> show (isJust cacheOpenMb)
-    when (isNothing cacheOpenMb) do 
+    when (isNothing cacheOpenMb) do
       debugLsp $ "file path not cached: " <> T.pack filePath
       debugLsp . show =<< cachedFilePaths
     forLsp cacheOpenMb \OpenFile {..} -> do
@@ -112,8 +114,23 @@ hoverHandler = Server.requestHandler Message.SMethod_TextDocumentHover $ \req re
               markdownRes (Just $ spanToRange iaSpan) $ pursTypeStr (fromMaybe "_" decl) (Just $ prettyPrintTypeSingleLine $ useSynonymns allArtifacts iaType) []
             IaType ty -> do
               markdownRes (Just $ spanToRange iaSpan) $ pursTypeStr (prettyPrintTypeSingleLine ty) (Just $ prettyPrintTypeSingleLine iaType) []
+            IaModule modName -> do
+              docsMb <- readModuleDocs modName
+              case docsMb of
+                Just docs | Just comments <- Docs.modComments docs -> markdownRes (Just $ spanToRange iaSpan) comments
+                _ -> nullRes
+            IaImport modName ref -> do
+              let name = P.declRefName ref
+                  nameType = getImportRefNameType ref
+                  name' = printName name
+              docs <- readDeclarationDocsWithNameType modName nameType name'
+              foundTypes <- getAstDeclarationTypeInModule (Just nameType) modName name'
+              markdownRes (Just $ spanToRange iaSpan) $
+                joinMarkup
+                  [ showDocs <$> docs,
+                    showTypeSection modName name' <$> head foundTypes
+                  ]
         _ -> nullRes
-
 
 showTypeSection :: P.ModuleName -> Text -> Text -> Text
 showTypeSection mName expr ty = "*" <> P.runModuleName mName <> "*\n" <> pursMd (expr <> " :: " <> ty)
