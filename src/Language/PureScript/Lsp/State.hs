@@ -26,6 +26,10 @@ module Language.PureScript.Lsp.State
     getPreviousConfig,
     cachedFiles,
     cachedFilePaths,
+    cachedEnvironment,
+    cacheEnvironment,
+    cachedExportEnvironment,
+    cacheExportEnvironment,
   )
 where
 
@@ -48,8 +52,8 @@ import Language.PureScript.Lsp.Types
 import Language.PureScript.Names qualified as P
 import Language.PureScript.Sugar.Names (externsEnv)
 import Language.PureScript.Sugar.Names.Env qualified as P
-import Protolude hiding (moduleName, unzip)
 import Language.PureScript.TypeChecker qualified as P
+import Protolude hiding (moduleName, unzip)
 
 getDbConn :: (MonadReader LspEnvironment m, MonadIO m) => m Connection
 getDbConn = liftIO . fmap snd . readTVarIO . lspDbConnectionVar =<< ask
@@ -98,6 +102,46 @@ cachedFiles = do
 
 cachedFilePaths :: (MonadIO m, MonadReader LspEnvironment m) => m [FilePath]
 cachedFilePaths = fmap fst <$> cachedFiles
+
+cacheEnvironment :: (MonadIO m, MonadReader LspEnvironment m) => FilePath -> [ExternDependency] -> P.Environment -> m ()
+cacheEnvironment fp deps env = do
+  st <- lspStateVar <$> ask
+  liftIO . atomically $ modifyTVar st $ \x ->
+    x
+      { environments = ((fp, hashDeps deps), env) : environments x
+      }
+
+cachedEnvironment :: (MonadIO m, MonadReader LspEnvironment m) => FilePath -> [ExternDependency] -> m (Maybe P.Environment)
+cachedEnvironment fp deps = do
+  st <- lspStateVar <$> ask
+  liftIO . atomically $ do
+    fmap snd .  find match . environments <$> readTVar st 
+
+  where 
+    hashed = hashDeps deps
+    match ((fp', hash'), _) = fp == fp' && hash' == hashed
+
+cacheExportEnvironment :: (MonadIO m, MonadReader LspEnvironment m) => FilePath -> [ExternDependency] -> P.Env -> m ()
+cacheExportEnvironment fp deps env = do
+  st <- lspStateVar <$> ask
+  liftIO . atomically $ modifyTVar st $ \x ->
+    x
+      { exportEnvs = ((fp, hashDeps deps), env) : exportEnvs x
+      }
+
+cachedExportEnvironment :: (MonadIO m, MonadReader LspEnvironment m) => FilePath -> [ExternDependency] -> m (Maybe P.Env)
+cachedExportEnvironment fp deps = do
+  st <- lspStateVar <$> ask
+  liftIO . atomically $ do
+    fmap snd . find match . exportEnvs <$> readTVar st
+
+  where
+    hashed = hashDeps deps
+    match ((fp', hash'), _) = fp == fp' && hash' == hashed
+
+hashDeps :: [ExternDependency] -> Int
+hashDeps = hash . sort . fmap edHash
+
 
 cacheDependencies :: (MonadReader LspEnvironment m, MonadLsp ServerConfig m) => P.ModuleName -> [ExternDependency] -> m ()
 cacheDependencies moduleName deps = do
@@ -148,7 +192,6 @@ buildExportEnvCache module' externs = do
           Right newEnv -> do
             writeTVar st $ st' {exportEnv = newEnv}
             pure $ Right newEnv
-
 
 mergeExportEnvCache :: (MonadIO m, MonadReader LspEnvironment m) => P.Env -> m ()
 mergeExportEnvCache env = do

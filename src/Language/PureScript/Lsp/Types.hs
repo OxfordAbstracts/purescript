@@ -2,40 +2,40 @@
 
 module Language.PureScript.Lsp.Types where
 
+import Codec.Serialise (deserialise, serialise)
 import Control.Concurrent.STM (TVar, newTVarIO)
 import Data.Aeson (FromJSON, ToJSON)
 import Data.Aeson qualified as A
 import Database.SQLite.Simple (Connection, FromRow (fromRow), ToRow (toRow), field)
 import Language.LSP.Protocol.Types (Range)
+import Language.PureScript.AST qualified as P
 import Language.PureScript.DB (mkConnection)
 import Language.PureScript.Environment qualified as P
 import Language.PureScript.Externs qualified as P
+import Language.PureScript.Lsp.LogLevel (LspLogLevel)
+import Language.PureScript.Lsp.NameType (LspNameType)
+import Language.PureScript.Lsp.ServerConfig (ServerConfig, defaultConfig)
 import Language.PureScript.Names qualified as P
 import Language.PureScript.Sugar.Names (Env)
 import Language.PureScript.Sugar.Names qualified as P
-import Protolude
-import Language.PureScript.AST qualified as P
-import Language.PureScript.Lsp.ServerConfig (ServerConfig, defaultConfig)
-import Language.PureScript.Lsp.LogLevel (LspLogLevel)
-import Codec.Serialise (deserialise, serialise)
-import Language.PureScript.Lsp.NameType (LspNameType)
 import Language.PureScript.TypeChecker qualified as P
+import Protolude
 
 data LspEnvironment = LspEnvironment
   { lspDbConnectionVar :: TVar (FilePath, Connection),
     lspStateVar :: TVar LspState,
-    previousConfig :: TVar  ServerConfig
+    previousConfig :: TVar ServerConfig
   }
 
 mkEnv :: FilePath -> IO LspEnvironment
 mkEnv outputPath = do
   connection <- newTVarIO =<< mkConnection outputPath
-  st <- newTVarIO (LspState mempty P.primEnv mempty)
+  st <- newTVarIO emptyState
   prevConfig <- newTVarIO $ defaultConfig outputPath
   pure $ LspEnvironment connection st prevConfig
 
 emptyState :: LspState
-emptyState = LspState mempty P.primEnv mempty
+emptyState = LspState mempty P.primEnv mempty mempty mempty
 
 data LspConfig = LspConfig
   { confOutputPath :: FilePath,
@@ -48,6 +48,8 @@ data LspConfig = LspConfig
 data LspState = LspState
   { openFiles :: [(FilePath, OpenFile)],
     exportEnv :: Env,
+    exportEnvs :: [((FilePath, Int), Env)],
+    environments :: [((FilePath, Int), P.Environment)],
     runningRequests :: Map (Either Int32 Text) (Async ())
   }
 
@@ -59,21 +61,21 @@ data OpenFile = OpenFile
     ofEndEnv :: P.Environment,
     ofEndCheckState :: P.CheckState,
     ofUncheckedModule :: P.Module,
-    ofModule ::  P.Module
+    ofModule :: P.Module
   }
 
-  
 data ExternDependency = ExternDependency
   { edExtern :: P.ExternsFile,
-    edLevel :: Int
-  } deriving (Show)
+    edLevel :: Int,
+    edHash :: Int
+  }
+  deriving (Show)
 
 instance FromRow ExternDependency where
-  fromRow = ExternDependency <$> (deserialise <$> field) <*> field
+  fromRow = ExternDependency <$> (deserialise <$> field) <*> field <*> field
 
 instance ToRow ExternDependency where
-  toRow (ExternDependency ef level) = toRow (serialise ef, level)
-
+  toRow (ExternDependency ef level updated_at) = toRow (serialise ef, level, updated_at)
 
 data CompleteItemData = CompleteItemData
   { cidPath :: FilePath,
@@ -85,7 +87,6 @@ data CompleteItemData = CompleteItemData
     wordRange :: Range
   }
   deriving (Show, Eq, Generic, ToJSON, FromJSON)
-
 
 decodeCompleteItemData :: Maybe A.Value -> A.Result (Maybe CompleteItemData)
 decodeCompleteItemData Nothing = pure Nothing

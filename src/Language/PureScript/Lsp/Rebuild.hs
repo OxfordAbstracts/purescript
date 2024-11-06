@@ -43,7 +43,7 @@ rebuildFile ::
   NormalizedUri ->
   m RebuildResult
 rebuildFile uri =
-  logPerfStandard "Rebuild module" do
+  logPerfStandard ("Rebuild module: " <> show uri) do
     fp <- case fromNormalizedUri uri & uriToFilePath of
       Just x -> pure x
       Nothing -> throwM $ CouldNotConvertUriToFilePath uri
@@ -63,14 +63,13 @@ rebuildFile uri =
         let mkMakeActions :: Map P.ModuleName FilePath -> [ExternDependency] -> P.MakeActions P.Make
             mkMakeActions foreigns externs =
               P.buildMakeActions outputDirectory filePathMap foreigns False
-                -- & broadcastProgress chan
                 & addAllIndexing conn
                 & addRebuildCaching stVar maxCache externs m
         case cachedBuild of
-          Just open -> do
-            rebuildFromOpenFileCache fp pwarnings stVar mkMakeActions m open
-          Nothing -> do
-            rebuildWithoutCache moduleName mkMakeActions fp pwarnings m
+          -- Just open -> do
+          --   rebuildFromOpenFileCache fp pwarnings stVar mkMakeActions m open
+          _ -> do
+            rebuildWithoutFileCache moduleName mkMakeActions fp pwarnings m
 
 rebuildFromOpenFileCache ::
   (MonadLsp ServerConfig m, MonadReader LspEnvironment m, MonadThrow m) =>
@@ -99,7 +98,7 @@ rebuildFromOpenFileCache fp pwarnings stVar mkMakeActions m (OpenFile moduleName
   case fst res of
     Left errs | any couldBeFromNewImports (P.runMultipleErrors errs) -> do
       warnLsp "Module not found error detected, rebuilding without cache"
-      rebuildWithoutCache moduleName mkMakeActions fp pwarnings m
+      rebuildWithoutFileCache moduleName mkMakeActions fp pwarnings m
     _ -> handleRebuildResult fp pwarnings res
 
 getIdeCheckState :: (MonadLsp ServerConfig m) => m (P.Environment -> P.CheckState)
@@ -112,7 +111,7 @@ getIdeCheckState =
         { P.checkAddIdeArtifacts = Just if infer then P.AllIdeExprs else P.IdentIdeExprs
         }
 
-rebuildWithoutCache ::
+rebuildWithoutFileCache ::
   (MonadLsp ServerConfig m, MonadReader LspEnvironment m, MonadThrow m) =>
   P.ModuleName ->
   (Map P.ModuleName FilePath -> [ExternDependency] -> P.MakeActions P.Make) ->
@@ -120,9 +119,9 @@ rebuildWithoutCache ::
   [CST.ParserWarning] ->
   P.Module ->
   m RebuildResult
-rebuildWithoutCache moduleName mkMakeActions fp pwarnings m = do
+rebuildWithoutFileCache moduleName mkMakeActions fp pwarnings m = do
   outputDirectory <- outputPath <$> getConfig
-  externDeps <- logPerfStandard "Select depenencies" $ selectDependencies m
+  externDeps <- logPerfStandard "Select dependencies" $ selectDependencies m
   let externs = fmap edExtern externDeps
   foreigns <- P.inferForeignModules (M.singleton moduleName (Right fp))
   exportEnv <- logPerfStandard "build export cache" $ addExternsToExportEnvOrThrow primEnv externs

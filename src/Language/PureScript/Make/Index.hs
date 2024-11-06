@@ -1,6 +1,17 @@
 {-# LANGUAGE BlockArguments #-}
 
-module Language.PureScript.Make.Index where
+module Language.PureScript.Make.Index
+  ( initDb,
+    addAllIndexing,
+    addAstModuleIndexing,
+    addExternIndexing,
+    indexAstModuleFromExtern,
+    indexAstDeclFromExternDecl,
+    dropTables,
+    indexExtern,
+    getExportedNames,
+  )
+where
 
 import Codec.Serialise (serialise)
 import Data.List (partition)
@@ -245,16 +256,18 @@ indexExtern conn extern = liftIO do
     [":path" := path]
   SQL.executeNamed
     conn
-    (SQL.Query "INSERT OR REPLACE INTO externs (path, ef_version, value, module_name) VALUES (:path, :ef_version, :value, :module_name)")
+    (SQL.Query "INSERT OR REPLACE INTO externs (path, ef_version, value, hash, module_name) VALUES (:path, :ef_version, :value, :module_name)")
     [ ":path" := path,
       ":ef_version" := P.efVersion extern,
-      ":value" := serialise extern,
+      ":value" := serialised,
+      ":hash" := hash serialised,
       ":module_name" := P.runModuleName name
     ]
   forM_ (P.efImports extern) $ insertEfImport conn name
   where
     name = efModuleName extern
     externPath = P.spanName (P.efSourceSpan extern)
+    serialised = serialise extern
 
 insertEfImport :: Connection -> P.ModuleName -> P.ExternsImport -> IO ()
 insertEfImport conn moduleName' ei = do
@@ -279,9 +292,11 @@ initDb conn = do
     "CREATE TABLE IF NOT EXISTS ast_declarations \
     \(module_name TEXT references ast_modules(module_name) ON DELETE CASCADE, name TEXT, name_type TEXT, decl_ctr TEXT, ctr_type TEXT, printed_type TEXT, start_line INTEGER, end_line INTEGER, start_col INTEGER, end_col INTEGER, lines INTEGER, cols INTEGER, exported BOOLEAN, generated BOOLEAN, \
     \UNIQUE(module_name, name_type, name) on conflict replace)"
-  SQL.execute_ conn "CREATE TABLE IF NOT EXISTS externs (path TEXT PRIMARY KEY, ef_version TEXT, value BLOB, module_name TEXT, UNIQUE(path) on conflict replace, UNIQUE(module_name) on conflict replace)"
+  SQL.execute_ conn "CREATE TABLE IF NOT EXISTS externs (path TEXT PRIMARY KEY, hash INT NOT NULL, ef_version TEXT, value BLOB NOT NULL, module_name TEXT NOT NULL, UNIQUE(path) on conflict replace, UNIQUE(module_name) on conflict replace)"
   SQL.execute_ conn "CREATE TABLE IF NOT EXISTS ef_imports (module_name TEXT references externs(module_name) ON DELETE CASCADE, imported_module TEXT, import_type TEXT, imported_as TEXT, value BLOB)"
   SQL.execute_ conn "CREATE TABLE IF NOT EXISTS available_srcs (path TEXT PRIMARY KEY NOT NULL, UNIQUE(path) on conflict replace)"
+  SQL.execute_ conn "CREATE TABLE IF NOT EXISTS export_environments (path TEXT PRIMARY KEY NOT NULL, hash INT NOT NULL, value BLOB NOT NULL, UNIQUE(path) on conflict replace)"
+  SQL.execute_ conn "CREATE TABLE IF NOT EXISTS environments (path TEXT PRIMARY KEY NOT NULL, hash INT NOT NULL, value BLOB NOT NULL, UNIQUE(path) on conflict replace)"
 
   addDbIndexes conn
 

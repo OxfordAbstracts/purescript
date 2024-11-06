@@ -1,24 +1,23 @@
 module Language.PureScript.Lsp.Cache where
 
-import Codec.Serialise (deserialise)
+import Codec.Serialise (deserialise, serialise)
 import Data.Aeson qualified as A
 import Data.Map qualified as Map
 import Data.Text qualified as T
 import Database.SQLite.Simple
+import Language.LSP.Server (MonadLsp, getConfig)
+import Language.PureScript qualified as P
 import Language.PureScript.AST.Declarations as P
 import Language.PureScript.Externs (ExternsFile (efModuleName))
-import Language.PureScript.Externs qualified as P
 import Language.PureScript.Glob (PSCGlobs (..), toInputGlobs, warnFileTypeNotFound)
 import Language.PureScript.Ide.Error (IdeError (GeneralError))
 import Language.PureScript.Lsp.DB qualified as DB
-import Language.PureScript.Lsp.Types (LspEnvironment, ExternDependency)
-import Language.PureScript.Names qualified as P
-import Protolude
-import System.Directory (doesDirectoryExist, doesFileExist, getDirectoryContents, makeAbsolute, canonicalizePath)
-import System.FilePath (normalise, (</>))
 import Language.PureScript.Lsp.Log (logPerfStandard)
-import Language.PureScript.Lsp.ServerConfig (ServerConfig(outputPath, globs, inputSrcFromFile))
-import Language.LSP.Server (getConfig, MonadLsp)
+import Language.PureScript.Lsp.ServerConfig (ServerConfig (globs, inputSrcFromFile, outputPath))
+import Language.PureScript.Lsp.Types (ExternDependency (edHash), LspEnvironment)
+import Protolude
+import System.Directory (canonicalizePath, doesDirectoryExist, doesFileExist, getDirectoryContents, makeAbsolute)
+import System.FilePath (normalise, (</>))
 
 selectAllExternsMap :: (MonadIO m, MonadReader LspEnvironment m) => m (Map P.ModuleName ExternsFile)
 selectAllExternsMap = do
@@ -27,7 +26,6 @@ selectAllExternsMap = do
 selectAllExterns :: (MonadIO m, MonadReader LspEnvironment m) => m [ExternsFile]
 selectAllExterns = do
   DB.query_ (Query "SELECT value FROM externs") <&> fmap (deserialise . fromOnly)
-
 
 selectDependencies :: (MonadIO m, MonadReader LspEnvironment m) => P.Module -> m [ExternDependency]
 selectDependencies (P.Module _ _ _ decls _) = do
@@ -50,7 +48,7 @@ selectDependencies (P.Module _ _ _ decls _) = do
           "module_names as (select distinct(module_name), level",
           "from topo join ef_imports on topo.imported_module = ef_imports.module_name ",
           "order by level desc)",
-          "select value, level from externs ",
+          "select value, level, id from externs ",
           "join module_names on externs.module_name = module_names.module_name ",
           "order by level desc, module_names.module_name desc;"
         ]
@@ -120,3 +118,32 @@ updateAvailableSrcs = logPerfStandard "updateAvailableSrcs" $ do
       DB.executeNamed (Query "INSERT INTO available_srcs (path) VALUES (:path)") [":path" := absPath]
 
   pure srcs
+
+cacheEnvironment :: (MonadIO m, MonadReader LspEnvironment m) => FilePath -> [ExternDependency] -> P.Environment -> m ()
+cacheEnvironment path deps env = do
+  DB.executeNamed
+    (Query "INSERT INTO environments (path, hash, value) VALUES (:deps, :env)")
+    [ ":path" := path,
+      ":hash" := hash (sort $ fmap edHash deps),
+      ":value" := serialise env
+    ]
+
+-- cachedEnvironment :: (MonadIO m, MonadReader LspEnvironment m) => FilePath -> [ExternDependency] -> m (Maybe P.Environment)
+-- cachedEnvironment path deps = do
+--   res <-
+--     DB.queryNamed
+--       (Query "SELECT value FROM environments WHERE path = :path AND hash = :hash")
+--       [ ":path" := path,
+--         ":hash" := hash (sort $ fmap edHash deps)
+--       ]
+--   pure $ deserialise . fromOnly <$> listToMaybe res
+
+-- cacheExportEnvironment :: (MonadIO m, MonadReader LspEnvironment m) => FilePath -> [ExternDependency] -> P.Env -> m ()
+-- cacheExportEnvironment path deps env = do
+--   DB.executeNamed
+--     (Query "INSERT INTO export_environments (path, hash, value) VALUES (:deps, :env)")
+--     [ ":path" := path,
+--       ":hash" := hash (sort $ fmap edHash deps),
+--       ":value" := serialise env
+--     ]
+
