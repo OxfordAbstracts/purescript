@@ -18,7 +18,7 @@ module Language.PureScript.TypeChecker.IdeArtifacts
     insertModule,
     insertImport,
     useSynonymns,
-    debugSynonyms, 
+    debugSynonyms,
     smallestArtifact,
     debugIdeArtifacts,
     insertIaTypeName,
@@ -33,6 +33,7 @@ where
 -- import Language.PureScript qualified as P
 
 import Data.Map qualified as Map
+import Data.Set qualified as Set
 import Data.Text qualified as T
 import Language.PureScript.AST.Binders qualified as P
 import Language.PureScript.AST.Declarations qualified as P
@@ -44,7 +45,6 @@ import Language.PureScript.Pretty.Types qualified as P
 import Language.PureScript.Types qualified as P
 import Protolude
 import Safe (minimumByMay)
-import Data.Set qualified as Set
 
 data IdeArtifacts
   = IdeArtifacts
@@ -97,7 +97,7 @@ endSubstitutions :: IdeArtifacts -> IdeArtifacts
 endSubstitutions (IdeArtifacts m u s) = IdeArtifacts (Map.unionWith (<>) m u) Map.empty s
 
 smallestArtifact :: (Ord a) => (IdeArtifact -> a) -> [IdeArtifact] -> Maybe IdeArtifact
-smallestArtifact tieBreaker = minimumByMay (compare `on` (\a -> (artifactSize a, tieBreaker a))) 
+smallestArtifact tieBreaker = minimumByMay (compare `on` (\a -> (artifactSize a, tieBreaker a)))
 
 artifactsAtSpan :: P.SourceSpan -> IdeArtifacts -> Set IdeArtifact
 artifactsAtSpan span (IdeArtifacts m _ _) =
@@ -110,21 +110,22 @@ artifactSize (IdeArtifact {..}) =
     P.sourcePosColumn (P.spanEnd iaSpan) - P.sourcePosColumn (P.spanStart iaSpan)
   )
 
-getArtifactsAtPosition :: P.SourcePos -> IdeArtifacts ->  [IdeArtifact]
+getArtifactsAtPosition :: P.SourcePos -> IdeArtifacts -> [IdeArtifact]
 getArtifactsAtPosition pos (IdeArtifacts m _ _) =
   Map.lookup (P.sourcePosLine pos) m
-    & maybe [] Set.toList 
+    & maybe [] Set.toList
     & filter (\ia -> P.sourcePosColumn (P.spanStart (iaSpan ia)) <= posCol && P.sourcePosColumn (P.spanEnd (iaSpan ia)) >= posCol)
   where
     posCol = P.sourcePosColumn pos
 
 insertIaExpr :: P.Expr -> P.SourceType -> IdeArtifacts -> IdeArtifacts
 insertIaExpr expr ty = case ss of
-  Just span | not (generatedExpr expr) -> 
-       insertAtLines span (IaExpr (exprCtr expr <> ": " <> fromMaybe "_" exprIdent) exprIdent (exprNameType expr)) ty mName defSpan
+  Just span
+    | not (generatedExpr expr) ->
+        insertAtLines span (IaExpr (exprCtr expr <> ": " <> fromMaybe "_" exprIdent) exprIdent (exprNameType expr)) ty mName defSpan
     where
       defSpan =
-        Left <$> (posFromQual =<< exprIdentQual expr )
+        Left <$> (posFromQual =<< exprIdentQual expr)
 
       mName = exprIdentQual expr >>= moduleNameFromQual
 
@@ -142,7 +143,7 @@ insertIaExpr expr ty = case ss of
         _ -> Nothing
 
       exprNameType :: P.Expr -> Maybe LspNameType
-      exprNameType = \case 
+      exprNameType = \case
         P.Var _ _ -> Just IdentNameType
         P.Constructor _ _ -> Just DctorNameType
         P.Op _ _ -> Just ValOpNameType
@@ -150,7 +151,6 @@ insertIaExpr expr ty = case ss of
         P.TypedValue _ e _ -> exprNameType e
         P.App e (P.TypeClassDictionary {}) -> exprNameType e
         _ -> Nothing
-        
   _ -> identity
   where
     ss = P.exprSourceSpan expr
@@ -233,7 +233,10 @@ moduleNameFromQual (P.Qualified (P.ByModuleName mn) _) = Just mn
 moduleNameFromQual _ = Nothing
 
 insertAtLines :: P.SourceSpan -> IdeArtifactValue -> P.SourceType -> Maybe P.ModuleName -> Maybe (Either P.SourcePos P.SourceSpan) -> IdeArtifacts -> IdeArtifacts
-insertAtLines span value ty mName defSpan (IdeArtifacts m u s) = IdeArtifacts m (foldr insert u (linesFromSpan span)) s
+insertAtLines span@(P.SourceSpan _ start end) value ty mName defSpan ia@(IdeArtifacts m u s) =
+  if start == P.SourcePos 0 0 && end == P.SourcePos 0 0 -- ignore internal module spans
+    then ia
+    else IdeArtifacts m (foldr insert u (linesFromSpan span)) s
   where
     insert line = Map.insertWith Set.union line (Set.singleton $ IdeArtifact span value ty mName defSpan)
 
@@ -271,16 +274,20 @@ insertTypeSynonym :: P.Type a -> P.Type a -> IdeArtifacts -> IdeArtifacts
 insertTypeSynonym syn ty (IdeArtifacts m u s) = IdeArtifacts m u (Map.insert (void syn) (void ty) s)
 
 useSynonymns :: forall a. IdeArtifacts -> P.Type a -> P.Type ()
-useSynonymns (IdeArtifacts _ _ s) ty =  P.everywhereOnTypes go (void ty)
+useSynonymns (IdeArtifacts _ _ s) ty = P.everywhereOnTypes go (void ty)
   where
-    go :: P.Type  () ->  P.Type ()
-    go t = 
+    go :: P.Type () -> P.Type ()
+    go t =
       Map.lookup t s
         & maybe t go
 
 debugSynonyms :: IdeArtifacts -> Text
-debugSynonyms (IdeArtifacts _ _ s) = show $ Map.toList s <&> bimap
-  (ellipsis 100 . T.pack .  P.prettyPrintType 3) (ellipsis 100 . T.pack .  P.prettyPrintType 3)
+debugSynonyms (IdeArtifacts _ _ s) =
+  show $
+    Map.toList s
+      <&> bimap
+        (ellipsis 100 . T.pack . P.prettyPrintType 3)
+        (ellipsis 100 . T.pack . P.prettyPrintType 3)
 
 debugIdeArtifact :: IdeArtifact -> Text
 debugIdeArtifact (IdeArtifact {..}) =
