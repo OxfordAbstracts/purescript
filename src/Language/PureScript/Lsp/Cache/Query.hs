@@ -13,7 +13,6 @@ import Language.PureScript.Lsp.ServerConfig (ServerConfig, getMaxCompletions, ge
 import Language.PureScript.Lsp.Types (LspEnvironment)
 import Language.PureScript.Names qualified as P
 import Protolude
-import Language.PureScript.Lsp.Log (debugLsp)
 
 ------------------------------------------------------------------------------------------------------------------------
 ------------ AST -------------------------------------------------------------------------------------------------------
@@ -69,7 +68,6 @@ getAstDeclarationsStartingWith ::
   Text ->
   m [CompletionResult]
 getAstDeclarationsStartingWith moduleName' prefix = do
-  debugLsp $ "prefix: " <> prefix
   limit <- getMaxCompletions
   typeLen <- getMaxTypeLength
   let offset = 0 :: Int

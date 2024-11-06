@@ -51,7 +51,6 @@ hoverHandler = Server.requestHandler Message.SMethod_TextDocumentHover $ \req re
 
   forLsp filePathMb \filePath -> do
     cacheOpenMb <- cachedRebuild filePath
-    debugLsp $ "Cache found: " <> show (isJust cacheOpenMb)
     when (isNothing cacheOpenMb) do
       debugLsp $ "file path not cached: " <> T.pack filePath
       debugLsp . show =<< cachedFilePaths
@@ -128,7 +127,9 @@ hoverHandler = Server.requestHandler Message.SMethod_TextDocumentHover $ \req re
                   [ showDocs <$> docs,
                     showTypeSection modName name' <$> head foundTypes
                   ]
-        _ -> nullRes
+        Nothing -> do 
+          debugLsp "No hover artifact found"
+          nullRes
 
 showTypeSection :: P.ModuleName -> Text -> Text -> Text
 showTypeSection mName expr ty = "*" <> P.runModuleName mName <> "*\n" <> pursMd (expr <> " :: " <> ty)

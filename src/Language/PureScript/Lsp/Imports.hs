@@ -24,7 +24,7 @@ import Language.PureScript.CST qualified as CST
 import Language.PureScript.CST.Monad qualified as CSTM
 import Language.PureScript.Ide.Imports (Import (Import), prettyPrintImportSection, sliceImportSection)
 import Language.PureScript.Lsp.Cache.Query (getAstDeclarationInModule)
-import Language.PureScript.Lsp.Log (debugLsp, errorLsp, warnLsp)
+import Language.PureScript.Lsp.Log (errorLsp, warnLsp)
 import Language.PureScript.Lsp.NameType (LspNameType (..))
 import Language.PureScript.Lsp.ReadFile (lspReadFileRope)
 import Language.PureScript.Lsp.ServerConfig (ServerConfig)
@@ -49,9 +49,7 @@ addImportToTextEdit completionItem completeItemData = do
   pure $ set LSP.additionalTextEdits importEdits completionItem
 
 getImportEdits :: (MonadLsp ServerConfig m, MonadReader LspEnvironment m, MonadThrow m) => CompleteItemData -> m (Maybe [TextEdit])
-getImportEdits cid@(CompleteItemData path moduleName' importedModuleName name nameType word (Range wordStart _)) = do
-  debugLsp $ "CompletionItemData: " <> show cid
-  debugLsp $ "wordQualifierMb: " <> show (getIdentModuleQualifier word)
+getImportEdits (CompleteItemData path moduleName' importedModuleName name nameType word (Range wordStart _)) = do
   parseRes <- parseImportsFromFile (filePathToNormalizedUri path)
   case parseRes of
     Left err -> do

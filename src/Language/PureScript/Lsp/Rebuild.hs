@@ -13,7 +13,7 @@ import Data.Map.Lazy qualified as M
 import Data.Set qualified as Set
 import Language.LSP.Protocol.Types (NormalizedUri, fromNormalizedUri, uriToFilePath)
 import Language.LSP.Server (MonadLsp, getConfig)
-import Language.PureScript (ExternsFile (efModuleName), primEnv)
+import Language.PureScript (ExternsFile, primEnv)
 import Language.PureScript.AST qualified as P
 import Language.PureScript.CST qualified as CST
 import Language.PureScript.Environment qualified as P
@@ -25,7 +25,7 @@ import Language.PureScript.Lsp.Log (debugLsp, logPerfStandard, warnLsp)
 import Language.PureScript.Lsp.ReadFile (lspReadFileText)
 import Language.PureScript.Lsp.ServerConfig (ServerConfig (outputPath), getInferExpressions, getMaxFilesInCache)
 import Language.PureScript.Lsp.State (addExternToExportEnv, addExternsToExportEnv, buildExportEnvCache, cacheDependencies, cacheRebuild', cachedRebuild, getDbConn, mergeExportEnvCache, updateCachedModule, updateCachedModule')
-import Language.PureScript.Lsp.Types (ExternDependency (edExtern, edLevel), LspEnvironment (lspStateVar), LspState, OpenFile (OpenFile, ofDependencies))
+import Language.PureScript.Lsp.Types (ExternDependency (edExtern), LspEnvironment (lspStateVar), LspState, OpenFile (OpenFile))
 import Language.PureScript.Make qualified as P
 import Language.PureScript.Make.Index (addAllIndexing)
 import Language.PureScript.Names qualified as P
@@ -157,25 +157,6 @@ couldBeFromNewImports =
     P.UnknownImportDataConstructor {} -> True
     P.NameIsUndefined _ -> True
     _ -> False
-
-cachedImportsAreInActual ::
-  ( MonadReader Language.PureScript.Lsp.Types.LspEnvironment m,
-    MonadLsp ServerConfig m
-  ) =>
-  P.Module ->
-  OpenFile ->
-  m Bool
-cachedImportsAreInActual (P.Module _ _ _ decls _) (OpenFile {ofDependencies}) =
-  let cachedDirectDeps = Set.fromList $ efModuleName . edExtern <$> filter ((== 1) . edLevel) ofDependencies
-      actualDirectDeps =
-        Set.fromList $
-          decls >>= \case
-            P.ImportDeclaration _ importName _ _ -> [importName]
-            _ -> []
-   in do
-        debugLsp $ "Cached direct deps: " <> show (Set.map P.runModuleName cachedDirectDeps)
-        debugLsp $ "Actual direct deps: " <> show (Set.map P.runModuleName actualDirectDeps)
-        pure $ cachedDirectDeps `Set.isSubsetOf` actualDirectDeps
 
 buildExportEnvCacheAndHandleErrors ::
   (MonadReader Language.PureScript.Lsp.Types.LspEnvironment m, MonadLsp ServerConfig m, MonadThrow m) =>

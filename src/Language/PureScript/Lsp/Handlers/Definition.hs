@@ -21,6 +21,7 @@ import Language.PureScript.Lsp.Types (OpenFile (OpenFile, ofEndCheckState))
 import Language.PureScript.Lsp.Util (positionToSourcePos, sourcePosToPosition)
 import Language.PureScript.TypeChecker.IdeArtifacts (IdeArtifact (..), IdeArtifactValue (..), getArtifactsAtPosition, smallestArtifact)
 import Protolude
+import Language.PureScript.Lsp.Docs (readDeclarationDocsSourceSpan)
 
 definitionHandler :: Server.Handlers HandlerM
 definitionHandler = Server.requestHandler Message.SMethod_TextDocumentDefinition $ \req res -> do
@@ -44,7 +45,10 @@ definitionHandler = Server.requestHandler Message.SMethod_TextDocumentDefinition
         case head declSpans of
           Just sourceSpan ->
             locationRes (P.spanName sourceSpan) (spanToRange sourceSpan)
-          Nothing -> nullRes
+          Nothing -> do
+            debugLsp $ "No definition in DB found for " <> show nameType <> " " <> show ident <> " in " <> show modName 
+            docSsMb <- readDeclarationDocsSourceSpan modName ident
+            forLsp docSsMb spanRes
 
       respondWithModule :: P.ModuleName -> HandlerM ()
       respondWithModule modName = do
@@ -61,7 +65,6 @@ definitionHandler = Server.requestHandler Message.SMethod_TextDocumentDefinition
     forLsp cacheOpenMb \OpenFile {..} -> do
       let allArtifacts = P.checkIdeArtifacts ofEndCheckState
           atPos = getArtifactsAtPosition (positionToSourcePos pos) allArtifacts
-      debugLsp $ "def artifacts length: " <> show (length atPos)
       let smallest = smallestArtifact (\a -> (negate $ artifactInterest a, isNothing (iaDefinitionPos a), isNothing (iaDefinitionModule a))) atPos
       case smallest of
         Just (IdeArtifact _ (IaModule modName) _ _ _) -> respondWithModule modName
@@ -83,7 +86,7 @@ definitionHandler = Server.requestHandler Message.SMethod_TextDocumentDefinition
         Just (IdeArtifact _ _ _ Nothing (Just (Left defPos))) -> do
           posRes filePath defPos
         _ -> do
-          debugLsp $ "No definition found for artifact: " <> show smallest
+          debugLsp "No relevat definition found for artifact"
           nullRes
 
 artifactInterest :: IdeArtifact -> Int

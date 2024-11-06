@@ -44,11 +44,12 @@ import Language.PureScript.Pretty.Types qualified as P
 import Language.PureScript.Types qualified as P
 import Protolude
 import Safe (minimumByMay)
+import Data.Set qualified as Set
 
 data IdeArtifacts
   = IdeArtifacts
-      (Map Line [IdeArtifact]) -- with type var substitutions
-      (Map Line [IdeArtifact]) -- without var substitutions
+      (Map Line (Set IdeArtifact)) -- with type var substitutions
+      (Map Line (Set IdeArtifact)) -- without var substitutions
       (Map (P.Type ()) (P.Type ())) -- type synonym substitutions
   deriving (Show)
 
@@ -72,7 +73,7 @@ data IdeArtifact = IdeArtifact
     iaDefinitionModule :: Maybe P.ModuleName,
     iaDefinitionPos :: Maybe (Either P.SourcePos P.SourceSpan)
   }
-  deriving (Show)
+  deriving (Show, Eq, Ord)
 
 data IdeArtifactValue
   = IaExpr Text (Maybe Text) (Maybe LspNameType)
@@ -84,10 +85,10 @@ data IdeArtifactValue
   | IaClassName (P.ProperName 'P.ClassName)
   | IaModule P.ModuleName
   | IaImport P.ModuleName P.DeclarationRef
-  deriving (Show)
+  deriving (Show, Ord, Eq)
 
 substituteArtifactTypes :: (P.SourceType -> P.SourceType) -> IdeArtifacts -> IdeArtifacts
-substituteArtifactTypes f (IdeArtifacts m u s) = IdeArtifacts m (Map.map (fmap (onArtifactType f)) u) s
+substituteArtifactTypes f (IdeArtifacts m u s) = IdeArtifacts m (Map.map (Set.map (onArtifactType f)) u) s
 
 onArtifactType :: (P.SourceType -> P.SourceType) -> IdeArtifact -> IdeArtifact
 onArtifactType f (IdeArtifact {..}) = IdeArtifact iaSpan iaValue (f iaType) iaDefinitionModule iaDefinitionPos
@@ -96,12 +97,12 @@ endSubstitutions :: IdeArtifacts -> IdeArtifacts
 endSubstitutions (IdeArtifacts m u s) = IdeArtifacts (Map.unionWith (<>) m u) Map.empty s
 
 smallestArtifact :: (Ord a) => (IdeArtifact -> a) -> [IdeArtifact] -> Maybe IdeArtifact
-smallestArtifact tieBreaker = minimumByMay (compare `on` (\a -> (artifactSize a, tieBreaker a)))
+smallestArtifact tieBreaker = minimumByMay (compare `on` (\a -> (artifactSize a, tieBreaker a))) 
 
-artifactsAtSpan :: P.SourceSpan -> IdeArtifacts -> [IdeArtifact]
+artifactsAtSpan :: P.SourceSpan -> IdeArtifacts -> Set IdeArtifact
 artifactsAtSpan span (IdeArtifacts m _ _) =
   Map.lookup (P.sourcePosLine $ P.spanStart span) m
-    & maybe [] (filter ((==) span . iaSpan))
+    & maybe Set.empty (Set.filter ((==) span . iaSpan))
 
 artifactSize :: IdeArtifact -> (Int, Int)
 artifactSize (IdeArtifact {..}) =
@@ -109,10 +110,10 @@ artifactSize (IdeArtifact {..}) =
     P.sourcePosColumn (P.spanEnd iaSpan) - P.sourcePosColumn (P.spanStart iaSpan)
   )
 
-getArtifactsAtPosition :: P.SourcePos -> IdeArtifacts -> [IdeArtifact]
+getArtifactsAtPosition :: P.SourcePos -> IdeArtifacts ->  [IdeArtifact]
 getArtifactsAtPosition pos (IdeArtifacts m _ _) =
   Map.lookup (P.sourcePosLine pos) m
-    & fromMaybe []
+    & maybe [] Set.toList 
     & filter (\ia -> P.sourcePosColumn (P.spanStart (iaSpan ia)) <= posCol && P.sourcePosColumn (P.spanEnd (iaSpan ia)) >= posCol)
   where
     posCol = P.sourcePosColumn pos
@@ -234,7 +235,7 @@ moduleNameFromQual _ = Nothing
 insertAtLines :: P.SourceSpan -> IdeArtifactValue -> P.SourceType -> Maybe P.ModuleName -> Maybe (Either P.SourcePos P.SourceSpan) -> IdeArtifacts -> IdeArtifacts
 insertAtLines span value ty mName defSpan (IdeArtifacts m u s) = IdeArtifacts m (foldr insert u (linesFromSpan span)) s
   where
-    insert line = Map.insertWith (<>) line [IdeArtifact span value ty mName defSpan]
+    insert line = Map.insertWith Set.union line (Set.singleton $ IdeArtifact span value ty mName defSpan)
 
 linesFromSpan :: P.SourceSpan -> [Line]
 linesFromSpan ss = [P.sourcePosLine $ P.spanStart ss .. P.sourcePosLine $ P.spanEnd ss]

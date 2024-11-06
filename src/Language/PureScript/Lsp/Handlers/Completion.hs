@@ -18,7 +18,7 @@ import Language.PureScript.Ide.Imports (Import (..))
 import Language.PureScript.Lsp.Cache.Query (CompletionResult (crModule, crName, crNameType, crType), getAstDeclarationsStartingWith, getAstDeclarationsStartingWithAndSearchingModuleNames, getAstDeclarationsStartingWithOnlyInModule)
 import Language.PureScript.Lsp.Docs (readDeclarationDocsWithNameType)
 import Language.PureScript.Lsp.Imports (addImportToTextEdit, getIdentModuleQualifier, getMatchingImport, parseModuleNameFromFile)
-import Language.PureScript.Lsp.Log (debugLsp, logPerfStandard)
+import Language.PureScript.Lsp.Log (logPerfStandard)
 import Language.PureScript.Lsp.Monad (HandlerM)
 import Language.PureScript.Lsp.NameType (LspNameType (..), readableType, readableTypeIn)
 import Language.PureScript.Lsp.ServerConfig (getMaxCompletions)
@@ -50,11 +50,9 @@ completionAndResolveHandlers =
           forLsp vfMb \vf -> do
             let (range, word) = getSymbolAt (VFS._file_text vf) pos
             mNameMb <- parseModuleNameFromFile uri
-            debugLsp $ "word: " <> show word
             forLsp mNameMb \mName -> do
               let withQualifier = getIdentModuleQualifier word
                   wordWithoutQual = maybe word snd withQualifier
-              debugLsp $ "withQualifier: " <> show withQualifier
               limit <- getMaxCompletions
               matchingImport <- maybe (pure Nothing) (getMatchingImport uri . fst) withQualifier
               decls <- logPerfStandard "get completion declarations" case (matchingImport, withQualifier) of
