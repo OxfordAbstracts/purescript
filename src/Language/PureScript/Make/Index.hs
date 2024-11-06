@@ -285,7 +285,7 @@ initDb :: Connection -> IO ()
 initDb conn = do
   SQL.execute_ conn "pragma journal_mode=wal;"
   SQL.execute_ conn "pragma foreign_keys=ON;"
-  SQL.execute_ conn "pragma cache_size=2000;"
+  SQL.execute_ conn "pragma cache_size=-6000;"
   SQL.execute_ conn "CREATE TABLE IF NOT EXISTS ast_modules (module_name TEXT, path TEXT, UNIQUE(module_name) on conflict replace, UNIQUE(path) on conflict replace)"
   SQL.execute_
     conn
