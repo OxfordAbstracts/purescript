@@ -86,6 +86,7 @@ hoverHandler = Server.requestHandler Message.SMethod_TextDocumentHover $ \req re
                   modName = fromMaybe ofModuleName iaDefinitionModule
               docs <- readDeclarationDocsWithNameType modName TyNameType name'
               foundTypes <- getAstDeclarationTypeInModule (Just TyNameType) modName name'
+              debugLsp $ "Hovering type name: " <> name'
               markdownRes (Just $ spanToRange iaSpan) $
                 joinMarkup
                   [ Just inferredRes,
@@ -96,6 +97,7 @@ hoverHandler = Server.requestHandler Message.SMethod_TextDocumentHover $ \req re
               let name' = P.runProperName name
                   inferredRes = pursTypeStr name' (Just $ prettyPrintTypeSingleLine iaType) []
                   modName = fromMaybe ofModuleName iaDefinitionModule
+              debugLsp $ "Hovering class name: " <> name'
               docs <- readDeclarationDocsWithNameType modName TyClassNameType name'
               markdownRes (Just $ spanToRange iaSpan) $
                 joinMarkup
@@ -107,6 +109,7 @@ hoverHandler = Server.requestHandler Message.SMethod_TextDocumentHover $ \req re
             IaBinder binder -> do
               let
                 binders = bindersAtPos (positionToSourcePos pos) allArtifacts
+              debugLsp "Hovering binder"
 
               if length binders < 2 then do
                 let  inferredRes = pursTypeStr (dispayBinderOnHover binder) (Just $ prettyPrintTypeSingleLine $ useSynonymns allArtifacts iaType) []
@@ -124,6 +127,7 @@ hoverHandler = Server.requestHandler Message.SMethod_TextDocumentHover $ \req re
             IaDecl decl _ -> do
               markdownRes (Just $ spanToRange iaSpan) $ pursTypeStr (fromMaybe "_" decl) (Just $ prettyPrintTypeSingleLine $ useSynonymns allArtifacts iaType) []
             IaType ty -> do
+              debugLsp "Hovering type"
               markdownRes (Just $ spanToRange iaSpan) $ pursTypeStr (prettyPrintTypeSingleLine ty) (Just $ prettyPrintTypeSingleLine iaType) []
             IaModule modName -> do
               docsMb <- readModuleDocs modName

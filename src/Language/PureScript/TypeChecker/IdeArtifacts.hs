@@ -26,7 +26,7 @@ module Language.PureScript.TypeChecker.IdeArtifacts
     substituteArtifactTypes,
     endSubstitutions,
     artifactInterest,
-    bindersAtPos
+    bindersAtPos,
   )
 where
 
@@ -135,9 +135,19 @@ getArtifactsAtPosition :: P.SourcePos -> IdeArtifacts -> [IdeArtifact]
 getArtifactsAtPosition pos (IdeArtifacts m _ _) =
   Map.lookup (P.sourcePosLine pos) m
     & maybe [] Set.toList
-    & filter (\ia -> P.sourcePosColumn (P.spanStart (iaSpan ia)) <= posCol && P.sourcePosColumn (P.spanEnd (iaSpan ia)) >= posCol)
+    & filter (srcPosInSpan pos . iaSpan)
+
+srcPosInSpan :: P.SourcePos -> P.SourceSpan -> Bool
+srcPosInSpan P.SourcePos {..} P.SourceSpan {..} =
+  sourcePosLine >= spanStartLine
+    && sourcePosLine <= spanEndLine
+    && (sourcePosColumn >= spanStartColumn || sourcePosLine > spanStartLine)
+    && (sourcePosColumn <= spanEndColumn || sourcePosLine < spanEndLine)
   where
-    posCol = P.sourcePosColumn pos
+    spanStartLine = P.sourcePosLine spanStart
+    spanEndLine = P.sourcePosLine spanEnd
+    spanStartColumn = P.sourcePosColumn spanStart
+    spanEndColumn = P.sourcePosColumn spanEnd
 
 insertIaExpr :: P.Expr -> P.SourceType -> IdeArtifacts -> IdeArtifacts
 insertIaExpr expr ty = case ss of

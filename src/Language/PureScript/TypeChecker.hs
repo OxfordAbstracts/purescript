@@ -1,3 +1,4 @@
+{-# OPTIONS_GHC -Wno-unused-imports #-}
 -- |
 -- The top-level type checker, which checks all declarations in a module.
 --
@@ -35,7 +36,7 @@ import Language.PureScript.Environment (DataDeclType(..), Environment(..), Funct
 import Language.PureScript.Errors (MultipleErrors, SimpleErrorMessage(..), addHint, errorMessage, errorMessage', positionedError, rethrow, warnAndRethrow)
 import Language.PureScript.Linter (checkExhaustiveExpr)
 import Language.PureScript.Linter.Wildcards (ignoreWildcardsUnderCompleteTypeSignatures)
-import Language.PureScript.Names (Ident, ModuleName, ProperName, ProperNameType(..), Qualified(..), QualifiedBy(..), coerceProperName, disqualify, isPlainIdent, mkQualified)
+import Language.PureScript.Names (Ident, ModuleName, ProperName (runProperName, ProperName), ProperNameType(..), Qualified(..), QualifiedBy(..), coerceProperName, disqualify, isPlainIdent, mkQualified, getQual)
 import Language.PureScript.Roles (Role)
 import Language.PureScript.Sugar.Names.Env (Exports(..))
 import Language.PureScript.TypeChecker.Kinds as T
@@ -46,6 +47,7 @@ import Language.PureScript.TypeChecker.Types as T
 import Language.PureScript.TypeChecker.Unify (varIfUnknown)
 import Language.PureScript.TypeClassDictionaries (NamedDict, TypeClassDictionaryInScope(..))
 import Language.PureScript.Types (Constraint(..), SourceConstraint, SourceType, Type(..), containsForAll, eqType, everythingOnTypes, overConstraintArgs, srcInstanceType, unapplyTypes)
+import Language.PureScript.Types qualified as P
 
 addDataType
   :: (MonadState CheckState m, MonadError MultipleErrors m, MonadWriter MultipleErrors m)
@@ -393,6 +395,7 @@ typeCheckAll moduleName = traverse go
         not (M.member qualifiedClassName (typeClasses env))
       (args', implies', tys', kind) <- kindOfClass moduleName (sa, pn, args, implies, tys)
       addTypeClass moduleName qualifiedClassName (fmap Just <$> args') implies' deps tys' kind
+      addIdeClassName (Just moduleName) (fst sa) pn kind
       return d
   go (TypeInstanceDeclaration _ _ _ _ (Left _) _ _ _ _) = internalError "typeCheckAll: type class instance generated name should have been desugared"
   go d@(TypeInstanceDeclaration sa@(ss, _) _ ch idx (Right dictName) deps className tys body) =
@@ -415,10 +418,20 @@ typeCheckAll moduleName = traverse go
           checkOverlappingInstance ss chainId dictName vars className typeClass tys'' nonOrphanModules
           _ <- traverseTypeInstanceBody checkInstanceMembers body
           deps'' <- (traverse . overConstraintArgs . traverse) replaceAllTypeSynonyms deps'
-          let dict =
+          let 
+              srcType = srcInstanceType ss vars className tys''
+              dict =
                 TypeClassDictionaryInScope chainId idx qualifiedDictName [] className vars kinds' tys'' (Just deps'') $
-                  if isPlainIdent dictName then Nothing else Just $ srcInstanceType ss vars className tys''
+                  if isPlainIdent dictName then Nothing else Just srcType
+                  
           addTypeClassDictionaries (ByModuleName moduleName) . M.singleton className $ M.singleton (tcdValue dict) (pure dict)
+          let 
+            kind = M.lookup (coerceProperName <$> className) (types env)
+
+          addIdeClassName (Just $ fromMaybe moduleName $ getQual className) ss
+            ( ProperName $ (("typeCheckAll: " <> T.pack (show tys'') <> " : ") <>) $ runProperName $ disqualify className) 
+            $ maybe P.srcTypeWildcard fst kind
+
           return d
 
   checkInstanceArity :: Ident -> Qualified (ProperName 'ClassName) -> TypeClassData -> [SourceType] -> m ()
