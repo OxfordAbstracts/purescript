@@ -23,7 +23,7 @@ import Language.PureScript.Lsp.Print (printName)
 import Language.PureScript.Lsp.State (cachedFilePaths, cachedRebuild)
 import Language.PureScript.Lsp.Types (OpenFile (..))
 import Language.PureScript.Lsp.Util (positionToSourcePos)
-import Language.PureScript.TypeChecker.IdeArtifacts (IdeArtifact (..), IdeArtifactValue (..), getArtifactsAtPosition, smallestArtifact, useSynonymns, debugIdeArtifact)
+import Language.PureScript.TypeChecker.IdeArtifacts (IdeArtifact (..), IdeArtifactValue (..), getArtifactsAtPosition, smallestArtifact, useSynonymns, debugIdeArtifact, artifactInterest)
 import Protolude hiding (handle, to)
 
 hoverHandler :: Server.Handlers HandlerM
@@ -96,11 +96,9 @@ hoverHandler = Server.requestHandler Message.SMethod_TextDocumentHover $ \req re
                   inferredRes = pursTypeStr name' (Just $ prettyPrintTypeSingleLine iaType) []
                   modName = fromMaybe ofModuleName iaDefinitionModule
               docs <- readDeclarationDocsWithNameType modName TyClassNameType name'
-              foundTypes <- getAstDeclarationTypeInModule (Just TyClassNameType) modName name'
               markdownRes (Just $ spanToRange iaSpan) $
                 joinMarkup
                   [ Just inferredRes,
-                    showTypeSection modName (P.runProperName name) <$> head foundTypes,
                     showDocs <$> docs
                   ]
             IaIdent ident -> do
@@ -140,15 +138,6 @@ showDocs d = "**Docs**\n" <> d
 
 joinMarkup :: [Maybe Text] -> Text
 joinMarkup = T.intercalate "\n---\n" . catMaybes
-
--- | Prioritize artifacts that are more likely to be interesting to the developer on hover or click
-artifactInterest :: IdeArtifact -> Int
-artifactInterest (IdeArtifact {..}) = case iaValue of
-  IaBinder {} -> 2
-  IaTypeName {} -> 3
-  IaClassName {} -> 3
-  IaExpr _ (Just "bind") _ -> -10 -- desugared do notation is not interesting
-  _ -> 1
 
 countUnkownsAndVars :: P.Type a -> Int
 countUnkownsAndVars = P.everythingOnTypes (+) go

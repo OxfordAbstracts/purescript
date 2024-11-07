@@ -19,7 +19,7 @@ import Language.PureScript.Lsp.Print (printName)
 import Language.PureScript.Lsp.State (cachedFilePaths, cachedRebuild)
 import Language.PureScript.Lsp.Types (OpenFile (OpenFile, ofArtifacts))
 import Language.PureScript.Lsp.Util (positionToSourcePos, sourcePosToPosition)
-import Language.PureScript.TypeChecker.IdeArtifacts (IdeArtifact (..), IdeArtifactValue (..), getArtifactsAtPosition, smallestArtifact)
+import Language.PureScript.TypeChecker.IdeArtifacts (IdeArtifact (..), IdeArtifactValue (..), getArtifactsAtPosition, smallestArtifact, artifactInterest)
 import Protolude
 import Language.PureScript.Lsp.Docs (readDeclarationDocsSourceSpan)
 
@@ -86,13 +86,5 @@ definitionHandler = Server.requestHandler Message.SMethod_TextDocumentDefinition
         Just (IdeArtifact _ _ _ Nothing (Just (Left defPos))) -> do
           posRes filePath defPos
         _ -> do
-          debugLsp "No relevat definition found for artifact"
+          debugLsp "No relevant definition found for artifact"
           nullRes
-
-artifactInterest :: IdeArtifact -> Int
-artifactInterest (IdeArtifact {..}) = case iaValue of
-  IaBinder {} -> 2
-  IaTypeName {} -> 3
-  IaClassName {} -> 3
-  IaExpr _ (Just "bind") _ -> -10 -- desugared do notation is not interesting
-  _ -> 1

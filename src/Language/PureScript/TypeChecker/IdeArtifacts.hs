@@ -230,7 +230,7 @@ moduleNameFromQual _ = Nothing
 
 insertAtLines :: P.SourceSpan -> IdeArtifactValue -> P.SourceType -> Maybe P.ModuleName -> Maybe (Either P.SourcePos P.SourceSpan) -> IdeArtifacts -> IdeArtifacts
 insertAtLines span@(P.SourceSpan _ start _) value ty mName defSpan ia@(IdeArtifacts m u s) =
-  if start == P.SourcePos 0 0  -- ignore internal module spans
+  if start == P.SourcePos 0 0 || start == P.SourcePos 1 1 -- ignore internal module spans
     then ia
     else IdeArtifacts m (foldr insert u (linesFromSpan span)) s
   where
