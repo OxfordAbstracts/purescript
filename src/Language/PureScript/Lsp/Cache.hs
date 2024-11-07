@@ -48,7 +48,7 @@ selectDependencies (P.Module _ _ _ decls _) = do
           "module_names as (select distinct(module_name), level",
           "from topo join ef_imports on topo.imported_module = ef_imports.module_name ",
           "order by level desc)",
-          "select value, level, id from externs ",
+          "select value, level, hash from externs ",
           "join module_names on externs.module_name = module_names.module_name ",
           "order by level desc, module_names.module_name desc;"
         ]
@@ -63,6 +63,12 @@ selectExternFromFilePath path = do
   absPath <- liftIO $ makeAbsolute path
   res <- DB.queryNamed (Query "SELECT value FROM externs WHERE path = :path") [":path" := absPath]
   pure $ deserialise . fromOnly <$> listToMaybe res
+
+
+selectExternsCount :: (MonadIO m, MonadReader LspEnvironment m) => m Int
+selectExternsCount = do
+  res <- DB.query_ (Query "SELECT count(*) FROM externs")
+  pure $ maybe 0 fromOnly (listToMaybe res)
 
 selectExternModuleNameFromFilePath :: (MonadIO m, MonadReader LspEnvironment m) => FilePath -> m (Maybe P.ModuleName)
 selectExternModuleNameFromFilePath path = do

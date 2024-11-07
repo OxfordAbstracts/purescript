@@ -256,7 +256,7 @@ indexExtern conn extern = liftIO do
     [":path" := path]
   SQL.executeNamed
     conn
-    (SQL.Query "INSERT OR REPLACE INTO externs (path, ef_version, value, hash, module_name) VALUES (:path, :ef_version, :value, :module_name)")
+    (SQL.Query "INSERT OR REPLACE INTO externs (path, ef_version, value, hash, module_name) VALUES (:path, :ef_version, :value, :hash, :module_name)")
     [ ":path" := path,
       ":ef_version" := P.efVersion extern,
       ":value" := serialised,

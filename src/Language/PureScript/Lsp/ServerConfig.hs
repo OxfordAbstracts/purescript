@@ -47,7 +47,7 @@ defaultMaxCompletions :: Int
 defaultMaxCompletions = 50
 
 defaultMaxFilesInCache :: Int
-defaultMaxFilesInCache = 16
+defaultMaxFilesInCache = 32
 
 getMaxTypeLength :: (MonadLsp ServerConfig m) => m Int
 getMaxTypeLength =

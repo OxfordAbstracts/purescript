@@ -103,31 +103,39 @@ cachedFiles = do
 cachedFilePaths :: (MonadIO m, MonadReader LspEnvironment m) => m [FilePath]
 cachedFilePaths = fmap fst <$> cachedFiles
 
-cacheEnvironment :: (MonadIO m, MonadReader LspEnvironment m) => FilePath -> [ExternDependency] -> P.Environment -> m ()
+cacheEnvironment :: (MonadLsp ServerConfig m, MonadReader LspEnvironment m) => FilePath -> [ExternDependency] -> P.Environment -> m ()
 cacheEnvironment fp deps env = do
   st <- lspStateVar <$> ask
+  maxFiles <- getMaxFilesInCache
   liftIO . atomically $ modifyTVar st $ \x ->
     x
-      { environments = ((fp, hashDeps deps), env) : environments x
+      { environments = take maxFiles $ ((fp, hashDeps deps), env) : filter ((/= fp) . fst . fst) (environments x)
       }
+
+-- use the cache environment functions for rebuilding 
+-- remove unneeded stuff from open files 
+-- look into persiting envs when client is idle (on vscode client)
+-- update default open files in client 
 
 cachedEnvironment :: (MonadIO m, MonadReader LspEnvironment m) => FilePath -> [ExternDependency] -> m (Maybe P.Environment)
 cachedEnvironment fp deps = do
   st <- lspStateVar <$> ask
   liftIO . atomically $ do
-    fmap snd .  find match . environments <$> readTVar st 
+    fmap snd .  find match . environments <$> readTVar st
 
-  where 
+  where
     hashed = hashDeps deps
     match ((fp', hash'), _) = fp == fp' && hash' == hashed
 
-cacheExportEnvironment :: (MonadIO m, MonadReader LspEnvironment m) => FilePath -> [ExternDependency] -> P.Env -> m ()
+cacheExportEnvironment :: (MonadLsp ServerConfig m, MonadReader LspEnvironment m) => FilePath -> [ExternDependency] -> P.Env -> m ()
 cacheExportEnvironment fp deps env = do
   st <- lspStateVar <$> ask
+  maxFiles <- getMaxFilesInCache
   liftIO . atomically $ modifyTVar st $ \x ->
     x
-      { exportEnvs = ((fp, hashDeps deps), env) : exportEnvs x
+      { exportEnvs = take maxFiles $ ((fp, hashDeps deps), env) : filter ((/= fp) . fst . fst) (exportEnvs x)
       }
+
 
 cachedExportEnvironment :: (MonadIO m, MonadReader LspEnvironment m) => FilePath -> [ExternDependency] -> m (Maybe P.Env)
 cachedExportEnvironment fp deps = do
@@ -193,6 +201,7 @@ buildExportEnvCache module' externs = do
             writeTVar st $ st' {exportEnv = newEnv}
             pure $ Right newEnv
 
+
 mergeExportEnvCache :: (MonadIO m, MonadReader LspEnvironment m) => P.Env -> m ()
 mergeExportEnvCache env = do
   st <- lspStateVar <$> ask
@@ -203,7 +212,7 @@ data BuildEnvCacheException = BuildEnvCacheException Text
 
 instance Exception BuildEnvCacheException
 
-addExternsToExportEnv :: (Foldable t, Monad f) => P.Env -> t ExternsFile -> f (Either MultipleErrors P.Env)
+addExternsToExportEnv :: (Foldable t, Monad m) => P.Env -> t ExternsFile -> m (Either MultipleErrors P.Env)
 addExternsToExportEnv env externs = fmap fst . runWriterT $ runExceptT $ foldM externsEnv env externs
 
 logBuildErrors :: (MonadLsp ServerConfig m, MonadReader LspEnvironment m) => MultipleErrors -> m ()
