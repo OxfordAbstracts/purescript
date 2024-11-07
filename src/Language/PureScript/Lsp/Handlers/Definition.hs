@@ -17,7 +17,7 @@ import Language.PureScript.Lsp.Monad (HandlerM)
 import Language.PureScript.Lsp.NameType (LspNameType (..))
 import Language.PureScript.Lsp.Print (printName)
 import Language.PureScript.Lsp.State (cachedFilePaths, cachedRebuild)
-import Language.PureScript.Lsp.Types (OpenFile (OpenFile, ofEndCheckState))
+import Language.PureScript.Lsp.Types (OpenFile (OpenFile, ofArtifacts))
 import Language.PureScript.Lsp.Util (positionToSourcePos, sourcePosToPosition)
 import Language.PureScript.TypeChecker.IdeArtifacts (IdeArtifact (..), IdeArtifactValue (..), getArtifactsAtPosition, smallestArtifact)
 import Protolude
@@ -63,7 +63,7 @@ definitionHandler = Server.requestHandler Message.SMethod_TextDocumentDefinition
       debugLsp . show =<< cachedFilePaths
 
     forLsp cacheOpenMb \OpenFile {..} -> do
-      let allArtifacts = P.checkIdeArtifacts ofEndCheckState
+      let allArtifacts = ofArtifacts
           atPos = getArtifactsAtPosition (positionToSourcePos pos) allArtifacts
       let smallest = smallestArtifact (\a -> (negate $ artifactInterest a, isNothing (iaDefinitionPos a), isNothing (iaDefinitionModule a))) atPos
       case smallest of

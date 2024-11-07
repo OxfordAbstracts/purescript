@@ -18,8 +18,8 @@ import Language.PureScript.Lsp.ServerConfig (ServerConfig, defaultConfig)
 import Language.PureScript.Names qualified as P
 import Language.PureScript.Sugar.Names (Env)
 import Language.PureScript.Sugar.Names qualified as P
-import Language.PureScript.TypeChecker qualified as P
 import Protolude
+import Language.PureScript.TypeChecker.IdeArtifacts (IdeArtifacts)
 
 data LspEnvironment = LspEnvironment
   { lspDbConnectionVar :: TVar (FilePath, Connection),
@@ -35,7 +35,7 @@ mkEnv outputPath = do
   pure $ LspEnvironment connection st prevConfig
 
 emptyState :: LspState
-emptyState = LspState mempty P.primEnv mempty mempty mempty
+emptyState = LspState mempty P.primEnv mempty mempty
 
 data LspConfig = LspConfig
   { confOutputPath :: FilePath,
@@ -48,19 +48,14 @@ data LspConfig = LspConfig
 data LspState = LspState
   { openFiles :: [(FilePath, OpenFile)],
     exportEnv :: Env,
-    exportEnvs :: [((FilePath, Int), Env)],
-    environments :: [((FilePath, Int), P.Environment)],
+    environments :: [((FilePath, Int), (P.Env, P.Environment))],
     runningRequests :: Map (Either Int32 Text) (Async ())
   }
 
 data OpenFile = OpenFile
   { ofModuleName :: P.ModuleName,
     ofExternsFile :: P.ExternsFile,
-    ofDependencies :: [ExternDependency],
-    ofStartingEnv :: P.Environment,
-    ofEndEnv :: P.Environment,
-    ofEndCheckState :: P.CheckState,
-    ofUncheckedModule :: P.Module,
+    ofArtifacts :: IdeArtifacts,
     ofModule :: P.Module
   }
 

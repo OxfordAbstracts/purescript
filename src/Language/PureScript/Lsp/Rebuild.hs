@@ -21,10 +21,10 @@ import Language.PureScript.Errors qualified as P
 import Language.PureScript.Externs qualified as P
 import Language.PureScript.Ide.Rebuild (updateCacheDb)
 import Language.PureScript.Lsp.Cache (selectDependencies, selectExternsCount)
-import Language.PureScript.Lsp.Log (debugLsp, logPerfStandard, warnLsp, errorLsp)
+import Language.PureScript.Lsp.Log (debugLsp, errorLsp, logPerfStandard, warnLsp)
 import Language.PureScript.Lsp.ReadFile (lspReadFileText)
 import Language.PureScript.Lsp.ServerConfig (ServerConfig (outputPath), getInferExpressions, getMaxFilesInCache)
-import Language.PureScript.Lsp.State (addExternsToExportEnv, buildExportEnvCache, cacheRebuild', cachedExportEnvironment, getDbConn, mergeExportEnvCache, updateCachedModule, cacheExportEnvironment)
+import Language.PureScript.Lsp.State (addExternsToExportEnv, buildExportEnvCache, cacheEnvironment, cacheRebuild', cachedEnvironment, getDbConn, mergeExportEnvCache, updateCachedModule)
 import Language.PureScript.Lsp.Types (ExternDependency (edExtern), LspEnvironment (lspStateVar), LspState)
 import Language.PureScript.Lsp.Types qualified as Types
 import Language.PureScript.Make qualified as P
@@ -43,9 +43,8 @@ rebuildFile ::
   ) =>
   NormalizedUri ->
   m RebuildResult
-rebuildFile uri = do 
-  debugLsp $ "Rebuilding file: " <> show uri
-  logPerfStandard ("Rebuilt file: " <> show uri) do
+rebuildFile uri = do
+  logPerfStandard ("Rebuilt file: " <> show (fold $ uriToFilePath $ fromNormalizedUri uri)) do
     fp <- case fromNormalizedUri uri & uriToFilePath of
       Just x -> pure x
       Nothing -> throwM $ CouldNotConvertUriToFilePath uri
@@ -62,55 +61,55 @@ rebuildFile uri = do
         conn <- getDbConn
         stVar <- asks lspStateVar
         maxCache <- getMaxFilesInCache
-        let mkMakeActions :: Map P.ModuleName FilePath -> [ExternDependency] -> P.MakeActions P.Make
-            mkMakeActions foreigns externs =
+        let mkMakeActions :: Map P.ModuleName FilePath -> P.MakeActions P.Make
+            mkMakeActions foreigns =
               P.buildMakeActions outputDirectory filePathMap foreigns False
                 & addAllIndexing conn
-                & addRebuildCaching stVar maxCache externs m
-        debugLsp $ "Selecting dependencies for module: " <> show moduleName
+                & addRebuildCaching stVar maxCache
         externDeps <- logPerfStandard "Selected dependencies" $ selectDependencies m
-        when (null externDeps) do 
+        when (null externDeps) do
           warnLsp $ "No dependencies found for module: " <> show moduleName
           checkExternsExist
         let externs = fmap edExtern externDeps
         foreigns <- P.inferForeignModules (M.singleton moduleName (Right fp))
-        exportEnv <- logPerfStandard "built export cache" $ getExportEnv fp externDeps
+        (exportEnv, env) <- logPerfStandard "built export cache" $ getEnv fp externDeps
         ideCheckState <- getIdeCheckState
         (res, warnings) <- logPerfStandard "Rebuilt Module" $ liftIO $ do
           P.runMake (P.defaultOptions {P.optionsCodegenTargets = codegenTargets}) do
-            newExtern <- rebuildModule' ideCheckState (mkMakeActions foreigns externDeps) exportEnv externs m
+            newExtern <- P.rebuildModuleWithProvidedEnv ideCheckState Nothing (mkMakeActions foreigns) exportEnv env externs m Nothing
             updateCacheDb codegenTargets outputDirectory fp Nothing moduleName
             pure newExtern
         debugLsp $ "Rebuild success: " <> show (isRight res)
-        case res of  
+        case res of
           Left errs -> pure $ RebuildError errs
-          Right _ -> do 
-            cacheExportEnvironment fp externDeps exportEnv
+          Right _ -> do
             pure $ RebuildWarning (CST.toMultipleWarnings fp pwarnings <> warnings)
         where
-          rebuildModule' ideCheckState act env ext mdl = rebuildModuleWithIndex ideCheckState act env ext mdl Nothing
-
-          rebuildModuleWithIndex ideCheckState act exEnv externs m' moduleIndex = do
-            let env = foldl' (flip P.applyExternsFileToEnvironment) P.initEnvironment externs
-            P.rebuildModuleWithProvidedEnv ideCheckState Nothing act exEnv env externs m' moduleIndex
-
-          checkExternsExist = do 
+          checkExternsExist = do
             externCount <- selectExternsCount
-            when (externCount == 0) do 
+            when (externCount == 0) do
               errorLsp "No externs found in database, please build project"
 
-getExportEnv :: forall m. 
+getEnv ::
+  forall m.
   ( MonadThrow m,
     MonadReader Types.LspEnvironment m,
     MonadLsp ServerConfig m
   ) =>
   FilePath ->
   [ExternDependency] ->
-  m P.Env
-getExportEnv fp deps = do
-  cached <- cachedExportEnvironment fp deps
+  m (P.Env, P.Environment)
+getEnv fp deps = do
+  cached <- cachedEnvironment fp deps
   debugLsp $ "Export env cache hit: " <> show (isJust cached)
-  cached & maybe (buildExportEnvFromPrim $ fmap edExtern deps) pure
+  cached & maybe fetchEnv pure
+  where
+    externs = edExtern <$> deps
+    fetchEnv = do
+      exportEnv <- buildExportEnvFromPrim externs
+      let env = foldl' (flip P.applyExternsFileToEnvironment) P.initEnvironment externs
+      cacheEnvironment fp deps exportEnv env
+      pure (exportEnv, env)
 
 buildExportEnvFromPrim :: (Foldable t, MonadThrow m) => t ExternsFile -> m P.Env
 buildExportEnvFromPrim =
@@ -194,10 +193,10 @@ broadcastProgress chan ma = do
     { P.progress = liftIO . atomically . writeTChan chan . Just
     }
 
-addRebuildCaching :: TVar LspState -> Int -> [ExternDependency] -> P.Module -> P.MakeActions P.Make -> P.MakeActions P.Make
-addRebuildCaching stVar maxCache deps unchecked ma =
+addRebuildCaching :: TVar LspState -> Int -> P.MakeActions P.Make -> P.MakeActions P.Make
+addRebuildCaching stVar maxCache ma =
   ma
-    { P.codegen = \prevEnv checkSt astM m docs ext -> lift (liftIO $ cacheRebuild' stVar maxCache ext deps prevEnv (P.checkEnv checkSt) checkSt unchecked astM) <* P.codegen ma prevEnv checkSt astM m docs ext
+    { P.codegen = \prevEnv checkSt astM m docs ext -> lift (liftIO $ cacheRebuild' stVar maxCache ext (P.checkIdeArtifacts checkSt) astM) <* P.codegen ma prevEnv checkSt astM m docs ext
     }
 
 -- rebuildFromOpenFileCache ::

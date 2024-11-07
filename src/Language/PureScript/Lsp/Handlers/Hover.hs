@@ -55,7 +55,7 @@ hoverHandler = Server.requestHandler Message.SMethod_TextDocumentHover $ \req re
       debugLsp $ "file path not cached: " <> T.pack filePath
       debugLsp . show =<< cachedFilePaths
     forLsp cacheOpenMb \OpenFile {..} -> do
-      let allArtifacts = P.checkIdeArtifacts ofEndCheckState
+      let allArtifacts = ofArtifacts
           atPos = getArtifactsAtPosition (positionToSourcePos startPos) allArtifacts
       debugLsp $ "hover artiacts length: " <> show (length atPos)
       case smallestArtifact (\a -> (negate $ artifactInterest a, negate $ countUnkownsAndVars $ iaType a)) atPos of

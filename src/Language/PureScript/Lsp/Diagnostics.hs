@@ -21,7 +21,6 @@ import Language.PureScript.Lsp.ServerConfig (ServerConfig)
 import Language.PureScript.Lsp.Types (LspEnvironment)
 import Protolude hiding (to)
 import Text.PrettyPrint.Boxes (render)
-import Language.PureScript.Lsp.Log (debugLsp)
 
 getFileDiagnotics ::
   ( LSP.HasParams s a1,
@@ -36,7 +35,6 @@ getFileDiagnotics ::
 getFileDiagnotics msg = do
   let uri :: Types.NormalizedUri
       uri = getMsgUri msg & Types.toNormalizedUri
-  debugLsp $ "getting file diagnostics for: " <> show uri
   res <- rebuildFile uri
   pure $ addJsonEdits $ getResultDiagnostics res
 

@@ -7,7 +7,6 @@ module Language.PureScript.Lsp.State
     updateCachedModule,
     updateCachedModule',
     cachedRebuild,
-    cacheDependencies,
     clearCache,
     clearRebuildCache,
     clearExportCache,
@@ -28,8 +27,8 @@ module Language.PureScript.Lsp.State
     cachedFilePaths,
     cachedEnvironment,
     cacheEnvironment,
-    cachedExportEnvironment,
-    cacheExportEnvironment,
+    -- cachedExportEnvironment,
+    -- cacheExportEnvironment,
   )
 where
 
@@ -49,26 +48,25 @@ import Language.PureScript.Externs (ExternsFile (..))
 import Language.PureScript.Lsp.Log (errorLsp)
 import Language.PureScript.Lsp.ServerConfig (ServerConfig, getMaxFilesInCache)
 import Language.PureScript.Lsp.Types
-import Language.PureScript.Names qualified as P
 import Language.PureScript.Sugar.Names (externsEnv)
 import Language.PureScript.Sugar.Names.Env qualified as P
-import Language.PureScript.TypeChecker qualified as P
 import Protolude hiding (moduleName, unzip)
+import Language.PureScript.TypeChecker.IdeArtifacts (IdeArtifacts)
 
 getDbConn :: (MonadReader LspEnvironment m, MonadIO m) => m Connection
 getDbConn = liftIO . fmap snd . readTVarIO . lspDbConnectionVar =<< ask
 
 -- | Sets rebuild cache to the given ExternsFile
-cacheRebuild :: (MonadReader LspEnvironment m, MonadLsp ServerConfig m) => ExternsFile -> [ExternDependency] -> P.Environment -> P.Environment -> P.CheckState -> P.Module -> P.Module -> m ()
-cacheRebuild ef deps prevEnv endEnv checkSt unchecked module' = do
+cacheRebuild :: (MonadReader LspEnvironment m, MonadLsp ServerConfig m) => ExternsFile -> IdeArtifacts -> P.Module -> m ()
+cacheRebuild ef artifacts module' = do
   st <- lspStateVar <$> ask
   maxFiles <- getMaxFilesInCache
-  liftIO $ cacheRebuild' st maxFiles ef deps prevEnv endEnv checkSt unchecked module'
+  liftIO $ cacheRebuild' st maxFiles ef artifacts module'
 
-cacheRebuild' :: TVar LspState -> Int -> ExternsFile -> [ExternDependency] -> P.Environment -> P.Environment -> P.CheckState -> P.Module -> P.Module -> IO ()
-cacheRebuild' st maxFiles ef deps prevEnv endEnv checkSt unchecked module' = atomically . modifyTVar st $ \x ->
+cacheRebuild' :: TVar LspState -> Int -> ExternsFile -> IdeArtifacts -> P.Module -> IO ()
+cacheRebuild' st maxFiles ef artifacts module' = atomically . modifyTVar st $ \x ->
   x
-    { openFiles = List.take maxFiles $ (fp, OpenFile (efModuleName ef) ef deps prevEnv endEnv checkSt unchecked module') : filter ((/= fp) . fst) (openFiles x)
+    { openFiles = List.take maxFiles $ (fp, OpenFile (efModuleName ef) ef artifacts  module') : filter ((/= fp) . fst) (openFiles x)
     }
   where
     fp = P.spanName $ efSourceSpan ef
@@ -103,13 +101,13 @@ cachedFiles = do
 cachedFilePaths :: (MonadIO m, MonadReader LspEnvironment m) => m [FilePath]
 cachedFilePaths = fmap fst <$> cachedFiles
 
-cacheEnvironment :: (MonadLsp ServerConfig m, MonadReader LspEnvironment m) => FilePath -> [ExternDependency] -> P.Environment -> m ()
-cacheEnvironment fp deps env = do
+cacheEnvironment :: (MonadLsp ServerConfig m, MonadReader LspEnvironment m) => FilePath -> [ExternDependency] -> P.Env -> P.Environment -> m ()
+cacheEnvironment fp deps exportEnv env = do
   st <- lspStateVar <$> ask
   maxFiles <- getMaxFilesInCache
   liftIO . atomically $ modifyTVar st $ \x ->
     x
-      { environments = take maxFiles $ ((fp, hashDeps deps), env) : filter ((/= fp) . fst . fst) (environments x)
+      { environments = take maxFiles $ ((fp, hashDeps deps), (exportEnv, env)) : filter ((/= fp) . fst . fst) (environments x)
       }
 
 -- use the cache environment functions for rebuilding 
@@ -117,7 +115,7 @@ cacheEnvironment fp deps env = do
 -- look into persiting envs when client is idle (on vscode client)
 -- update default open files in client 
 
-cachedEnvironment :: (MonadIO m, MonadReader LspEnvironment m) => FilePath -> [ExternDependency] -> m (Maybe P.Environment)
+cachedEnvironment :: (MonadIO m, MonadReader LspEnvironment m) => FilePath -> [ExternDependency] -> m (Maybe (P.Env, P.Environment))
 cachedEnvironment fp deps = do
   st <- lspStateVar <$> ask
   liftIO . atomically $ do
@@ -127,41 +125,10 @@ cachedEnvironment fp deps = do
     hashed = hashDeps deps
     match ((fp', hash'), _) = fp == fp' && hash' == hashed
 
-cacheExportEnvironment :: (MonadLsp ServerConfig m, MonadReader LspEnvironment m) => FilePath -> [ExternDependency] -> P.Env -> m ()
-cacheExportEnvironment fp deps env = do
-  st <- lspStateVar <$> ask
-  maxFiles <- getMaxFilesInCache
-  liftIO . atomically $ modifyTVar st $ \x ->
-    x
-      { exportEnvs = take maxFiles $ ((fp, hashDeps deps), env) : filter ((/= fp) . fst . fst) (exportEnvs x)
-      }
-
-
-cachedExportEnvironment :: (MonadIO m, MonadReader LspEnvironment m) => FilePath -> [ExternDependency] -> m (Maybe P.Env)
-cachedExportEnvironment fp deps = do
-  st <- lspStateVar <$> ask
-  liftIO . atomically $ do
-    fmap snd . find match . exportEnvs <$> readTVar st
-
-  where
-    hashed = hashDeps deps
-    match ((fp', hash'), _) = fp == fp' && hash' == hashed
 
 hashDeps :: [ExternDependency] -> Int
 hashDeps = hash . sort . fmap edHash
 
-
-cacheDependencies :: (MonadReader LspEnvironment m, MonadLsp ServerConfig m) => P.ModuleName -> [ExternDependency] -> m ()
-cacheDependencies moduleName deps = do
-  st <- lspStateVar <$> ask
-  liftIO . atomically $ modifyTVar st $ \x ->
-    x
-      { openFiles =
-          openFiles x <&> \(fp, ofile) ->
-            if ofModuleName ofile == moduleName
-              then (fp, ofile {ofDependencies = deps})
-              else (fp, ofile)
-      }
 
 removedCachedRebuild :: (MonadIO m, MonadReader LspEnvironment m) => FilePath -> m ()
 removedCachedRebuild fp = do
