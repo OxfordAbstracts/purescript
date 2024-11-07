@@ -22,14 +22,16 @@ import Language.PureScript.Lsp.NameType (LspNameType (..))
 import Language.PureScript.Lsp.Print (printName)
 import Language.PureScript.Lsp.State (cachedFilePaths, cachedRebuild)
 import Language.PureScript.Lsp.Types (OpenFile (..))
-import Language.PureScript.Lsp.Util (positionToSourcePos)
-import Language.PureScript.TypeChecker.IdeArtifacts (IdeArtifact (..), IdeArtifactValue (..), getArtifactsAtPosition, smallestArtifact, useSynonymns, debugIdeArtifact, artifactInterest)
+import Language.PureScript.Lsp.Util (positionToSourcePos, getWordAt)
+import Language.PureScript.TypeChecker.IdeArtifacts (IdeArtifact (..), IdeArtifactValue (..), getArtifactsAtPosition, smallestArtifact, useSynonymns, artifactInterest, bindersAtPos)
 import Protolude hiding (handle, to)
+import Language.PureScript.Lsp.ReadFile (lspReadFileRope)
 
 hoverHandler :: Server.Handlers HandlerM
 hoverHandler = Server.requestHandler Message.SMethod_TextDocumentHover $ \req res -> do
-  let Types.HoverParams docIdent startPos _prog = req ^. LSP.params
-      filePathMb = Types.uriToFilePath $ docIdent ^. LSP.uri
+  let Types.HoverParams docIdent pos _prog = req ^. LSP.params
+      uri = docIdent ^. LSP.uri
+      filePathMb = Types.uriToFilePath uri
 
       nullRes = res $ Right $ Types.InR Types.Null
 
@@ -56,16 +58,15 @@ hoverHandler = Server.requestHandler Message.SMethod_TextDocumentHover $ \req re
       debugLsp . show =<< cachedFilePaths
     forLsp cacheOpenMb \OpenFile {..} -> do
       let allArtifacts = ofArtifacts
-          atPos = getArtifactsAtPosition (positionToSourcePos startPos) allArtifacts
+          atPos = getArtifactsAtPosition (positionToSourcePos pos) allArtifacts
       debugLsp $ "hover artiacts length: " <> show (length atPos)
-      for_ atPos \a -> debugLsp $ "hover artifact: " <> debugIdeArtifact a
       case smallestArtifact (\a -> (negate $ artifactInterest a, negate $ countUnkownsAndVars $ iaType a)) atPos of
         Just (IdeArtifact {..}) ->
           case iaValue of
             IaExpr exprTxt ident nameType -> do
               let inferredRes =
                     pursTypeStr
-                      (show ident <> "---" <> exprTxt)
+                      exprTxt
                       ( Just $
                           prettyPrintTypeSingleLine $
                             useSynonymns allArtifacts iaType
@@ -104,8 +105,22 @@ hoverHandler = Server.requestHandler Message.SMethod_TextDocumentHover $ \req re
             IaIdent ident -> do
               markdownRes (Just $ spanToRange iaSpan) $ pursTypeStr ident (Just $ prettyPrintTypeSingleLine $ useSynonymns allArtifacts iaType) []
             IaBinder binder -> do
-              let inferredRes = pursTypeStr (dispayBinderOnHover binder) (Just $ prettyPrintTypeSingleLine $ useSynonymns allArtifacts iaType) []
-              markdownRes (spanToRange <$> binderSourceSpan binder) inferredRes
+              let
+                binders = bindersAtPos (positionToSourcePos pos) allArtifacts
+
+              if length binders < 2 then do
+                let  inferredRes = pursTypeStr (dispayBinderOnHover binder) (Just $ prettyPrintTypeSingleLine $ useSynonymns allArtifacts iaType) []
+                markdownRes (spanToRange <$> binderSourceSpan binder) inferredRes
+              else do -- when there are multiple binders we need to check the src code as the binder ranges sometimes appear to be for their scope, not identifiers
+                src <- lspReadFileRope (Types.toNormalizedUri uri)
+                let 
+                  (range, word) = getWordAt src pos
+                  actualBinder = fromMaybe binder $ find (\b -> T.strip (P.prettyPrintBinder b) == word) binders
+
+                let inferredRes = pursTypeStr (dispayBinderOnHover actualBinder) (Just $ prettyPrintTypeSingleLine $ useSynonymns allArtifacts iaType) []
+                markdownRes (Just range) inferredRes
+                
+
             IaDecl decl _ -> do
               markdownRes (Just $ spanToRange iaSpan) $ pursTypeStr (fromMaybe "_" decl) (Just $ prettyPrintTypeSingleLine $ useSynonymns allArtifacts iaType) []
             IaType ty -> do

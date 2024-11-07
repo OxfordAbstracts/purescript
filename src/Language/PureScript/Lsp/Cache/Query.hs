@@ -1,5 +1,3 @@
-{-# OPTIONS_GHC -Wno-redundant-constraints #-}
-
 module Language.PureScript.Lsp.Cache.Query where
 
 import Database.SQLite.Simple (NamedParam ((:=)), fromOnly)
@@ -63,7 +61,7 @@ getAstDeclarationTypeInModule lspNameType moduleName' name = do
   pure $ decls <&> fromOnly
 
 getAstDeclarationsStartingWith ::
-  (MonadIO m, MonadReader LspEnvironment m, MonadLsp ServerConfig m) =>
+  (MonadReader LspEnvironment m, MonadLsp ServerConfig m) =>
   P.ModuleName ->
   Text ->
   m [CompletionResult]
@@ -92,7 +90,7 @@ getAstDeclarationsStartingWith moduleName' prefix = do
     ]
 
 getAstDeclarationsStartingWithAndSearchingModuleNames ::
-  (MonadIO m, MonadReader LspEnvironment m, MonadLsp ServerConfig m) =>
+  (MonadReader LspEnvironment m, MonadLsp ServerConfig m) =>
   P.ModuleName ->
   P.ModuleName ->
   Text ->
@@ -124,7 +122,7 @@ getAstDeclarationsStartingWithAndSearchingModuleNames moduleName' moduleNameCont
     ]
 
 getAstDeclarationsStartingWithOnlyInModule ::
-  (MonadIO m, MonadReader LspEnvironment m, MonadLsp ServerConfig m) =>
+  (MonadReader LspEnvironment m, MonadLsp ServerConfig m) =>
   P.ModuleName ->
   Text ->
   m [CompletionResult]

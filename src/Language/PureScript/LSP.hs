@@ -2,7 +2,6 @@
 {-# LANGUAGE ExistentialQuantification #-}
 {-# LANGUAGE ExplicitNamespaces #-}
 {-# LANGUAGE PolyKinds #-}
-{-# OPTIONS_GHC -Wno-unticked-promoted-constructors #-}
 
 module Language.PureScript.Lsp (main, serverDefinition) where
 
@@ -77,7 +76,7 @@ syncOptions =
 lspHandlers :: LspEnvironment -> Server.Handlers HandlerM
 lspHandlers lspEnv = mapHandlers goReq goNotification handlers
   where
-    goReq :: forall (a :: LSP.Method LSP.ClientToServer LSP.Request). Server.Handler HandlerM a -> Server.Handler HandlerM a
+    goReq :: forall (a :: LSP.Method 'LSP.ClientToServer 'LSP.Request). Server.Handler HandlerM a -> Server.Handler HandlerM a
     goReq f msg@(LSP.TRequestMessage _ id method _) k = do
       let reqId = case id of
             LSP.IdInt i -> Left i
@@ -100,7 +99,7 @@ lspHandlers lspEnv = mapHandlers goReq goNotification handlers
             _ -> pure ()
           removeRunningRequest lspEnv reqId
 
-    goNotification :: forall (a :: LSP.Method LSP.ClientToServer LSP.Notification). Server.Handler HandlerM a -> Server.Handler HandlerM a
+    goNotification :: forall (a :: LSP.Method 'LSP.ClientToServer 'LSP.Notification). Server.Handler HandlerM a -> Server.Handler HandlerM a
     goNotification f msg@(LSP.TNotificationMessage _ method _) = do
       let methodText = T.pack $ LSP.someMethodToMethodString $ LSP.SomeMethod method
       Lifted.withAsync (f msg) \asyncAct -> do

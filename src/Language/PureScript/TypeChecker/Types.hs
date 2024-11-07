@@ -1,7 +1,4 @@
 {-# LANGUAGE BlockArguments #-}
-{-# OPTIONS_GHC -Wno-unused-matches #-}
-{-# OPTIONS_GHC -Wno-unused-top-binds #-}
-{-# OPTIONS_GHC -Wno-unused-imports #-}
 -- |
 -- This module implements the type checker
 --
@@ -29,7 +26,7 @@ f
 -}
 
 import Prelude
-import Protolude (ordNub, fold, atMay, (>=>), whenM)
+import Protolude (ordNub, fold, atMay, (>=>))
 
 import Control.Arrow (first, second, (***))
 import Control.Monad (forM, forM_, guard, replicateM, unless, when, zipWithM, (<=<))
@@ -514,7 +511,7 @@ infer' (VisibleTypeApp valFn tyArg) = do
       pure $ TypedValue' True valFn''' resTy'
     _ ->
       throwError $ errorMessage $ CannotApplyExpressionOfTypeOnType valTy tyArg
-infer' e@(Var ss var) = do
+infer' (Var ss var) = do
   checkVisibility var
   ty <- introduceSkolemScope <=< replaceAllTypeSynonyms <=< replaceTypeWildcards <=< lookupVariable $ var
   case ty of
@@ -1043,10 +1040,9 @@ checkFunctionApplication'
   -> SourceType
   -> Expr
   -> m (SourceType, Expr)
-checkFunctionApplication' fn (TypeApp ann (TypeApp ann' tyFunction' argTy) retTy) arg = do
+checkFunctionApplication' fn (TypeApp _ (TypeApp _ tyFunction' argTy) retTy) arg = do
   unifyTypes tyFunction' tyFunction
-  tv@(TypedValue' _ _ argTy') <- check arg argTy
-  let arg' = tvToExpr tv
+  arg' <- tvToExpr <$> check arg argTy
   return (retTy, App fn arg')
 checkFunctionApplication' fn (ForAll _ _ ident mbK ty _) arg = do
   u <- maybe (internalCompilerError "Unelaborated forall") freshTypeWithKind mbK
@@ -1055,7 +1051,7 @@ checkFunctionApplication' fn (ForAll _ _ ident mbK ty _) arg = do
   checkFunctionApplication fn replaced arg
 checkFunctionApplication' fn (KindedType _ ty _) arg =
   checkFunctionApplication fn ty arg
-checkFunctionApplication' fn (ConstrainedType ann con fnTy) arg = do
+checkFunctionApplication' fn (ConstrainedType _ con fnTy) arg = do
   dicts <- getTypeClassDictionaries
   hints <- getHints
   checkFunctionApplication' (App fn (TypeClassDictionary con dicts hints)) fnTy arg
@@ -1069,13 +1065,6 @@ checkFunctionApplication' fn u arg = do
   ret <- freshTypeWithKind kindType
   unifyTypes u (function ty ret)
   return (ret, App fn (tvToExpr tv))
-
-
-replaceUnknowns :: Int -> SourceType -> Type SourceAnn -> Type SourceAnn
-replaceUnknowns i replacement  = everywhereOnTypes go
-  where
-  go (TUnknown _ j) | i == j = replacement
-  go other = other
 
 -- |
 -- Ensure a set of property names and value does not contain duplicate labels

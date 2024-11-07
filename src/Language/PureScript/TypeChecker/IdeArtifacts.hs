@@ -1,4 +1,3 @@
-
 -- | Stores information about the source code that is useful for the IDE
 -- | This includes value types and source spans
 module Language.PureScript.TypeChecker.IdeArtifacts
@@ -27,6 +26,7 @@ module Language.PureScript.TypeChecker.IdeArtifacts
     substituteArtifactTypes,
     endSubstitutions,
     artifactInterest,
+    bindersAtPos
   )
 where
 
@@ -99,6 +99,19 @@ endSubstitutions (IdeArtifacts m u s) = IdeArtifacts (Map.unionWith (<>) m u) Ma
 smallestArtifact :: (Ord a) => (IdeArtifact -> a) -> [IdeArtifact] -> Maybe IdeArtifact
 smallestArtifact tieBreaker = minimumByMay (compare `on` (\a -> (artifactSize a, tieBreaker a)))
 
+bindersAtPos :: P.SourcePos -> IdeArtifacts -> [P.Binder]
+bindersAtPos pos (IdeArtifacts m _ _) =
+  Map.lookup (P.sourcePosLine pos) m
+    & maybe [] Set.toList
+    & filter (\ia -> P.sourcePosColumn (P.spanStart (iaSpan ia)) <= posCol && P.sourcePosColumn (P.spanEnd (iaSpan ia)) >= posCol)
+    & mapMaybe
+      ( \case
+          IdeArtifact {iaValue = IaBinder b} -> Just b
+          _ -> Nothing
+      )
+  where
+    posCol = P.sourcePosColumn pos
+
 -- | Prioritize artifacts that are more likely to be interesting to the developer on hover or click
 artifactInterest :: IdeArtifact -> Int
 artifactInterest (IdeArtifact {..}) = case iaValue of
@@ -130,7 +143,7 @@ insertIaExpr :: P.Expr -> P.SourceType -> IdeArtifacts -> IdeArtifacts
 insertIaExpr expr ty = case ss of
   Just span
     | not (generatedExpr expr) ->
-        insertAtLines span (IaExpr (exprCtr expr <> ": " <> fromMaybe "_" exprIdent) exprIdent (exprNameType expr)) ty mName defSpan
+        insertAtLines span (IaExpr (fromMaybe "_" exprIdent) exprIdent (exprNameType expr)) ty mName defSpan
     where
       defSpan =
         Left <$> (posFromQual =<< exprIdentQual expr)
@@ -315,31 +328,3 @@ debugIdeArtifactValue = \case
 
 debugType :: P.Type a -> Text
 debugType = T.pack . take 64 . P.prettyPrintType 5
-
-exprCtr :: P.Expr -> Text
-exprCtr (P.Literal _ _) = "Literal"
-exprCtr (P.UnaryMinus _ _) = "UnaryMinus"
-exprCtr (P.BinaryNoParens _ _ _) = "BinaryNoParens"
-exprCtr (P.Parens _) = "Parens"
-exprCtr (P.Accessor _ _) = "Accessor"
-exprCtr (P.ObjectUpdate _ _) = "ObjectUpdate"
-exprCtr (P.ObjectUpdateNested _ _) = "ObjectUpdateNested"
-exprCtr (P.Abs _ _) = "Abs"
-exprCtr (P.App e e') = "App (" <> exprCtr e <> ") (" <> exprCtr e' <> ")"
-exprCtr (P.VisibleTypeApp _ _) = "VisibleTypeApp"
-exprCtr (P.Unused e) = "Unused " <> exprCtr e
-exprCtr (P.Var _ _) = "Var"
-exprCtr (P.Op _ _) = "Op"
-exprCtr (P.IfThenElse _ _ _) = "IfThenElse"
-exprCtr (P.Constructor _ _) = "Constructor"
-exprCtr (P.Case _ _) = "Case"
-exprCtr (P.TypedValue _ e _) = "TypedValue " <> exprCtr e
-exprCtr (P.Let _ _ _) = "Let"
-exprCtr (P.Do _ _) = "Do"
-exprCtr (P.Ado _ _ _) = "Ado"
-exprCtr (P.TypeClassDictionary _ _ _) = "TypeClassDictionary"
-exprCtr (P.DeferredDictionary _ _) = "DeferredDictionary"
-exprCtr (P.DerivedInstancePlaceholder _ _) = "DerivedInstancePlaceholder"
-exprCtr P.AnonymousArgument = "AnonymousArgument"
-exprCtr (P.Hole _) = "Hole"
-exprCtr (P.PositionedValue _ _ e) = "PositionedValue " <> exprCtr e

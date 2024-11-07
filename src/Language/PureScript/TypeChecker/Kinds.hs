@@ -181,8 +181,7 @@ inferKind = \tyToInfer ->
           let className = coerceProperName <$> v
           case M.lookup className (E.typeClasses env) of 
             Just _ -> addIdeClassNameQual (fst ann) className (kind $> ann)
-            Nothing ->
-             addIdeTypeNameQual (fst ann) v (kind $> ann)
+            Nothing -> addIdeTypeNameQual (fst ann) v (kind $> ann)
           pure (ty, kind $> ann)
     ConstrainedType ann' con@(Constraint ann v _ _ _) ty -> do
       env <- getEnv

@@ -1,5 +1,4 @@
 {-# LANGUAGE GADTs #-}
-{-# OPTIONS_GHC -Wno-deprecations #-}
 
 -- |
 -- Monads for type checking and type inference and associated data types

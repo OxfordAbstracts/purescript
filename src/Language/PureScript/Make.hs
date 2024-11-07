@@ -1,5 +1,3 @@
-{-# OPTIONS_GHC -Wno-unused-top-binds #-}
-
 module Language.PureScript.Make
   ( -- * Make API
     desugarAndTypeCheck,
