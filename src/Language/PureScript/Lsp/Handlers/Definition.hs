@@ -94,4 +94,5 @@ artifactInterest (IdeArtifact {..}) = case iaValue of
   IaBinder {} -> 2
   IaTypeName {} -> 3
   IaClassName {} -> 3
+  IaExpr _ (Just "bind") _ -> -10 -- desugared do notation is not interesting
   _ -> 1

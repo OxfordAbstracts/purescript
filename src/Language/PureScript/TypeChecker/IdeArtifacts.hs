@@ -1,4 +1,3 @@
-{-# OPTIONS_GHC -Wno-unused-top-binds #-}
 
 -- | Stores information about the source code that is useful for the IDE
 -- | This includes value types and source spans
@@ -27,6 +26,7 @@ module Language.PureScript.TypeChecker.IdeArtifacts
     debugIdeArtifact,
     substituteArtifactTypes,
     endSubstitutions,
+    artifactInterest,
   )
 where
 
@@ -99,6 +99,14 @@ endSubstitutions (IdeArtifacts m u s) = IdeArtifacts (Map.unionWith (<>) m u) Ma
 smallestArtifact :: (Ord a) => (IdeArtifact -> a) -> [IdeArtifact] -> Maybe IdeArtifact
 smallestArtifact tieBreaker = minimumByMay (compare `on` (\a -> (artifactSize a, tieBreaker a)))
 
+-- | Prioritize artifacts that are more likely to be interesting to the developer on hover or click
+artifactInterest :: IdeArtifact -> Int
+artifactInterest (IdeArtifact {..}) = case iaValue of
+  IaBinder {} -> 2
+  IaTypeName {} -> 3
+  IaClassName {} -> 3
+  _ -> 1
+
 artifactsAtSpan :: P.SourceSpan -> IdeArtifacts -> Set IdeArtifact
 artifactsAtSpan span (IdeArtifacts m _ _) =
   Map.lookup (P.sourcePosLine $ P.spanStart span) m
@@ -155,20 +163,8 @@ insertIaExpr expr ty = case ss of
   where
     ss = P.exprSourceSpan expr
 
-printExpr :: P.Expr -> T.Text
-printExpr (P.Op _ (P.Qualified _ op)) = P.runOpName op -- `Op`s hit an infinite loop when pretty printed by themselves
-printExpr (P.Constructor _ n) = P.runProperName $ P.disqualify n
-printExpr (P.Var _ n) = P.runIdent $ P.disqualify n
--- printExpr
-printExpr P.Case {} = "<case expr>" -- case expressions are too large to pretty print in hover and are on mulitple lines
-printExpr P.IfThenElse {} = "<if expr>"
-printExpr _ = "_"
-
 ellipsis :: Int -> Text -> Text
 ellipsis n t = if T.length t > n then T.take (n - 3) t <> "..." else t
-
-on1Line :: T.Text -> T.Text
-on1Line = T.intercalate " " . T.lines
 
 insertIaIdent :: P.SourceSpan -> P.Ident -> P.SourceType -> IdeArtifacts -> IdeArtifacts
 insertIaIdent ss ident ty = case ident of
@@ -233,8 +229,8 @@ moduleNameFromQual (P.Qualified (P.ByModuleName mn) _) = Just mn
 moduleNameFromQual _ = Nothing
 
 insertAtLines :: P.SourceSpan -> IdeArtifactValue -> P.SourceType -> Maybe P.ModuleName -> Maybe (Either P.SourcePos P.SourceSpan) -> IdeArtifacts -> IdeArtifacts
-insertAtLines span@(P.SourceSpan _ start end) value ty mName defSpan ia@(IdeArtifacts m u s) =
-  if start == P.SourcePos 0 0 && end == P.SourcePos 0 0 -- ignore internal module spans
+insertAtLines span@(P.SourceSpan _ start _) value ty mName defSpan ia@(IdeArtifacts m u s) =
+  if start == P.SourcePos 0 0  -- ignore internal module spans
     then ia
     else IdeArtifacts m (foldr insert u (linesFromSpan span)) s
   where

@@ -178,7 +178,11 @@ inferKind = \tyToInfer ->
           addIdeTypeNameQual (fst ann) v (kind' $> ann)
           pure (ty, kind' $> ann)
         Just (kind, _) -> do
-          addIdeTypeNameQual (fst ann) v (kind $> ann)
+          let className = coerceProperName <$> v
+          case M.lookup className (E.typeClasses env) of 
+            Just _ -> addIdeClassNameQual (fst ann) className (kind $> ann)
+            Nothing ->
+             addIdeTypeNameQual (fst ann) v (kind $> ann)
           pure (ty, kind $> ann)
     ConstrainedType ann' con@(Constraint ann v _ _ _) ty -> do
       env <- getEnv
@@ -190,7 +194,6 @@ inferKind = \tyToInfer ->
       ty' <- checkIsSaturatedType ty
       con'' <- applyConstraint con'
       let kind = E.kindType $> ann'
-      addIdeClassNameQual (fst ann) v kind
       pure (ConstrainedType ann' con'' ty', kind)
     ty@(TypeLevelString ann _) ->
       pure (ty, E.kindSymbol $> ann)
@@ -872,7 +875,6 @@ applyConstraint (Constraint ann clsName kinds args dat) = do
   let 
      ty = foldl (TypeApp ann) (foldl (KindApp ann) (TypeConstructor ann (fmap coerceProperName clsName)) kinds) args
   applied <- apply ty
-  addIdeClassNameQual (fst ann) clsName applied
   let (_, kinds', args') = unapplyTypes applied
   pure $ Constraint ann clsName kinds' args' dat
 
@@ -909,7 +911,6 @@ checkInstanceDeclaration moduleName (ann, constraints, clsName, args) = do
     let allWithVars = replaceUnknownsWithVars unknownVars allTy
     let (allConstraints, (_, allKinds, allArgs)) = unapplyTypes <$> unapplyConstraints allWithVars
     varKinds <- traverse (traverse (fmap (replaceUnknownsWithVars unknownVars) . apply)) $ (snd <$> unknownVars) <> (first runProperName <$> freeVarsDict)
-    addIdeClassNameQual (fst ann) clsName allWithVars
     pure (allConstraints, allKinds, allArgs, varKinds)
 
 checkKindDeclaration

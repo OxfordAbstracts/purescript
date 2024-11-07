@@ -23,7 +23,7 @@ import Language.PureScript.Lsp.Print (printName)
 import Language.PureScript.Lsp.State (cachedFilePaths, cachedRebuild)
 import Language.PureScript.Lsp.Types (OpenFile (..))
 import Language.PureScript.Lsp.Util (positionToSourcePos)
-import Language.PureScript.TypeChecker.IdeArtifacts (IdeArtifact (..), IdeArtifactValue (..), getArtifactsAtPosition, smallestArtifact, useSynonymns)
+import Language.PureScript.TypeChecker.IdeArtifacts (IdeArtifact (..), IdeArtifactValue (..), getArtifactsAtPosition, smallestArtifact, useSynonymns, debugIdeArtifact)
 import Protolude hiding (handle, to)
 
 hoverHandler :: Server.Handlers HandlerM
@@ -58,13 +58,14 @@ hoverHandler = Server.requestHandler Message.SMethod_TextDocumentHover $ \req re
       let allArtifacts = ofArtifacts
           atPos = getArtifactsAtPosition (positionToSourcePos startPos) allArtifacts
       debugLsp $ "hover artiacts length: " <> show (length atPos)
+      for_ atPos \a -> debugLsp $ "hover artifact: " <> debugIdeArtifact a
       case smallestArtifact (\a -> (negate $ artifactInterest a, negate $ countUnkownsAndVars $ iaType a)) atPos of
         Just (IdeArtifact {..}) ->
           case iaValue of
             IaExpr exprTxt ident nameType -> do
               let inferredRes =
                     pursTypeStr
-                      exprTxt
+                      (show ident <> "---" <> exprTxt)
                       ( Just $
                           prettyPrintTypeSingleLine $
                             useSynonymns allArtifacts iaType
@@ -146,6 +147,7 @@ artifactInterest (IdeArtifact {..}) = case iaValue of
   IaBinder {} -> 2
   IaTypeName {} -> 3
   IaClassName {} -> 3
+  IaExpr _ (Just "bind") _ -> -10 -- desugared do notation is not interesting
   _ -> 1
 
 countUnkownsAndVars :: P.Type a -> Int
