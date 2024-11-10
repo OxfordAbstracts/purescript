@@ -16,9 +16,9 @@ import Language.PureScript.Errors (ErrorMessage (ErrorMessage), MultipleErrors (
 import Language.PureScript.Errors qualified as Errors
 import Language.PureScript.Errors.JSON (toSuggestion)
 import Language.PureScript.Errors.JSON qualified as JsonErrors
-import Language.PureScript.Lsp.Rebuild (RebuildResult (RebuildError, RebuildWarning), rebuildFile)
+import Language.PureScript.Lsp.Rebuild (rebuildFile)
 import Language.PureScript.Lsp.ServerConfig (ServerConfig)
-import Language.PureScript.Lsp.Types (LspEnvironment)
+import Language.PureScript.Lsp.Types (LspEnvironment, RebuildResult (RebuildWarning, RebuildError))
 import Protolude hiding (to)
 import Text.PrettyPrint.Boxes (render)
 

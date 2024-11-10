@@ -27,6 +27,10 @@ module Language.PureScript.Lsp.State
     cachedFilePaths,
     cachedEnvironment,
     cacheEnvironment,
+    hashDeps,
+    hashDepHashs,
+    cachedOpenFileFromSrc,
+    updateCachedRebuildResult,
     -- cachedExportEnvironment,
     -- cacheExportEnvironment,
   )
@@ -57,16 +61,16 @@ getDbConn :: (MonadReader LspEnvironment m, MonadIO m) => m Connection
 getDbConn = liftIO . fmap snd . readTVarIO . lspDbConnectionVar =<< ask
 
 -- | Sets rebuild cache to the given ExternsFile
-cacheRebuild :: (MonadReader LspEnvironment m, MonadLsp ServerConfig m) => ExternsFile -> IdeArtifacts -> P.Module -> m ()
-cacheRebuild ef artifacts module' = do
+cacheRebuild :: (MonadReader LspEnvironment m, MonadLsp ServerConfig m) => Text -> ExternsFile -> IdeArtifacts -> P.Module -> Int -> m ()
+cacheRebuild src ef artifacts module' depHash = do
   st <- lspStateVar <$> ask
   maxFiles <- getMaxFilesInCache
-  liftIO $ cacheRebuild' st maxFiles ef artifacts module'
+  liftIO $ cacheRebuild' st maxFiles src ef artifacts module' depHash
 
-cacheRebuild' :: TVar LspState -> Int -> ExternsFile -> IdeArtifacts -> P.Module -> IO ()
-cacheRebuild' st maxFiles ef artifacts module' = atomically . modifyTVar st $ \x ->
+cacheRebuild' :: TVar LspState -> Int -> Text -> ExternsFile -> IdeArtifacts -> P.Module -> Int -> IO ()
+cacheRebuild' st maxFiles src ef artifacts module' depHash = atomically . modifyTVar st $ \x ->
   x
-    { openFiles = List.take maxFiles $ (fp, OpenFile (efModuleName ef) ef artifacts  module') : filter ((/= fp) . fst) (openFiles x)
+    { openFiles = List.take maxFiles $ (fp, OpenFile (efModuleName ef) src ef artifacts  module' depHash Nothing) : filter ((/= fp) . fst) (openFiles x)
     }
   where
     fp = P.spanName $ efSourceSpan ef
@@ -85,6 +89,25 @@ updateCachedModule' st module' = liftIO . atomically $ modifyTVar st $ \x ->
             then (fp, ofile {ofModule = module'})
             else (fp, ofile)
     }
+
+updateCachedRebuildResult :: (MonadIO m, MonadReader LspEnvironment m) => FilePath -> RebuildResult -> m ()
+updateCachedRebuildResult fp result = do
+  st <- lspStateVar <$> ask
+  liftIO . atomically $ modifyTVar st $ \x ->
+    x
+      { openFiles =
+          openFiles x <&> \(fp', ofile) ->
+            if fp == fp'
+              then (fp', ofile {ofRebuildResult = Just result})
+              else (fp', ofile)
+      }
+
+cachedOpenFileFromSrc :: (MonadIO m, MonadReader LspEnvironment m) => FilePath -> Text  -> m (Maybe OpenFile)
+cachedOpenFileFromSrc fp input = do
+  st <- lspStateVar <$> ask
+  liftIO . atomically $ do
+    st' <- readTVar st
+    pure $ snd <$> List.find (\(fp', ofile) -> fp == fp' && input == ofSrc ofile) (openFiles st')
 
 cachedRebuild :: (MonadIO m, MonadReader LspEnvironment m) => FilePath -> m (Maybe OpenFile)
 cachedRebuild fp = do
@@ -127,8 +150,10 @@ cachedEnvironment fp deps = do
 
 
 hashDeps :: [ExternDependency] -> Int
-hashDeps = hash . sort . fmap edHash
+hashDeps = hashDepHashs . fmap edHash
 
+hashDepHashs :: [Int] -> Int
+hashDepHashs = hash . sort
 
 removedCachedRebuild :: (MonadIO m, MonadReader LspEnvironment m) => FilePath -> m ()
 removedCachedRebuild fp = do

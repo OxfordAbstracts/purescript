@@ -14,6 +14,7 @@ import Language.PureScript.Ide.Error (IdeError (GeneralError))
 import Language.PureScript.Lsp.DB qualified as DB
 import Language.PureScript.Lsp.Log (logPerfStandard)
 import Language.PureScript.Lsp.ServerConfig (ServerConfig (globs, inputSrcFromFile, outputPath))
+import Language.PureScript.Lsp.State (hashDepHashs)
 import Language.PureScript.Lsp.Types (ExternDependency (edHash), LspEnvironment)
 import Protolude
 import System.Directory (canonicalizePath, doesDirectoryExist, doesFileExist, getDirectoryContents, makeAbsolute)
@@ -29,41 +30,53 @@ selectAllExterns = do
 
 selectDependencies :: (MonadIO m, MonadReader LspEnvironment m) => P.Module -> m [ExternDependency]
 selectDependencies (P.Module _ _ _ decls _) = do
-  DB.queryNamed (Query query') [":module_names" := A.encode (fmap P.runModuleName importedModuleNames)]
+  DB.queryNamed (Query query') [":module_names" := A.encode (P.runModuleName <$> importedModuleNames decls)]
   where
-    query' =
-      unlines
-        [ "with recursive",
-          "graph(imported_module, level) as (",
-          " select module_name , 1 as level",
-          " from ef_imports where module_name IN (SELECT value FROM json_each(:module_names))",
-          " union ",
-          " select d.imported_module as dep, graph.level + 1 as level",
-          " from graph join ef_imports d on graph.imported_module = d.module_name",
-          "),",
-          "topo as (",
-          " select imported_module, max(level) as level",
-          " from graph group by imported_module",
-          "),",
-          "module_names as (select distinct(module_name), level",
-          "from topo join ef_imports on topo.imported_module = ef_imports.module_name ",
-          "order by level desc)",
-          "select value, level, hash from externs ",
-          "join module_names on externs.module_name = module_names.module_name ",
-          "order by level desc, module_names.module_name desc;"
-        ]
+    query' = selectFromExternsTopoQuery ["value", "level", "hash"]
 
-    importedModuleNames =
-      decls >>= \case
-        P.ImportDeclaration _ importName _ _ -> [importName]
-        _ -> []
+selectDependencyHash :: (MonadIO m, MonadReader LspEnvironment m) => P.Module -> m Int
+selectDependencyHash (P.Module _ _ _ decls _) = selectDependencyHashFromImports (importedModuleNames decls)
+
+selectDependencyHashFromImports :: (MonadIO m, MonadReader LspEnvironment m) => [P.ModuleName] -> m Int
+selectDependencyHashFromImports importedModulesNames =
+  hashDepHashs . fmap fromOnly <$> DB.queryNamed (Query query') [":module_names" := A.encode (P.runModuleName <$> importedModulesNames)]
+  where
+    query' = selectFromExternsTopoQuery ["hash"]
+
+importedModuleNames :: [Declaration] -> [P.ModuleName]
+importedModuleNames decls =
+  decls >>= \case
+    P.ImportDeclaration _ importName _ _ -> [importName]
+    _ -> []
+
+selectFromExternsTopoQuery :: [Text] -> Text
+selectFromExternsTopoQuery cols =
+  unlines
+    [ "with recursive",
+      "graph(imported_module, level) as (",
+      " select module_name , 1 as level",
+      " from ef_imports where module_name IN (SELECT value FROM json_each(:module_names))",
+      " union ",
+      " select d.imported_module as dep, graph.level + 1 as level",
+      " from graph join ef_imports d on graph.imported_module = d.module_name",
+      "),",
+      "topo as (",
+      " select imported_module, max(level) as level",
+      " from graph group by imported_module",
+      "),",
+      "module_names as (select distinct(module_name), level",
+      "from topo join ef_imports on topo.imported_module = ef_imports.module_name ",
+      "order by level desc)",
+      "select " <> T.intercalate ", " cols <> " from externs ",
+      "join module_names on externs.module_name = module_names.module_name ",
+      "order by level desc, module_names.module_name desc;"
+    ]
 
 selectExternFromFilePath :: (MonadIO m, MonadReader LspEnvironment m) => FilePath -> m (Maybe ExternsFile)
 selectExternFromFilePath path = do
   absPath <- liftIO $ makeAbsolute path
   res <- DB.queryNamed (Query "SELECT value FROM externs WHERE path = :path") [":path" := absPath]
   pure $ deserialise . fromOnly <$> listToMaybe res
-
 
 selectExternsCount :: (MonadIO m, MonadReader LspEnvironment m) => m Int
 selectExternsCount = do
@@ -152,4 +165,3 @@ cacheEnvironment path deps env = do
 --       ":hash" := hash (sort $ fmap edHash deps),
 --       ":value" := serialise env
 --     ]
-

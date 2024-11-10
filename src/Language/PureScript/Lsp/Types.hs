@@ -11,6 +11,7 @@ import Language.LSP.Protocol.Types (Range)
 import Language.PureScript.AST qualified as P
 import Language.PureScript.DB (mkConnection)
 import Language.PureScript.Environment qualified as P
+import Language.PureScript.Errors qualified as P
 import Language.PureScript.Externs qualified as P
 import Language.PureScript.Lsp.LogLevel (LspLogLevel)
 import Language.PureScript.Lsp.NameType (LspNameType)
@@ -18,8 +19,8 @@ import Language.PureScript.Lsp.ServerConfig (ServerConfig, defaultConfig)
 import Language.PureScript.Names qualified as P
 import Language.PureScript.Sugar.Names (Env)
 import Language.PureScript.Sugar.Names qualified as P
-import Protolude
 import Language.PureScript.TypeChecker.IdeArtifacts (IdeArtifacts)
+import Protolude
 
 data LspEnvironment = LspEnvironment
   { lspDbConnectionVar :: TVar (FilePath, Connection),
@@ -54,10 +55,17 @@ data LspState = LspState
 
 data OpenFile = OpenFile
   { ofModuleName :: P.ModuleName,
+    ofSrc :: Text,
     ofExternsFile :: P.ExternsFile,
     ofArtifacts :: IdeArtifacts,
-    ofModule :: P.Module
+    ofModule :: P.Module,
+    ofDepHash :: Int,
+    ofRebuildResult :: Maybe RebuildResult
   }
+
+data RebuildResult
+  = RebuildError P.MultipleErrors
+  | RebuildWarning P.MultipleErrors
 
 data ExternDependency = ExternDependency
   { edExtern :: P.ExternsFile,
