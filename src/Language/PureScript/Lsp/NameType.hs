@@ -20,7 +20,7 @@ data LspNameType
   | ModNameType
   | RoleNameType
   | KindNameType
-  deriving (Show, Read, Eq, Ord, Generic, A.ToJSON, A.FromJSON)
+  deriving (Show, Read, Eq, Ord, Generic, A.ToJSON, A.FromJSON, NFData)
 
 readableType :: LspNameType -> Text
 readableType = \case

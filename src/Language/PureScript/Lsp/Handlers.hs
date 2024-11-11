@@ -5,6 +5,7 @@
 
 module Language.PureScript.Lsp.Handlers where
 
+import Protolude
 import Control.Lens ((^.))
 import Data.Aeson qualified as A
 import Language.LSP.Protocol.Lens qualified as LSP
@@ -24,9 +25,10 @@ import Language.PureScript.Lsp.Handlers.Hover (hoverHandler)
 import Language.PureScript.Lsp.Handlers.Index (indexHandler)
 import Language.PureScript.Lsp.Monad (HandlerM)
 import Language.PureScript.Lsp.ServerConfig (setTraceValue)
-import Language.PureScript.Lsp.State (cancelRequest, clearCache, clearExportCache, clearRebuildCache, getDbConn, removedCachedRebuild)
+import Language.PureScript.Lsp.State (cancelRequest, getDbConn, removedCachedRebuild)
 import Language.PureScript.Make.Index (dropTables, initDb)
-import Protolude
+import Language.PureScript.Lsp.Handlers.ClearCache (clearCacheHandlers)
+import Language.PureScript.Lsp.Handlers.DebugCacheSize (debugCacheSizeHandler)
 
 handlers :: Server.Handlers HandlerM
 handlers =
@@ -39,7 +41,9 @@ handlers =
       diagnosticAndCodeActionHandlers,
       formatHandler,
       hoverHandler,
-      indexHandler
+      indexHandler,
+      clearCacheHandlers, 
+      debugCacheSizeHandler
     ]
   where
     -- Simple handlers that don't need to be in their own module
@@ -68,15 +72,6 @@ handlers =
           Server.notificationHandler Message.SMethod_CancelRequest $ \msg -> do
             let reqId = msg ^. LSP.params . LSP.id
             cancelRequest reqId,
-          Server.requestHandler (Message.SMethod_CustomMethod $ Proxy @"clear-cache") $ \_req res -> do
-            clearCache
-            res $ Right A.Null,
-          Server.requestHandler (Message.SMethod_CustomMethod $ Proxy @"clear-cache:exports") $ \_req res -> do
-            clearExportCache
-            res $ Right A.Null,
-          Server.requestHandler (Message.SMethod_CustomMethod $ Proxy @"clear-cache:rebuilds") $ \_req res -> do
-            clearRebuildCache
-            res $ Right A.Null,
           Server.requestHandler (Message.SMethod_CustomMethod $ Proxy @"create-index-tables") $ \_req res -> do
             conn <- getDbConn
             liftIO $ initDb conn

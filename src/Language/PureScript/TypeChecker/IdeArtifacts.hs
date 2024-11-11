@@ -1,3 +1,4 @@
+{-# LANGUAGE DeriveAnyClass #-}
 -- | Stores information about the source code that is useful for the IDE
 -- | This includes value types and source spans
 module Language.PureScript.TypeChecker.IdeArtifacts
@@ -51,7 +52,7 @@ data IdeArtifacts
       (Map Line (Set IdeArtifact)) -- with type var substitutions
       (Map Line (Set IdeArtifact)) -- without var substitutions
       (Map (P.Type ()) (P.Type ())) -- type synonym substitutions
-  deriving (Show)
+  deriving (Show, Generic, NFData)
 
 type Line = Int
 
@@ -73,7 +74,7 @@ data IdeArtifact = IdeArtifact
     iaDefinitionModule :: Maybe P.ModuleName,
     iaDefinitionPos :: Maybe (Either P.SourcePos P.SourceSpan)
   }
-  deriving (Show, Eq, Ord)
+  deriving (Show, Eq, Ord, Generic, NFData)
 
 data IdeArtifactValue
   = IaExpr Text (Maybe Text) (Maybe LspNameType)
@@ -85,7 +86,7 @@ data IdeArtifactValue
   | IaClassName (P.ProperName 'P.ClassName)
   | IaModule P.ModuleName
   | IaImport P.ModuleName P.DeclarationRef
-  deriving (Show, Ord, Eq)
+  deriving (Show, Ord, Eq, Generic, NFData)
 
 substituteArtifactTypes :: (P.SourceType -> P.SourceType) -> IdeArtifacts -> IdeArtifacts
 substituteArtifactTypes f (IdeArtifacts m u s) = IdeArtifacts m (Map.map (Set.map (onArtifactType f)) u) s
@@ -99,14 +100,14 @@ endSubstitutions (IdeArtifacts m u s) = IdeArtifacts (Map.unionWith (<>) m u) Ma
 smallestArtifact :: (Ord a) => (IdeArtifact -> a) -> [IdeArtifact] -> Maybe IdeArtifact
 smallestArtifact tieBreaker = minimumByMay (compare `on` (\a -> (artifactSize a, tieBreaker a)))
 
-bindersAtPos :: P.SourcePos -> IdeArtifacts -> [P.Binder]
+bindersAtPos :: P.SourcePos -> IdeArtifacts -> [(IdeArtifact,  P.Binder)]
 bindersAtPos pos (IdeArtifacts m _ _) =
   Map.lookup (P.sourcePosLine pos) m
     & maybe [] Set.toList
     & filter (\ia -> P.sourcePosColumn (P.spanStart (iaSpan ia)) <= posCol && P.sourcePosColumn (P.spanEnd (iaSpan ia)) >= posCol)
     & mapMaybe
       ( \case
-          IdeArtifact {iaValue = IaBinder b} -> Just b
+          a@(IdeArtifact {iaValue = IaBinder b}) -> Just (a, b)
           _ -> Nothing
       )
   where

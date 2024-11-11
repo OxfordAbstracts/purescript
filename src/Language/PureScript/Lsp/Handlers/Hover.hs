@@ -26,6 +26,7 @@ import Language.PureScript.Lsp.Util (positionToSourcePos, getWordAt)
 import Language.PureScript.TypeChecker.IdeArtifacts (IdeArtifact (..), IdeArtifactValue (..), getArtifactsAtPosition, smallestArtifact, useSynonymns, artifactInterest, bindersAtPos)
 import Protolude hiding (handle, to)
 import Language.PureScript.Lsp.ReadFile (lspReadFileRope)
+import Language.PureScript.TypeChecker.IdeArtifacts qualified as Artifiacts
 
 hoverHandler :: Server.Handlers HandlerM
 hoverHandler = Server.requestHandler Message.SMethod_TextDocumentHover $ \req res -> do
@@ -61,7 +62,7 @@ hoverHandler = Server.requestHandler Message.SMethod_TextDocumentHover $ \req re
           atPos = getArtifactsAtPosition (positionToSourcePos pos) allArtifacts
       debugLsp $ "hover artiacts length: " <> show (length atPos)
       case smallestArtifact (\a -> (negate $ artifactInterest a, negate $ countUnkownsAndVars $ iaType a)) atPos of
-        Just (IdeArtifact {..}) ->
+        Just a@(IdeArtifact {..}) ->
           case iaValue of
             IaExpr exprTxt ident nameType -> do
               let inferredRes =
@@ -118,9 +119,9 @@ hoverHandler = Server.requestHandler Message.SMethod_TextDocumentHover $ \req re
                 src <- lspReadFileRope (Types.toNormalizedUri uri)
                 let 
                   (range, word) = getWordAt src pos
-                  actualBinder = fromMaybe binder $ find (\b -> T.strip (P.prettyPrintBinder b) == word) binders
+                  (binderArtifact, actualBinder) = fromMaybe (a, binder) $ find (\(_, b) -> T.strip (P.prettyPrintBinder b) == word) binders
 
-                let inferredRes = pursTypeStr (dispayBinderOnHover actualBinder) (Just $ prettyPrintTypeSingleLine $ useSynonymns allArtifacts iaType) []
+                let inferredRes = pursTypeStr (dispayBinderOnHover actualBinder) (Just $ prettyPrintTypeSingleLine $ useSynonymns allArtifacts $ Artifiacts.iaType binderArtifact) []
                 markdownRes (Just range) inferredRes
                 
 

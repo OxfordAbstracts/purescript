@@ -214,7 +214,8 @@ common defaults
     lsp >=2.2.0 && <3.0,
     lsp-types >=2.2.0 && <3.0,
     unliftio-core >= 0.2.0.0 && < 0.3,
-    text-rope >= 0.2 && < 1.0
+    text-rope >= 0.2 && < 1.0,
+    ghc-datasize >= 0.2 && <= 0.2.7
 
 library
   import: defaults
@@ -350,7 +351,9 @@ library
     Language.PureScript.Lsp.Diagnostics
     Language.PureScript.Lsp.Handlers
     Language.PureScript.Lsp.Handlers.Build
+    Language.PureScript.Lsp.Handlers.ClearCache
     Language.PureScript.Lsp.Handlers.Completion
+    Language.PureScript.Lsp.Handlers.DebugCacheSize
     Language.PureScript.Lsp.Handlers.Definition
     Language.PureScript.Lsp.Handlers.DeleteOutput
     Language.PureScript.Lsp.Handlers.Diagnostic

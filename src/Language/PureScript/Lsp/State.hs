@@ -1,13 +1,15 @@
 {-# LANGUAGE TypeOperators #-}
 
 module Language.PureScript.Lsp.State
-  ( getDbConn,
+  ( getState, 
+    getDbConn,
     cacheRebuild,
     cacheRebuild',
     updateCachedModule,
     updateCachedModule',
     cachedRebuild,
     clearCache,
+    clearEnvCache,
     clearRebuildCache,
     clearExportCache,
     mergeExportEnvCache,
@@ -59,6 +61,10 @@ import Language.PureScript.TypeChecker.IdeArtifacts (IdeArtifacts)
 
 getDbConn :: (MonadReader LspEnvironment m, MonadIO m) => m Connection
 getDbConn = liftIO . fmap snd . readTVarIO . lspDbConnectionVar =<< ask
+
+
+getState :: (MonadReader LspEnvironment m, MonadIO m) => m LspState
+getState = liftIO . readTVarIO . lspStateVar =<< ask
 
 -- | Sets rebuild cache to the given ExternsFile
 cacheRebuild :: (MonadReader LspEnvironment m, MonadLsp ServerConfig m) => Text -> ExternsFile -> IdeArtifacts -> P.Module -> Int -> m ()
@@ -168,13 +174,18 @@ clearRebuildCache = do
   st <- lspStateVar <$> ask
   liftIO . atomically $ modifyTVar st $ \x -> x {openFiles = []}
 
+clearEnvCache :: (MonadReader LspEnvironment m, MonadIO m) => m ()
+clearEnvCache = do
+  st <- lspStateVar <$> ask
+  liftIO . atomically $ modifyTVar st $ \x -> x {environments = []}
+
 clearExportCache :: (MonadReader LspEnvironment m, MonadIO m) => m ()
 clearExportCache = do
   st <- lspStateVar <$> ask
   liftIO . atomically $ modifyTVar st $ \x -> x {exportEnv = P.primEnv}
 
 clearCache :: (MonadReader LspEnvironment m, MonadIO m) => m ()
-clearCache = clearRebuildCache >> clearExportCache
+clearCache = clearRebuildCache >> clearEnvCache >> clearExportCache
 
 buildExportEnvCache :: (MonadIO m, MonadReader LspEnvironment m) => P.Module -> [ExternsFile] -> m (Either MultipleErrors P.Env)
 buildExportEnvCache module' externs = do
