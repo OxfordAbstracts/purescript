@@ -10,15 +10,15 @@ import Data.Text qualified as T
 import Language.LSP.Protocol.Lens qualified as LSP
 import Language.LSP.Protocol.Types (Diagnostic, Uri)
 import Language.LSP.Protocol.Types qualified as Types
-import Language.LSP.Server (MonadLsp)
+import Language.LSP.Server (MonadLsp, getConfig)
 import Language.PureScript qualified as P
 import Language.PureScript.Errors (ErrorMessage (ErrorMessage), MultipleErrors (runMultipleErrors), errorCode, errorDocUri, errorSpan, noColorPPEOptions, prettyPrintSingleError)
 import Language.PureScript.Errors qualified as Errors
 import Language.PureScript.Errors.JSON (toSuggestion)
 import Language.PureScript.Errors.JSON qualified as JsonErrors
 import Language.PureScript.Lsp.Rebuild (rebuildFile)
-import Language.PureScript.Lsp.ServerConfig (ServerConfig)
-import Language.PureScript.Lsp.Types (LspEnvironment, RebuildResult (RebuildWarning, RebuildError))
+import Language.PureScript.Lsp.ServerConfig (ServerConfig (showErrorFilepath, showErrorModule))
+import Language.PureScript.Lsp.Types (LspEnvironment, RebuildResult (RebuildError, RebuildWarning))
 import Protolude hiding (to)
 import Text.PrettyPrint.Boxes (render)
 
@@ -36,7 +36,8 @@ getFileDiagnotics msg = do
   let uri :: Types.NormalizedUri
       uri = getMsgUri msg & Types.toNormalizedUri
   res <- rebuildFile uri
-  pure $ addJsonEdits $ getResultDiagnostics res
+  config <- getConfig
+  pure $ addJsonEdits $ getResultDiagnostics config res
 
 addJsonEdits :: [(Types.Diagnostic, [TitledTextEdit])] -> [Types.Diagnostic]
 addJsonEdits diags =
@@ -49,44 +50,46 @@ addJsonEdits diags =
         if length diags > 1 then diags >>= fmap tteEdit . filter tteIsUnusedImport . snd else []
    in diags
         <&> \(diag, edits) ->
-          let
-            withApplyAlls = 
-               edits
-                 <&> addAllEdits allEdits
+          let withApplyAlls =
+                edits
+                  <&> addAllEdits allEdits
                   <&> addImportEdits importEdits
-
-          in
-           set LSP.data_ (Just $ A.toJSON withApplyAlls) diag
+           in set LSP.data_ (Just $ A.toJSON withApplyAlls) diag
 
 getMsgUri :: (LSP.HasParams s a1, LSP.HasTextDocument a1 a2, LSP.HasUri a2 a3) => s -> a3
 getMsgUri msg = msg ^. LSP.params . LSP.textDocument . LSP.uri
 
 getResultDiagnostics ::
+  ServerConfig ->
   RebuildResult ->
   [(Types.Diagnostic, [TitledTextEdit])]
-getResultDiagnostics res = case res of
-  RebuildError errors -> errorsToDiagnostics Types.DiagnosticSeverity_Error errors
-  RebuildWarning errors -> errorsToDiagnostics Types.DiagnosticSeverity_Warning errors
+getResultDiagnostics config res = case res of
+  RebuildError errors -> errorsToDiagnostics config Types.DiagnosticSeverity_Error errors
+  RebuildWarning errors -> errorsToDiagnostics config Types.DiagnosticSeverity_Warning errors
 
-errorsToDiagnostics :: Types.DiagnosticSeverity -> P.MultipleErrors -> [(Types.Diagnostic, [TitledTextEdit])]
-errorsToDiagnostics severity errs =
-  errorMessageDiagnostic severity <$> runMultipleErrors errs
+errorsToDiagnostics :: ServerConfig -> Types.DiagnosticSeverity -> P.MultipleErrors -> [(Types.Diagnostic, [TitledTextEdit])]
+errorsToDiagnostics config severity errs =
+  errorMessageDiagnostic config severity <$> runMultipleErrors errs
 
-errorMessageDiagnostic :: Types.DiagnosticSeverity -> ErrorMessage -> (Types.Diagnostic, [TitledTextEdit])
-errorMessageDiagnostic severity msg@((ErrorMessage _hints _)) =
+errorMessageDiagnostic :: ServerConfig -> Types.DiagnosticSeverity -> ErrorMessage -> (Types.Diagnostic, [TitledTextEdit])
+errorMessageDiagnostic config severity msg@((ErrorMessage _hints _)) =
   ( Types.Diagnostic
       (Types.Range start end)
       (Just severity)
       (Just $ Types.InR $ errorCode msg)
       (Just $ Types.CodeDescription $ Types.Uri $ errorDocUri msg)
       (T.pack <$> spanName)
-      (T.pack $ render $ prettyPrintSingleError noColorPPEOptions $ Errors.withoutPosition $ Errors.withoutModule msg)
+      (T.pack $ render $ prettyPrintSingleError noColorPPEOptions $ checkWithPosition $ checkWithModule msg)
       Nothing
       Nothing
       Nothing,
     maybeToList (getErrorTextEdit msg)
   )
   where
+    checkWithPosition = if showErrorFilepath config then identity else Errors.withoutPosition
+
+    checkWithModule = if showErrorModule config then identity else Errors.withoutModule
+
     notFound = Types.Position 0 0
     (spanName, start, end) = getPositions $ errorSpan msg
 
