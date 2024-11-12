@@ -17,7 +17,7 @@ import Language.PureScript.Errors qualified as Errors
 import Language.PureScript.Errors.JSON (toSuggestion)
 import Language.PureScript.Errors.JSON qualified as JsonErrors
 import Language.PureScript.Lsp.Rebuild (rebuildFile)
-import Language.PureScript.Lsp.ServerConfig (ServerConfig (showErrorFilepath, showErrorModule))
+import Language.PureScript.Lsp.ServerConfig (ServerConfig (showDiagnosticsFilepath, showDiagnosticsModule))
 import Language.PureScript.Lsp.Types (LspEnvironment, RebuildResult (RebuildError, RebuildWarning))
 import Protolude hiding (to)
 import Text.PrettyPrint.Boxes (render)
@@ -86,9 +86,9 @@ errorMessageDiagnostic config severity msg@((ErrorMessage _hints _)) =
     maybeToList (getErrorTextEdit msg)
   )
   where
-    checkWithPosition = if showErrorFilepath config then identity else Errors.withoutPosition
+    checkWithPosition = if showDiagnosticsFilepath config then identity else Errors.withoutPosition
 
-    checkWithModule = if showErrorModule config then identity else Errors.withoutModule
+    checkWithModule = if showDiagnosticsModule config then identity else Errors.withoutModule
 
     notFound = Types.Position 0 0
     (spanName, start, end) = getPositions $ errorSpan msg

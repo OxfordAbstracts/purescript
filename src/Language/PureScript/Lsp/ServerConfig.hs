@@ -18,8 +18,8 @@ data ServerConfig = ServerConfig
     maxCompletions :: Maybe Int, 
     maxFilesInCache :: Maybe Int, 
     inferExpressions :: Bool,
-    showErrorModule :: Bool,
-    showErrorFilepath :: Bool
+    showDiagnosticsModule :: Bool,
+    showDiagnosticsFilepath :: Bool
   }
   deriving (Show, Eq, Generic, ToJSON, FromJSON)
 
@@ -35,8 +35,8 @@ defaultConfig outputPath =
       maxCompletions = Just defaultMaxCompletions, 
       maxFilesInCache = Just defaultMaxFilesInCache,
       inferExpressions = True,
-      showErrorModule = False,
-      showErrorFilepath = False
+      showDiagnosticsModule = False,
+      showDiagnosticsFilepath = False
     }
 
 setTraceValue :: (MonadLsp ServerConfig m) => TraceValue -> m ()

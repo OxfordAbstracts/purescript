@@ -46,6 +46,7 @@ buildForLsp = do
         conn
         outDir
         False
+  config <- getConfig
   pure $ addJsonEdits $
-    (errorMessageDiagnostic Types.DiagnosticSeverity_Error <$> either P.runMultipleErrors (const []) result)
-      <> (errorMessageDiagnostic Types.DiagnosticSeverity_Warning <$> P.runMultipleErrors warnings)
+    (errorMessageDiagnostic config Types.DiagnosticSeverity_Error <$> either P.runMultipleErrors (const []) result)
+      <> (errorMessageDiagnostic config Types.DiagnosticSeverity_Warning <$> P.runMultipleErrors warnings)
