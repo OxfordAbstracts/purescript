@@ -17,7 +17,6 @@ import Language.PureScript.Lsp.LogLevel (LspLogLevel)
 import Language.PureScript.Lsp.NameType (LspNameType)
 import Language.PureScript.Lsp.ServerConfig (ServerConfig, defaultConfig)
 import Language.PureScript.Names qualified as P
-import Language.PureScript.Sugar.Names (Env)
 import Language.PureScript.Sugar.Names qualified as P
 import Language.PureScript.TypeChecker.IdeArtifacts (IdeArtifacts)
 import Protolude
@@ -36,7 +35,7 @@ mkEnv outputPath = do
   pure $ LspEnvironment connection st prevConfig
 
 emptyState :: LspState
-emptyState = LspState mempty P.primEnv mempty mempty
+emptyState = LspState mempty mempty mempty
 
 data LspConfig = LspConfig
   { confOutputPath :: FilePath,
@@ -48,7 +47,6 @@ data LspConfig = LspConfig
 
 data LspState = LspState
   { openFiles :: [(FilePath, OpenFile)],
-    exportEnv :: Env,
     environments :: [((FilePath, Int), (P.Env, P.Environment))],
     runningRequests :: Map (Either Int32 Text) (Async ())
   }

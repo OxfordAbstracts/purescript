@@ -1,7 +1,7 @@
 {-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE DeriveAnyClass #-}
 
-module Language.PureScript.Lsp.Rebuild (rebuildFile, buildExportEnvCacheAndHandleErrors, codegenTargets, rebuildFilePathFromUri) where
+module Language.PureScript.Lsp.Rebuild (rebuildFile, codegenTargets, rebuildFilePathFromUri) where
 
 import Control.Concurrent.STM (TVar)
 import Control.Monad.Catch (MonadThrow (throwM))
@@ -10,7 +10,7 @@ import Data.Set qualified as Set
 import Data.Text qualified as T
 import Language.LSP.Protocol.Types (NormalizedUri, fromNormalizedUri, uriToFilePath)
 import Language.LSP.Server (MonadLsp, getConfig)
-import Language.PureScript (ExternsFile, primEnv)
+import Language.PureScript (ExternsFile)
 import Language.PureScript.AST qualified as P
 import Language.PureScript.CST qualified as CST
 import Language.PureScript.Environment qualified as P
@@ -22,7 +22,7 @@ import Language.PureScript.Lsp.Cache (selectDependencies, selectDependencyHashFr
 import Language.PureScript.Lsp.Log (debugLsp, errorLsp, logPerfStandard, warnLsp)
 import Language.PureScript.Lsp.ReadFile (lspReadFileText)
 import Language.PureScript.Lsp.ServerConfig (ServerConfig (outputPath), getInferExpressions, getMaxFilesInCache)
-import Language.PureScript.Lsp.State (addExternsToExportEnv, buildExportEnvCache, cacheEnvironment, cacheRebuild', cachedEnvironment, cachedOpenFileFromSrc, getDbConn, hashDeps, mergeExportEnvCache, updateCachedRebuildResult)
+import Language.PureScript.Lsp.State (addExternsToExportEnv, cacheEnvironment, cacheRebuild', cachedEnvironment, cachedOpenFileFromSrc, getDbConn, hashDeps, updateCachedRebuildResult)
 import Language.PureScript.Lsp.Types (ExternDependency (edExtern), LspEnvironment (lspStateVar), LspState)
 import Language.PureScript.Lsp.Types qualified as Types
 import Language.PureScript.Make qualified as P
@@ -140,29 +140,6 @@ buildExportEnvFromPrim :: (Foldable t, MonadThrow m) => t ExternsFile -> m P.Env
 buildExportEnvFromPrim =
   addExternsToExportEnv P.primEnv
     >=> either (throwM . CouldNotRebuildExportEnv . P.prettyPrintMultipleErrors P.noColorPPEOptions) pure
-
-buildExportEnvCacheAndHandleErrors ::
-  (MonadReader Types.LspEnvironment m, MonadLsp ServerConfig m, MonadThrow m) =>
-  m [ExternDependency] ->
-  P.Module ->
-  [ExternsFile] ->
-  m (P.Env, Maybe [ExternDependency])
-buildExportEnvCacheAndHandleErrors refetchExterns m externs = do
-  fromCache <- buildExportEnvCache m externs
-  case fromCache of
-    Left err -> do
-      warnLsp $ "Error building export env cache: " <> show err
-      externs' <- refetchExterns
-      envRes <- addExternsToExportEnv primEnv $ edExtern <$> externs'
-      case envRes of
-        Left err' ->
-          throwM $
-            CouldNotRebuildExportEnv $
-              P.prettyPrintMultipleErrors P.noColorPPEOptions err'
-        Right env -> do
-          mergeExportEnvCache env
-          pure (env, Just externs')
-    Right env -> pure (env, Nothing)
 
 data RebuildException
   = CouldNotConvertUriToFilePath NormalizedUri

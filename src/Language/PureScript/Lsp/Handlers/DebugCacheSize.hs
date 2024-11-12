@@ -12,7 +12,7 @@ import Language.LSP.Server qualified as Server
 import Language.PureScript.Lsp.Log (debugLsp)
 import Language.PureScript.Lsp.Monad (HandlerM)
 import Language.PureScript.Lsp.State (getState)
-import Language.PureScript.Lsp.Types (LspState (environments, exportEnv, openFiles), OpenFile (..))
+import Language.PureScript.Lsp.Types (LspState (environments, openFiles), OpenFile (..))
 import Numeric (showFFloat)
 import Protolude hiding (to)
 
@@ -30,9 +30,6 @@ debugCacheSizeHandler =
     for_ (environments st) \((fp, _), (exportEnv, env)) -> do
       debugSize (T.pack fp <> " - Export env") exportEnv
       debugSize (T.pack fp <> " - Environment") env
-      debugNfSize (T.pack fp <> " - Environment") env
-
-    debugSize "Current export env" $ exportEnv st
 
     debugLsp "Finished debugging cache sizes"
 
