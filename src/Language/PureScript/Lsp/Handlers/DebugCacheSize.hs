@@ -18,34 +18,51 @@ import Protolude hiding (to)
 
 debugCacheSizeHandler :: Server.Handlers HandlerM
 debugCacheSizeHandler =
-  Server.requestHandler (Message.SMethod_CustomMethod $ Proxy @"debug-cache-size") $ \_req res -> do
-    debugLsp "Debugging cache sizes"
-    st <- getState
-    for_ (openFiles st) \(fp, file@(OpenFile {..})) -> do
-      debugSize (T.pack fp <> " - rebuild result") ofRebuildResult
-      debugSize (T.pack fp <> " - artifacts") ofArtifacts
-      debugNfSize (T.pack fp <> " - artifacts") ofArtifacts
-      debugSize (T.pack fp <> " - Full file") file
+  mconcat
+    [ Server.requestHandler (Message.SMethod_CustomMethod $ Proxy @"debug-cache-size") $ \_req res -> do
+        debugLsp "Debugging cache sizes"
+        st <- getState
+        for_ (openFiles st) \(fp, file@(OpenFile {..})) -> do
+          debugSize (T.pack fp <> " - rebuild result") ofRebuildResult
+          debugSize (T.pack fp <> " - artifacts") ofArtifacts
+          debugSize (T.pack fp <> " - Full file") file
 
-    for_ (environments st) \((fp, _), (exportEnv, env)) -> do
-      debugSize (T.pack fp <> " - Export env") exportEnv
-      debugSize (T.pack fp <> " - Environment") env
+        for_ (environments st) \((fp, _), (exportEnv, env)) -> do
+          debugSize (T.pack fp <> " - Export env") exportEnv
+          debugSize (T.pack fp <> " - Environment") env
 
-    debugLsp "Finished debugging cache sizes"
+        debugLsp "Finished debugging cache sizes"
 
-    res $ Right A.Null
+        res $ Right A.Null
+    , Server.requestHandler (Message.SMethod_CustomMethod $ Proxy @"debug-cache-size-evaluated") $ \_req res -> do
+        debugLsp "Debugging cache sizes"
+        st <- getState
+        for_ (openFiles st) \(fp, file@(OpenFile {..})) -> do
+          debugSize (T.pack fp <> " - artifacts") ofArtifacts
+          debugNfSize (T.pack fp <> " - artifacts") ofArtifacts
+          debugSize (T.pack fp <> " - Full file") file
+
+        for_ (environments st) \((fp, _), (_, env)) -> do
+          debugSize (T.pack fp <> " - Environment") env
+          debugNfSize (T.pack fp <> " - Environment") env
+
+        debugLsp "Finished debugging cache sizes"
+
+        res $ Right A.Null
+    ]
 
 debugSize :: Text -> a -> HandlerM ()
 debugSize label a = do
   closure <- liftIO $ closureSize a
   debugLsp $
-      label <> " - closure:\n" <> toMb closure
+    label <> " - closure:\n" <> toMb closure
 
-debugNfSize :: NFData a => Text -> a -> HandlerM ()
+debugNfSize :: (NFData a) => Text -> a -> HandlerM ()
 debugNfSize label a = do
-  !evaluated <- liftIO $ closureSize $ force a
+  let !forced = force a
+  !evaluated <- liftIO $ closureSize forced
   debugLsp $
-      label <> " - evaluated:\n" <> toMb evaluated
+    label <> " - evaluated:\n" <> toMb evaluated
 
 toMb :: Word -> Text
 toMb w =
