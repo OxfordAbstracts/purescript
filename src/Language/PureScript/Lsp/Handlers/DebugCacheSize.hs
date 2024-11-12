@@ -43,7 +43,7 @@ debugSize label a = do
 
 debugNfSize :: NFData a => Text -> a -> HandlerM ()
 debugNfSize label a = do
-  !evaluated <- liftIO $ recursiveSizeNF a
+  !evaluated <- liftIO $ closureSize $ force a
   debugLsp $
       label <> " - evaluated:\n" <> toMb evaluated
 

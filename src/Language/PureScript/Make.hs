@@ -51,7 +51,7 @@ import Language.PureScript.Names (ModuleName, isBuiltinModuleName, runModuleName
 import Language.PureScript.Renamer (renameInModule)
 import Language.PureScript.Sugar (Env, collapseBindingGroups, createBindingGroups, desugar, desugarCaseGuards, externsEnv, primEnv)
 import Language.PureScript.TypeChecker (CheckState (..), emptyCheckState, typeCheckModule)
-import Language.PureScript.TypeChecker qualified as P
+import Language.PureScript.TypeChecker.Monad qualified as P
 import System.Directory (doesFileExist)
 import System.FilePath (replaceExtension)
 import Prelude
@@ -120,7 +120,7 @@ rebuildModuleWithProvidedEnv initialCheckState onDesugared MakeActions {..} exEn
 
   regrouped <- createBindingGroups moduleName . collapseBindingGroups $ deguarded
   let mod' = Module ss coms moduleName regrouped exps
-
+  
       corefn = CF.moduleToCoreFn env' mod'
       (optimized, nextVar'') = runSupply nextVar' $ CF.optimizeCoreFn corefn
       (renamedIdents, renamed) = renameInModule optimized
