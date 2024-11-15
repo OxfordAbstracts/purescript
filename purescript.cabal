@@ -360,6 +360,7 @@ library
     Language.PureScript.Lsp.Handlers.Format
     Language.PureScript.Lsp.Handlers.Hover
     Language.PureScript.Lsp.Handlers.Index
+    Language.PureScript.Lsp.Handlers.References
     Language.PureScript.Lsp.Log
     Language.PureScript.Lsp.LogLevel
     Language.PureScript.Lsp.Monad
