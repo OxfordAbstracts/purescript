@@ -2,6 +2,8 @@
 
 module Language.PureScript.Lsp.Handlers.Definition where
 
+import Protolude
+
 import Control.Lens ((^.))
 import Data.Text qualified as T
 import Language.LSP.Protocol.Lens qualified as LSP
@@ -12,15 +14,14 @@ import Language.PureScript qualified as P
 import Language.PureScript.Lsp.AtPosition (getImportRefNameType, spanToRange)
 import Language.PureScript.Lsp.Cache (selectExternPathFromModuleName)
 import Language.PureScript.Lsp.Cache.Query (getAstDeclarationLocationInModule)
-import Language.PureScript.Lsp.Log (debugLsp)
+import Language.PureScript.Lsp.Log (debugLsp, warnLsp)
 import Language.PureScript.Lsp.Monad (HandlerM)
 import Language.PureScript.Lsp.NameType (LspNameType (..))
 import Language.PureScript.Lsp.Print (printName)
 import Language.PureScript.Lsp.State (cachedFilePaths, cachedRebuild)
 import Language.PureScript.Lsp.Types (OpenFile (OpenFile, ofArtifacts))
 import Language.PureScript.Lsp.Util (positionToSourcePos, sourcePosToPosition)
-import Language.PureScript.TypeChecker.IdeArtifacts (IdeArtifact (..), IdeArtifactValue (..), getArtifactsAtPosition, smallestArtifact, artifactInterest)
-import Protolude
+import Language.PureScript.TypeChecker.IdeArtifacts (IdeArtifact (..), IdeArtifactValue (..), getArtifactsAtPosition, smallestArtifact, artifactInterest, debugIdeArtifact)
 import Language.PureScript.Lsp.Docs (readDeclarationDocsSourceSpan)
 
 definitionHandler :: Server.Handlers HandlerM
@@ -55,35 +56,46 @@ definitionHandler = Server.requestHandler Message.SMethod_TextDocumentDefinition
         modFpMb <- selectExternPathFromModuleName modName
         forLsp modFpMb \modFp -> do
           posRes modFp $ P.SourcePos 1 1
-
+  debugLsp $ "goto def filePath found " <> show (isJust filePathMb)
   forLsp filePathMb \filePath -> do
     cacheOpenMb <- cachedRebuild filePath
+    debugLsp $ "cacheOpenMb found " <> show (isJust cacheOpenMb)
     when (isNothing cacheOpenMb) do
-      debugLsp $ "file path not cached: " <> T.pack filePath
-      debugLsp . show =<< cachedFilePaths
+      warnLsp $ "file path not cached: " <> T.pack filePath
+      warnLsp . show =<< cachedFilePaths
 
     forLsp cacheOpenMb \OpenFile {..} -> do
       let allArtifacts = ofArtifacts
           atPos = getArtifactsAtPosition (positionToSourcePos pos) allArtifacts
+      debugLsp $ "Found " <> show (length atPos) <> " artifacts at position"
       let smallest = smallestArtifact (\a -> (negate $ artifactInterest a, isNothing (iaDefinitionPos a), isNothing (iaDefinitionModule a))) atPos
+      debugLsp $ "Smallest artifact: " <> maybe "Nothing" debugIdeArtifact smallest
       case smallest of
-        Just (IdeArtifact _ (IaModule modName) _ _ _) -> respondWithModule modName
+        Just (IdeArtifact _ (IaModule modName) _ _ _) -> do
+          debugLsp "Module definition"
+          respondWithModule modName
         Just (IdeArtifact _ (IaImport modName ref) _ _ _) -> do
           let nameType = getImportRefNameType ref
               name = P.declRefName ref
           respondWithDeclInOtherModule nameType modName (printName name)
         Just (IdeArtifact _ (IaExpr _ (Just ident) (Just nameType)) _ (Just modName) _) -> do
+          debugLsp "Expr definition"
           respondWithDeclInOtherModule nameType modName ident
         Just (IdeArtifact _ (IaTypeName name) _ (Just modName) _) -> do
+          debugLsp "Type definition"
           respondWithDeclInOtherModule TyNameType modName (P.runProperName name)
         Just (IdeArtifact _ (IaClassName name) _ (Just modName) _) -> do
+          debugLsp "Class definition"
           respondWithDeclInOtherModule TyClassNameType modName (P.runProperName name)
         Just (IdeArtifact _ _ _ _ (Just (Right defSpan))) -> do
+          debugLsp "Span definition"
           spanRes defSpan
         Just (IdeArtifact _ _ _ (Just modName) (Just (Left defPos))) -> do
+          debugLsp "Module position definition"
           fpMb <- selectExternPathFromModuleName modName
           forLsp fpMb \fp -> posRes fp defPos
         Just (IdeArtifact _ _ _ Nothing (Just (Left defPos))) -> do
+          debugLsp "Position definition"
           posRes filePath defPos
         _ -> do
           debugLsp "No relevant definition found for artifact"
