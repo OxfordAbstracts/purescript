@@ -8,7 +8,7 @@ module Language.PureScript.Names where
 
 import Prelude
 
-import Codec.Serialise (Serialise)
+import Codec.Serialise (Serialise, serialise)
 import Control.Applicative ((<|>))
 import Control.Monad.Supply.Class (MonadSupply(..))
 import Control.DeepSeq (NFData)
@@ -23,6 +23,8 @@ import Data.Text qualified as T
 
 import Language.PureScript.AST.SourcePos (SourcePos, pattern SourcePos)
 import Data.Aeson qualified as A
+import Database.SQLite.Simple.ToField (ToField (toField))
+import Database.SQLite.Simple.FromField (FromField (fromField))
 
 -- | A sum of the possible name types, useful for error and lint messages.
 data Name
@@ -102,6 +104,7 @@ data Ident
 instance NFData Ident
 instance Serialise Ident
 
+
 unusedIdent :: Text
 unusedIdent = "$__unused"
 
@@ -162,6 +165,12 @@ newtype ProperName (a :: ProperNameType) = ProperName { runProperName :: Text }
 
 instance NFData (ProperName a)
 instance Serialise (ProperName a)
+
+instance ToField (ProperName a) where
+  toField = toField . runProperName
+
+instance FromField (ProperName a) where
+  fromField = fmap ProperName . fromField
 
 instance ToJSON (ProperName a) where
   toJSON = toJSON . runProperName
@@ -236,6 +245,9 @@ data Qualified a = Qualified QualifiedBy a
 
 instance NFData a => NFData (Qualified a)
 instance Serialise a => Serialise (Qualified a)
+
+instance Serialise a => ToField (Qualified a) where
+  toField = toField . serialise
 
 showQualified :: (a -> Text) -> Qualified a -> Text
 showQualified f (Qualified (BySourcePos  _) a) = f a
@@ -323,3 +335,6 @@ instance FromJSONKey ModuleName where
 
 $(deriveJSON (defaultOptions { sumEncoding = ObjectWithSingleField }) ''InternalIdentData)
 $(deriveJSON (defaultOptions { sumEncoding = ObjectWithSingleField }) ''Ident)
+
+-- instance ToField Ident where 
+--   toField a = 

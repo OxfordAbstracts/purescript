@@ -1,3 +1,4 @@
+
 -- |
 -- Data types for types
 --
@@ -6,7 +7,7 @@ module Language.PureScript.Types where
 import Prelude
 import Protolude (ordNub, fromMaybe)
 
-import Codec.Serialise (Serialise)
+import Codec.Serialise (Serialise, serialise, deserialise)
 import Control.Applicative ((<|>))
 import Control.Arrow (first, second)
 import Control.DeepSeq (NFData)
@@ -28,6 +29,8 @@ import Language.PureScript.Constants.Prim qualified as C
 import Language.PureScript.Names (OpName, OpNameType(..), ProperName, ProperNameType(..), Qualified, coerceProperName)
 import Language.PureScript.Label (Label)
 import Language.PureScript.PSString (PSString)
+import Database.SQLite.Simple.ToField (ToField (toField))
+import Database.SQLite.Simple.FromField (FromField (fromField))
 
 type SourceType = Type SourceAnn
 type SourceConstraint = Constraint SourceAnn
@@ -114,6 +117,13 @@ data Type a
 
 instance NFData a => NFData (Type a)
 instance Serialise a => Serialise (Type a)
+
+instance Serialise a => ToField (Type a)  where 
+  toField = toField . serialise
+
+instance Serialise a => FromField (Type a) where
+  fromField = fmap deserialise . fromField
+
 
 srcTUnknown :: Int -> SourceType
 srcTUnknown = TUnknown NullSourceAnn

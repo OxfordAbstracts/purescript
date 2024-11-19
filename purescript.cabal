@@ -423,6 +423,7 @@ library
     Language.PureScript.TypeChecker.IdeArtifacts
     Language.PureScript.TypeChecker.Kinds
     Language.PureScript.TypeChecker.Monad
+    Language.PureScript.TypeChecker.Persist
     Language.PureScript.TypeChecker.Roles
     Language.PureScript.TypeChecker.Skolems
     Language.PureScript.TypeChecker.Subsumption

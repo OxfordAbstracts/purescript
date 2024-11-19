@@ -29,6 +29,8 @@ import Language.PureScript.TypeClassDictionaries (NamedDict)
 import Language.PureScript.Types (SourceConstraint, SourceType, Type(..), TypeVarVisibility(..), eqType, srcTypeConstructor, freeTypeVariables)
 import Language.PureScript.Constants.Prim qualified as C
 import Codec.Serialise qualified as S
+import Database.SQLite.Simple.ToField (ToField (toField))
+import Database.SQLite.Simple.FromField (FromField (fromField))
 
 -- | The @Environment@ defines all values and types which are currently in scope:
 data Environment = Environment
@@ -50,7 +52,6 @@ data Environment = Environment
   } deriving (Show, Generic, S.Serialise)
 
 instance NFData Environment
-
 
 -- | Information about a type class
 data TypeClassData = TypeClassData
@@ -77,6 +78,12 @@ data TypeClassData = TypeClassData
   } deriving (Show, Generic, S.Serialise)
 
 instance NFData TypeClassData
+
+instance ToField TypeClassData where 
+  toField = toField . S.serialise
+
+instance FromField TypeClassData where
+  fromField = fmap S.deserialise . fromField
 
 -- | A functional dependency indicates a relationship between two sets of
 -- type arguments in a class declaration.
@@ -241,6 +248,12 @@ data NameVisibility
 instance NFData NameVisibility
 instance Serialise NameVisibility
 
+instance ToField NameVisibility where 
+  toField = toField . S.serialise
+
+instance FromField NameVisibility where 
+  fromField = fmap S.deserialise . fromField
+
 -- | A flag for whether a name is for an private or public value - only public values will be
 -- included in a generated externs file.
 data NameKind
@@ -255,6 +268,12 @@ data NameKind
 
 instance NFData NameKind
 instance Serialise NameKind
+
+instance ToField NameKind where 
+  toField = toField . S.serialise
+
+instance FromField NameKind where 
+  fromField = fmap S.deserialise . fromField
 
 -- | The kinds of a type
 data TypeKind
@@ -273,6 +292,12 @@ data TypeKind
 instance NFData TypeKind
 instance Serialise TypeKind
 
+instance ToField TypeKind where 
+  toField = toField . S.serialise
+
+instance FromField TypeKind where 
+  fromField = fmap S.deserialise . fromField  
+
 -- | The type ('data' or 'newtype') of a data type declaration
 data DataDeclType
   = Data
@@ -283,6 +308,12 @@ data DataDeclType
 
 instance NFData DataDeclType
 instance Serialise DataDeclType
+
+instance ToField DataDeclType where 
+  toField = toField . S.serialise
+
+instance FromField DataDeclType where
+  fromField = fmap S.deserialise . fromField
 
 showDataDeclType :: DataDeclType -> Text
 showDataDeclType Data = "data"
