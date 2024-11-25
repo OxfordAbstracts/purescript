@@ -24,7 +24,7 @@ formatHandler = Server.requestHandler Message.SMethod_TextDocumentFormatting $ \
   config <- getConfig
   case (formatter config, filePath) of
     (PursTidyFormatInPlace, Just fp) -> do
-      void $ liftIO $ readProcess "purs-tidy" ["format-in-place"] fp
+      void $ liftIO $ readProcess "purs-tidy" ["format-in-place", fp] []
       res $ Right $ Types.InR Types.Null
     (PursTidyFormatInPlace, Nothing) -> do
       res $ Left $ Message.TResponseError (Types.InR Types.ErrorCodes_InternalError) "File path not found" Nothing
@@ -33,7 +33,7 @@ formatHandler = Server.requestHandler Message.SMethod_TextDocumentFormatting $ \
       contents <- case parsedImportsRes of
         Left err -> do
           warnLsp $ "Failed to parse imports from file: " <> err
-          lspReadFileText $ Types.toNormalizedUri uri
+          lspReadFileText normalizedUri
         Right imports -> pure $ printImports imports
       formatted <- liftIO $ readProcess "purs-tidy" ["format"] (toS contents)
       let lines' = toEnum $ max (length $ S.lines formatted) (length $ lines contents)
