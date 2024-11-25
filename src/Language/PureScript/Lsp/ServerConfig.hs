@@ -2,7 +2,7 @@
 
 module Language.PureScript.Lsp.ServerConfig where
 
-import Data.Aeson (FromJSON, ToJSON, fromJSON)
+import Data.Aeson (FromJSON, ToJSON)
 import Language.LSP.Protocol.Types (TraceValue (..))
 import Language.LSP.Server (MonadLsp, getConfig, setConfig)
 import Language.PureScript.Lsp.LogLevel (LspLogLevel (..))
