@@ -36,6 +36,6 @@ formatHandler = Server.requestHandler Message.SMethod_TextDocumentFormatting $ \
           lspReadFileText $ Types.toNormalizedUri uri
         Right imports -> pure $ printImports imports
       formatted <- liftIO $ readProcess "purs-tidy" ["format"] (toS contents)
-      let lines' = toEnum $ length $ S.lines formatted
+      let lines' = toEnum $ max (length $ S.lines formatted) (length $ lines contents)
       res $ Right $ Types.InL [Types.TextEdit (Types.Range (Types.Position 0 0) (Types.Position (lines' + 1) 0)) (toS formatted)]
     _ -> res $ Left $ Message.TResponseError (Types.InR Types.ErrorCodes_InvalidParams) "No formatter set" Nothing

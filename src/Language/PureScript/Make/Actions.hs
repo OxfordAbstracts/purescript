@@ -114,6 +114,8 @@ data MakeActions m = MakeActions
     -- | Read the externs file for a module as a string and also return the actual
     -- path for the file.
     readExterns :: ModuleName -> m (FilePath, Maybe ExternsFile),
+    -- | Run actions using the final CheckState
+    -- checkState :: CheckState -> m (),
     -- | Run the code generator for the module and write any required output files.
     codegen :: Environment -> CheckState -> Module -> CF.Module CF.Ann -> Docs.Module -> ExternsFile -> SupplyT m (),
     -- | Check ffi and print it in the output directory.
@@ -247,6 +249,9 @@ buildMakeActions outputDir filePathMap foreigns usePrefix =
       codegenTargets <- asks optionsCodegenTargets
       when (S.member Docs codegenTargets) $ for_ Docs.Prim.primModules $ \docsMod@Docs.Module {..} ->
         writeJSONFile (outputFilename modName "docs.json") docsMod
+    
+    -- checkState :: CheckState -> Make ()
+    -- checkState _ = return ()
 
     codegen :: Environment -> CheckState -> Module -> CF.Module CF.Ann -> Docs.Module -> ExternsFile -> SupplyT Make ()
     codegen _prevEnv _endEnv _m m docs exts = do
