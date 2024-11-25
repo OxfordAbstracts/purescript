@@ -2,11 +2,13 @@
 
 module Language.PureScript.Lsp.ServerConfig where
 
-import Data.Aeson (FromJSON, ToJSON)
+import Data.Aeson (FromJSON, ToJSON, fromJSON)
 import Language.LSP.Protocol.Types (TraceValue (..))
 import Language.LSP.Server (MonadLsp, getConfig, setConfig)
 import Language.PureScript.Lsp.LogLevel (LspLogLevel (..))
 import Protolude
+import Data.Aeson qualified as A
+import Data.Aeson.Types qualified as AT
 
 data ServerConfig = ServerConfig
   { outputPath :: FilePath,
@@ -14,6 +16,7 @@ data ServerConfig = ServerConfig
     inputSrcFromFile :: Maybe FilePath,
     logLevel :: LspLogLevel,
     traceValue :: Maybe TraceValue,
+    formatter :: Formatter,
     maxTypeLength :: Maybe Int,
     maxCompletions :: Maybe Int, 
     maxFilesInCache :: Maybe Int, 
@@ -31,6 +34,7 @@ defaultConfig outputPath =
       inputSrcFromFile = Nothing,
       logLevel = LogAll,
       traceValue = Nothing,
+      formatter = PursTidy,
       maxTypeLength = Just defaultMaxTypeLength,
       maxCompletions = Just defaultMaxCompletions, 
       maxFilesInCache = Just defaultMaxFilesInCache,
@@ -68,3 +72,20 @@ getMaxFilesInCache =
 
 getInferExpressions :: (MonadLsp ServerConfig m) => m Bool
 getInferExpressions = inferExpressions <$> getConfig  
+
+
+data Formatter = NoFormatter | PursTidy | PursTidyFormatInPlace
+  deriving (Show, Eq)
+
+instance FromJSON Formatter where 
+  parseJSON v = case v of
+    A.String "none" -> pure NoFormatter
+    A.String "purs-tidy" -> pure PursTidy
+    A.String "purs-tidy-format-in-place" -> pure PursTidyFormatInPlace
+    _ -> AT.typeMismatch "String" v
+
+instance ToJSON Formatter where
+  toJSON = \case
+    NoFormatter -> A.String "none"
+    PursTidy -> A.String "purs-tidy"
+    PursTidyFormatInPlace -> A.String "purs-tidy-format-in-place"

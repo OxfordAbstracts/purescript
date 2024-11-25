@@ -4,24 +4,38 @@ import Control.Lens ((^.))
 import Language.LSP.Protocol.Lens qualified as LSP
 import Language.LSP.Protocol.Message qualified as Message
 import Language.LSP.Protocol.Types qualified as Types
+import Language.LSP.Server (getConfig)
 import Language.LSP.Server qualified as Server
 import Language.PureScript.Lsp.Imports (parseImportsFromFile, printImports)
-import Language.PureScript.Lsp.Log (warnLsp)
+import Language.PureScript.Lsp.Log (debugLsp, warnLsp)
 import Language.PureScript.Lsp.Monad (HandlerM)
 import Language.PureScript.Lsp.ReadFile (lspReadFileText)
+import Language.PureScript.Lsp.ServerConfig (Formatter (..), ServerConfig (formatter))
 import Protolude
 import System.Process (readProcess)
+import Data.String qualified as S
 
 formatHandler :: Server.Handlers HandlerM
 formatHandler = Server.requestHandler Message.SMethod_TextDocumentFormatting $ \req res -> do
   let uri = req ^. LSP.params . LSP.textDocument . LSP.uri
       normalizedUri = Types.toNormalizedUri uri
-  parsedImportsRes <- parseImportsFromFile normalizedUri
-  contents <- case parsedImportsRes of
-    Left err -> do
-      warnLsp $ "Failed to parse imports from file: " <> err
-      lspReadFileText $ Types.toNormalizedUri uri
-    Right imoprts -> pure $ printImports imoprts
-
-  formatted <- liftIO $ readProcess "purs-tidy" ["format"] (toS contents)
-  res $ Right $ Types.InL [Types.TextEdit (Types.Range (Types.Position 0 0) (Types.Position 100000 0)) (toS formatted)]
+      filePath = Types.uriToFilePath uri
+  debugLsp $ "Formatting file: " <> show filePath
+  config <- getConfig
+  case (formatter config, filePath) of
+    (PursTidyFormatInPlace, Just fp) -> do
+      void $ liftIO $ readProcess "purs-tidy" ["format-in-place"] fp
+      res $ Right $ Types.InR Types.Null
+    (PursTidyFormatInPlace, Nothing) -> do
+      res $ Left $ Message.TResponseError (Types.InR Types.ErrorCodes_InternalError) "File path not found" Nothing
+    (PursTidy, _) -> do
+      parsedImportsRes <- parseImportsFromFile normalizedUri
+      contents <- case parsedImportsRes of
+        Left err -> do
+          warnLsp $ "Failed to parse imports from file: " <> err
+          lspReadFileText $ Types.toNormalizedUri uri
+        Right imports -> pure $ printImports imports
+      formatted <- liftIO $ readProcess "purs-tidy" ["format"] (toS contents)
+      let lines' = toEnum $ length $ S.lines formatted
+      res $ Right $ Types.InL [Types.TextEdit (Types.Range (Types.Position 0 0) (Types.Position (lines' + 1) 0)) (toS formatted)]
+    _ -> res $ Left $ Message.TResponseError (Types.InR Types.ErrorCodes_InvalidParams) "No formatter set" Nothing
