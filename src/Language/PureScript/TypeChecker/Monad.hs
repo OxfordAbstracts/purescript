@@ -28,7 +28,7 @@ import Language.PureScript.Pretty.Values (prettyPrintValue)
 import Language.PureScript.TypeClassDictionaries (NamedDict, TypeClassDictionaryInScope(..))
 import Language.PureScript.Types (Constraint(..), SourceType, Type(..), srcKindedType, srcTypeVar)
 import Text.PrettyPrint.Boxes (render)
-import Language.PureScript.TypeChecker.IdeArtifacts (IdeArtifacts, emptyIdeArtifacts, insertIaExpr, insertIaBinder, insertIaIdent, insertIaDecl, insertIaType, insertIaTypeName, insertIaClassName, moduleNameFromQual, substituteArtifactTypes, endSubstitutions, insertTypeSynonym, insertModule, insertImport)
+import Language.PureScript.TypeChecker.IdeArtifacts (IdeArtifacts, emptyIdeArtifacts, insertIaExpr, insertIaBinder, insertIaIdent, insertIaDecl, insertIaType, insertIaTypeName, insertIaClassName, moduleNameFromQual, substituteArtifactTypes, insertTypeSynonym, insertModule, insertImport)
 import Protolude (whenM, isJust)
 import Language.PureScript.AST.Binders (Binder)
 import Language.PureScript.AST.Declarations (Declaration, Expr (..))
@@ -438,9 +438,6 @@ onIdeArtifacts f = whenAddingIdeArtifacts
 
 substituteIdeTypes :: MonadState CheckState m => (SourceType -> SourceType) -> m ()
 substituteIdeTypes = onIdeArtifacts . substituteArtifactTypes
-
-endIdeSubstitutions :: MonadState CheckState m => m ()
-endIdeSubstitutions = onIdeArtifacts endSubstitutions
 
 addIdeSynonym :: MonadState CheckState m => SourceType -> SourceType -> m ()
 addIdeSynonym ty syn = onIdeArtifacts $ insertTypeSynonym syn ty

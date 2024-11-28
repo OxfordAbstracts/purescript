@@ -51,6 +51,7 @@ import Language.PureScript.Make.Monad (Make, copyFile, getTimestamp, getTimestam
 import Language.PureScript.Names (Ident (..), ModuleName, runModuleName)
 import Language.PureScript.Options (CodegenTarget (..), Options (..))
 import Language.PureScript.Pretty.Common (SMap (..))
+import Language.PureScript.TypeChecker (CheckState)
 import Paths_purescript qualified as Paths
 import SourceMap (generate)
 import SourceMap.Types (Mapping (..), Pos (..), SourceMapping (..))
@@ -59,7 +60,6 @@ import System.FilePath (makeRelative, normalise, splitDirectories, splitPath, (<
 import System.FilePath.Posix qualified as Posix
 import System.IO (stderr)
 import Prelude
-import Language.PureScript.TypeChecker (CheckState)
 
 -- | Determines when to rebuild a module
 data RebuildPolicy
@@ -114,8 +114,10 @@ data MakeActions m = MakeActions
     -- | Read the externs file for a module as a string and also return the actual
     -- path for the file.
     readExterns :: ModuleName -> m (FilePath, Maybe ExternsFile),
+    -- | Run actions using the final CheckState when type checking fails
+    withCheckStateOnError :: CheckState -> m (),
     -- | Run actions using the final CheckState
-    -- checkState :: CheckState -> m (),
+    withCheckState :: CheckState -> m (),
     -- | Run the code generator for the module and write any required output files.
     codegen :: Environment -> CheckState -> Module -> CF.Module CF.Ann -> Docs.Module -> ExternsFile -> SupplyT m (),
     -- | Check ffi and print it in the output directory.
@@ -180,7 +182,19 @@ buildMakeActions ::
   Bool ->
   MakeActions Make
 buildMakeActions outputDir filePathMap foreigns usePrefix =
-  MakeActions getInputTimestampsAndHashes getOutputTimestamp readExterns codegen ffiCodegen progress readCacheDb writeCacheDb writePackageJson outputPrimDocs
+  MakeActions
+    getInputTimestampsAndHashes
+    getOutputTimestamp
+    readExterns
+    withCheckState
+    withCheckState
+    codegen
+    ffiCodegen
+    progress
+    readCacheDb
+    writeCacheDb
+    writePackageJson
+    outputPrimDocs
   where
     getInputTimestampsAndHashes ::
       ModuleName ->
@@ -249,9 +263,9 @@ buildMakeActions outputDir filePathMap foreigns usePrefix =
       codegenTargets <- asks optionsCodegenTargets
       when (S.member Docs codegenTargets) $ for_ Docs.Prim.primModules $ \docsMod@Docs.Module {..} ->
         writeJSONFile (outputFilename modName "docs.json") docsMod
-    
-    -- checkState :: CheckState -> Make ()
-    -- checkState _ = return ()
+
+    withCheckState :: CheckState -> Make ()
+    withCheckState _ = return ()
 
     codegen :: Environment -> CheckState -> Module -> CF.Module CF.Ann -> Docs.Module -> ExternsFile -> SupplyT Make ()
     codegen _prevEnv _endEnv _m m docs exts = do

@@ -5,6 +5,7 @@ module Language.PureScript.Lsp.State
     getDbConn,
     cacheRebuild,
     cacheRebuild',
+    mergePartialArtifacts,
     updateCachedModule,
     updateCachedModule',
     cachedRebuild,
@@ -50,7 +51,8 @@ import Language.PureScript.Lsp.Types
 import Language.PureScript.Sugar.Names (externsEnv)
 import Language.PureScript.Sugar.Names.Env qualified as P
 import Protolude hiding (moduleName, unzip)
-import Language.PureScript.TypeChecker.IdeArtifacts (IdeArtifacts)
+import Language.PureScript.TypeChecker.IdeArtifacts (IdeArtifacts, handlePartialArtifacts)
+import Language.PureScript.Names qualified as P
 
 getDbConn :: (MonadReader LspEnvironment m, MonadIO m) => m Connection
 getDbConn = liftIO . fmap snd . readTVarIO . lspDbConnectionVar =<< ask
@@ -72,6 +74,15 @@ cacheRebuild' st maxFiles src ef artifacts module' depHash = atomically . modify
     }
   where
     fp = P.spanName $ efSourceSpan ef
+
+mergePartialArtifacts :: TVar LspState -> IdeArtifacts -> P.ModuleName -> IO ()
+mergePartialArtifacts st artifacts moduleName  = atomically . modifyTVar st $ \x ->
+  x
+    { openFiles = openFiles x <&> \(fp, ofile) ->
+      if ofModuleName ofile == moduleName
+        then (fp, ofile {ofArtifacts = handlePartialArtifacts (ofArtifacts ofile) artifacts})
+        else (fp, ofile)
+    }
 
 updateCachedModule :: (MonadIO m, MonadReader LspEnvironment m) => P.Module -> m ()
 updateCachedModule module' = do

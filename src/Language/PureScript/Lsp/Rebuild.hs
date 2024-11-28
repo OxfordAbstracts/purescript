@@ -22,7 +22,7 @@ import Language.PureScript.Lsp.Cache (selectDependencies, selectDependencyHashFr
 import Language.PureScript.Lsp.Log (debugLsp, errorLsp, logPerfStandard, warnLsp)
 import Language.PureScript.Lsp.ReadFile (lspReadFileText)
 import Language.PureScript.Lsp.ServerConfig (ServerConfig (outputPath), getInferExpressions, getMaxFilesInCache)
-import Language.PureScript.Lsp.State (addExternsToExportEnv, cacheEnvironment, cacheRebuild', cachedEnvironment, cachedOpenFileFromSrc, getDbConn, hashDeps, updateCachedRebuildResult)
+import Language.PureScript.Lsp.State (addExternsToExportEnv, cacheEnvironment, cacheRebuild', cachedEnvironment, cachedOpenFileFromSrc, getDbConn, hashDeps, updateCachedRebuildResult, mergePartialArtifacts)
 import Language.PureScript.Lsp.Types (ExternDependency (edExtern), LspEnvironment (lspStateVar), LspState)
 import Language.PureScript.Lsp.Types qualified as Types
 import Language.PureScript.Make qualified as P
@@ -72,7 +72,7 @@ rebuildFile uri = do
                 mkMakeActions foreigns =
                   P.buildMakeActions outputDirectory filePathMap foreigns False
                     & addAllIndexing conn
-                    & addRebuildCaching stVar maxCache input depHash
+                    & addRebuildCaching moduleName stVar maxCache input depHash
             when (null externDeps) do
               warnLsp $ "No dependencies found for module: " <> show moduleName
               checkExternsExist
@@ -82,7 +82,7 @@ rebuildFile uri = do
             ideCheckState <- getIdeCheckState
             (res, warnings) <- logPerfStandard "Rebuilt Module" $ liftIO $ do
               P.runMake (P.defaultOptions {P.optionsCodegenTargets = codegenTargets}) do
-                newExtern <- P.rebuildModuleWithProvidedEnv ideCheckState Nothing (mkMakeActions foreigns) exportEnv env externs m Nothing
+                newExtern <- P.rebuildModuleWithProvidedEnv ideCheckState (mkMakeActions foreigns) exportEnv env externs m Nothing
                 updateCacheDb codegenTargets outputDirectory fp Nothing moduleName
                 pure newExtern
 
@@ -149,10 +149,11 @@ data RebuildException
 codegenTargets :: Set P.CodegenTarget
 codegenTargets = Set.fromList [P.JS, P.CoreFn, P.Docs]
 
-addRebuildCaching :: TVar LspState -> Int -> Text -> Int -> P.MakeActions P.Make -> P.MakeActions P.Make
-addRebuildCaching stVar maxCache src depHash ma =
+addRebuildCaching :: P.ModuleName  -> TVar LspState -> Int -> Text -> Int -> P.MakeActions P.Make -> P.MakeActions P.Make
+addRebuildCaching modName stVar maxCache src depHash ma =
   ma
-    { P.codegen = \prevEnv checkSt astM m docs ext -> lift (liftIO $ cacheRebuild' stVar maxCache src ext (P.checkIdeArtifacts checkSt) astM depHash) <* P.codegen ma prevEnv checkSt astM m docs ext
+    { P.codegen = \prevEnv checkSt astM m docs ext -> lift (P.makeIO "Cache rebuild" $ cacheRebuild' stVar maxCache src ext (P.checkIdeArtifacts checkSt) astM depHash) <* P.codegen ma prevEnv checkSt astM m docs ext
+    , P.withCheckStateOnError = \checkSt -> P.makeIO "replace artifacts" $ mergePartialArtifacts stVar (P.checkIdeArtifacts checkSt) modName
     }
 
 getIdeCheckState :: (MonadLsp ServerConfig m) => m (P.Environment -> P.CheckState)

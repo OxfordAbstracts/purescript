@@ -1,6 +1,5 @@
 module Language.PureScript.Make
   ( -- * Make API
-    desugarAndTypeCheck,
     rebuildModule,
     rebuildModule',
     rebuildModuleWithProvidedEnv,
@@ -18,6 +17,7 @@ import Control.Monad (foldM, unless, when, (<=<))
 import Control.Monad.Base (MonadBase (liftBase))
 import Control.Monad.Error.Class (MonadError (..))
 import Control.Monad.IO.Class (MonadIO (..))
+import Control.Monad.State (get)
 import Control.Monad.Supply (evalSupplyT, runSupply, runSupplyT)
 import Control.Monad.Trans.Control (MonadBaseControl (..))
 import Control.Monad.Trans.State (runStateT)
@@ -91,13 +91,12 @@ rebuildModuleWithIndex ::
   m ExternsFile
 rebuildModuleWithIndex act exEnv externs m moduleIndex = do
   let env = foldl' (flip applyExternsFileToEnvironment) initEnvironment externs
-  rebuildModuleWithProvidedEnv emptyCheckState Nothing act exEnv env externs m moduleIndex
+  rebuildModuleWithProvidedEnv emptyCheckState act exEnv env externs m moduleIndex
 
 rebuildModuleWithProvidedEnv ::
   forall m.
   (MonadError MultipleErrors m, MonadWriter MultipleErrors m) =>
   (Environment -> CheckState) ->
-  Maybe (Module -> m ()) ->
   MakeActions m ->
   Env ->
   Environment ->
@@ -105,11 +104,12 @@ rebuildModuleWithProvidedEnv ::
   Module ->
   Maybe (Int, Int) ->
   m ExternsFile
-rebuildModuleWithProvidedEnv initialCheckState onDesugared MakeActions {..} exEnv env externs m@(Module _ _ moduleName _ _) moduleIndex = do
+rebuildModuleWithProvidedEnv initialCheckState MakeActions {..} exEnv env externs m@(Module _ _ moduleName _ _) moduleIndex = do
   progress $ CompilingModule moduleName moduleIndex
   let withPrim = importPrim m
   lint withPrim
-  ((Module ss coms _ elaborated exps, checkSt), nextVar) <- desugarAndTypeCheck initialCheckState onDesugared moduleName externs withPrim exEnv env
+  ((Module ss coms _ elaborated exps, checkSt), nextVar) <-
+    desugarAndTypeCheck initialCheckState withCheckStateOnError withCheckState moduleName externs withPrim exEnv env
   let env' = P.checkEnv checkSt
 
   -- desugar case declarations *after* type- and exhaustiveness checking
@@ -120,7 +120,7 @@ rebuildModuleWithProvidedEnv initialCheckState onDesugared MakeActions {..} exEn
 
   regrouped <- createBindingGroups moduleName . collapseBindingGroups $ deguarded
   let mod' = Module ss coms moduleName regrouped exps
-  
+
       corefn = CF.moduleToCoreFn env' mod'
       (optimized, nextVar'') = runSupply nextVar' $ CF.optimizeCoreFn corefn
       (renamedIdents, renamed) = renameInModule optimized
@@ -146,20 +146,22 @@ rebuildModuleWithProvidedEnv initialCheckState onDesugared MakeActions {..} exEn
   return exts
 
 desugarAndTypeCheck ::
-  (MonadError MultipleErrors m, MonadWriter MultipleErrors m, Foldable t) =>
+  forall m.
+  (MonadError MultipleErrors m, MonadWriter MultipleErrors m) =>
   (Environment -> CheckState) ->
-  t (Module -> m b) ->
+  (CheckState -> m ()) ->
+  (CheckState -> m ()) ->
   ModuleName ->
   [ExternsFile] ->
   Module ->
   Env ->
   Environment ->
   m ((Module, CheckState), Integer)
-desugarAndTypeCheck initialCheckState onDesugared moduleName externs withPrim exEnv env = runSupplyT 0 $ do
+desugarAndTypeCheck initialCheckState withCheckStateOnError withCheckState moduleName externs withPrim exEnv env = runSupplyT 0 $ do
   (desugared, (exEnv', usedImports)) <- runStateT (desugar externs withPrim) (exEnv, mempty)
-  for_ onDesugared $ lift . \f -> f desugared
   let modulesExports = (\(_, _, exports) -> exports) <$> exEnv'
-  (checked, checkSt@(CheckState {..})) <- runStateT (typeCheckModule modulesExports desugared) $ initialCheckState env
+  (checked, checkSt@(CheckState {..})) <- runStateT (catchError (typeCheckModule modulesExports desugared) mergeCheckState) $ initialCheckState env
+  lift $ withCheckState checkSt
   let usedImports' =
         foldl'
           ( flip $ \(fromModuleName, newtypeCtorName) ->
@@ -172,6 +174,11 @@ desugarAndTypeCheck initialCheckState onDesugared moduleName externs withPrim ex
   -- constraints in order to not report them as unused.
   censor (addHint (ErrorInModule moduleName)) $ lintImports checked exEnv' usedImports'
   return (checked, checkSt)
+  where
+    mergeCheckState errs = do
+      checkSt <- get
+      lift $ lift $ withCheckStateOnError checkSt
+      throwError errs
 
 -- | Compiles in "make" mode, compiling each module separately to a @.js@ file and an @externs.cbor@ file.
 --

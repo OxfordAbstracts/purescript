@@ -343,7 +343,6 @@ typeCheckAll moduleName = traverse go
           addValue moduleName name ty nameKind
           addIdeDecl d ty
           addIdeIdent ss name ty
-          endIdeSubstitutions
           return $ ValueDecl sa name nameKind [] [MkUnguarded val'']
         _ -> internalError "typesOf did not return a singleton"
   go ValueDeclaration{} = internalError "Binders were not desugared"
@@ -363,7 +362,6 @@ typeCheckAll moduleName = traverse go
         addValue moduleName name ty nameKind
         addIdeIdent ss name ty
         return (sai, nameKind, val)
-      endIdeSubstitutions
       return . BindingGroupDeclaration $ NEL.fromList vals''
   go d@(ExternDataDeclaration (ss, _) name kind) = do
     warnAndRethrow (addHint (ErrorInForeignImportData name) . addHint (positionedError ss)) $ do

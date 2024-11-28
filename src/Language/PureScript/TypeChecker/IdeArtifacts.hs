@@ -1,4 +1,5 @@
 {-# LANGUAGE DeriveAnyClass #-}
+
 -- | Stores information about the source code that is useful for the IDE
 -- | This includes value types and source spans
 module Language.PureScript.TypeChecker.IdeArtifacts
@@ -25,9 +26,9 @@ module Language.PureScript.TypeChecker.IdeArtifacts
     moduleNameFromQual,
     debugIdeArtifact,
     substituteArtifactTypes,
-    endSubstitutions,
     artifactInterest,
     bindersAtPos,
+    handlePartialArtifacts,
   )
 where
 
@@ -50,14 +51,29 @@ import Safe (minimumByMay)
 data IdeArtifacts
   = IdeArtifacts
       (Map Line (Set IdeArtifact)) -- with type var substitutions
-      (Map Line (Set IdeArtifact)) -- without var substitutions
       (Map (P.Type ()) (P.Type ())) -- type synonym substitutions
   deriving (Show, Generic, NFData)
 
 type Line = Int
 
 emptyIdeArtifacts :: IdeArtifacts
-emptyIdeArtifacts = IdeArtifacts Map.empty Map.empty Map.empty
+emptyIdeArtifacts = IdeArtifacts Map.empty Map.empty
+
+handlePartialArtifacts :: IdeArtifacts -> IdeArtifacts -> IdeArtifacts
+handlePartialArtifacts (IdeArtifacts existing sy) (IdeArtifacts partial syPartial) =
+  IdeArtifacts newArtifacts (Map.union syPartial sy)
+  where
+    newArtifacts = Map.unionWith Set.union partial (Map.filterWithKey (\k _ -> not (k `Set.member` linesUsed)) existing)
+
+    linesUsed :: Set Line
+    linesUsed =
+      partial
+        & Map.toList
+          >>= (\(_, as) -> getArtifactLines <$> Set.toList as)
+        & Set.unions
+
+getArtifactLines :: IdeArtifact -> Set Line
+getArtifactLines ia = Set.fromList [P.sourcePosLine $ P.spanStart $ iaSpan ia .. P.sourcePosLine $ P.spanEnd $ iaSpan ia]
 
 debugIdeArtifacts :: IdeArtifacts -> Text
 debugIdeArtifacts = T.intercalate "\n" . fmap showCount . lineCounts
@@ -65,7 +81,7 @@ debugIdeArtifacts = T.intercalate "\n" . fmap showCount . lineCounts
     showCount :: (Int, Int) -> Text
     showCount (line, count) = show line <> ": " <> show count
     lineCounts :: IdeArtifacts -> [(Int, Int)]
-    lineCounts (IdeArtifacts m _ _) = Map.toList m <&> fmap length
+    lineCounts (IdeArtifacts m _) = Map.toList m <&> fmap length
 
 data IdeArtifact = IdeArtifact
   { iaSpan :: P.SourceSpan,
@@ -89,19 +105,16 @@ data IdeArtifactValue
   deriving (Show, Ord, Eq, Generic, NFData)
 
 substituteArtifactTypes :: (P.SourceType -> P.SourceType) -> IdeArtifacts -> IdeArtifacts
-substituteArtifactTypes f (IdeArtifacts m u s) = IdeArtifacts m (Map.map (Set.map (onArtifactType f)) u) s
+substituteArtifactTypes f (IdeArtifacts m s) = IdeArtifacts (Map.map (Set.map (onArtifactType f)) m) s
 
 onArtifactType :: (P.SourceType -> P.SourceType) -> IdeArtifact -> IdeArtifact
 onArtifactType f (IdeArtifact {..}) = IdeArtifact iaSpan iaValue (f iaType) iaDefinitionModule iaDefinitionPos
 
-endSubstitutions :: IdeArtifacts -> IdeArtifacts
-endSubstitutions (IdeArtifacts m u s) = IdeArtifacts (Map.unionWith (<>) m u) Map.empty s
-
 smallestArtifact :: (Ord a) => (IdeArtifact -> a) -> [IdeArtifact] -> Maybe IdeArtifact
 smallestArtifact tieBreaker = minimumByMay (compare `on` (\a -> (artifactSize a, tieBreaker a)))
 
-bindersAtPos :: P.SourcePos -> IdeArtifacts -> [(IdeArtifact,  P.Binder)]
-bindersAtPos pos (IdeArtifacts m _ _) =
+bindersAtPos :: P.SourcePos -> IdeArtifacts -> [(IdeArtifact, P.Binder)]
+bindersAtPos pos (IdeArtifacts m _) =
   Map.lookup (P.sourcePosLine pos) m
     & maybe [] Set.toList
     & filter (\ia -> P.sourcePosColumn (P.spanStart (iaSpan ia)) <= posCol && P.sourcePosColumn (P.spanEnd (iaSpan ia)) >= posCol)
@@ -122,7 +135,7 @@ artifactInterest (IdeArtifact {..}) = case iaValue of
   _ -> 1
 
 artifactsAtSpan :: P.SourceSpan -> IdeArtifacts -> Set IdeArtifact
-artifactsAtSpan span (IdeArtifacts m _ _) =
+artifactsAtSpan span (IdeArtifacts m _) =
   Map.lookup (P.sourcePosLine $ P.spanStart span) m
     & maybe Set.empty (Set.filter ((==) span . iaSpan))
 
@@ -133,7 +146,7 @@ artifactSize (IdeArtifact {..}) =
   )
 
 getArtifactsAtPosition :: P.SourcePos -> IdeArtifacts -> [IdeArtifact]
-getArtifactsAtPosition pos (IdeArtifacts m _ _) =
+getArtifactsAtPosition pos (IdeArtifacts m _) =
   Map.lookup (P.sourcePosLine pos) m
     & maybe [] Set.toList
     & filter (srcPosInSpan pos . iaSpan)
@@ -253,10 +266,10 @@ moduleNameFromQual (P.Qualified (P.ByModuleName mn) _) = Just mn
 moduleNameFromQual _ = Nothing
 
 insertAtLines :: P.SourceSpan -> IdeArtifactValue -> P.SourceType -> Maybe P.ModuleName -> Maybe (Either P.SourcePos P.SourceSpan) -> IdeArtifacts -> IdeArtifacts
-insertAtLines span@(P.SourceSpan _ start _) value ty mName defSpan ia@(IdeArtifacts m u s) =
+insertAtLines span@(P.SourceSpan _ start _) value ty mName defSpan ia@(IdeArtifacts m s) =
   if start == P.SourcePos 0 0 || start == P.SourcePos 1 1 -- ignore internal module spans
     then ia
-    else IdeArtifacts m (foldr insert u (linesFromSpan span)) s
+    else IdeArtifacts (foldr insert m (linesFromSpan span)) s
   where
     insert line = Map.insertWith Set.union line (Set.singleton $ IdeArtifact span value ty mName defSpan)
 
@@ -291,10 +304,10 @@ generatedIdent = \case
   _ -> False
 
 insertTypeSynonym :: P.Type a -> P.Type a -> IdeArtifacts -> IdeArtifacts
-insertTypeSynonym syn ty (IdeArtifacts m u s) = IdeArtifacts m u (Map.insert (void syn) (void ty) s)
+insertTypeSynonym syn ty (IdeArtifacts m s) = IdeArtifacts m (Map.insert (void syn) (void ty) s)
 
 useSynonymns :: forall a. IdeArtifacts -> P.Type a -> P.Type ()
-useSynonymns (IdeArtifacts _ _ s) ty = P.everywhereOnTypes go (void ty)
+useSynonymns (IdeArtifacts _ s) ty = P.everywhereOnTypes go (void ty)
   where
     go :: P.Type () -> P.Type ()
     go t =
@@ -302,7 +315,7 @@ useSynonymns (IdeArtifacts _ _ s) ty = P.everywhereOnTypes go (void ty)
         & maybe t go
 
 debugSynonyms :: IdeArtifacts -> Text
-debugSynonyms (IdeArtifacts _ _ s) =
+debugSynonyms (IdeArtifacts _ s) =
   show $
     Map.toList s
       <&> bimap
