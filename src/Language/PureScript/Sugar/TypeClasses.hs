@@ -82,6 +82,7 @@ desugarTypeClassesUsingMemberMap classes = flip evalStateT initialState . desuga
       ]
 
 
+-- TODO add desugarModuleSqlite which uses the DB instead of MemberMap to store the type class data
 
 desugarModule
   :: (MonadSupply m, MonadError MultipleErrors m)

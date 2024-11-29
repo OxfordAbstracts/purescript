@@ -1,4 +1,5 @@
 {-# LANGUAGE BlockArguments #-}
+{-# LANGUAGE TypeOperators #-}
 
 module Language.PureScript.Make.Index
   ( initDb,
@@ -10,17 +11,22 @@ module Language.PureScript.Make.Index
     dropTables,
     indexExtern,
     getExportedNames,
+    selectEnvValue,
+    insertEnvValue,
   )
 where
 
-import Codec.Serialise (serialise)
+import Codec.Serialise (deserialise, serialise)
+import Control.Arrow ((>>>))
 import Data.List (partition)
 import Data.Set qualified as Set
 import Data.Text qualified as T
-import Database.SQLite.Simple (Connection, NamedParam ((:=)))
+import Database.SQLite.Simple (Connection, NamedParam ((:=)), type (:.) (..))
 import Database.SQLite.Simple qualified as SQL
 import Distribution.Compat.Directory (makeAbsolute)
 import Language.LSP.Server (MonadLsp)
+-- import Database.SQLite.Simple.Types ((:.))
+import Language.PureScript (internalCompilerError)
 import Language.PureScript qualified as P
 import Language.PureScript.Environment (Environment)
 import Language.PureScript.Externs (ExternsFile (efModuleName))
@@ -297,7 +303,7 @@ initDb conn = do
   SQL.execute_ conn "CREATE TABLE IF NOT EXISTS available_srcs (path TEXT PRIMARY KEY NOT NULL, UNIQUE(path) on conflict replace)"
   SQL.execute_ conn "CREATE TABLE IF NOT EXISTS export_environments (path TEXT PRIMARY KEY NOT NULL, hash INT NOT NULL, value BLOB NOT NULL, UNIQUE(path) on conflict replace)"
   SQL.execute_ conn "CREATE TABLE IF NOT EXISTS environments (path TEXT PRIMARY KEY NOT NULL, hash INT NOT NULL, value BLOB NOT NULL, UNIQUE(path) on conflict replace)"
-
+  initEnvTables conn
   addDbIndexes conn
 
 addDbIndexes :: Connection -> IO ()
@@ -321,3 +327,121 @@ dropTables conn = do
   SQL.execute_ conn "DROP TABLE IF EXISTS ast_modules"
   SQL.execute_ conn "DROP TABLE IF EXISTS externs"
   SQL.execute_ conn "DROP TABLE IF EXISTS ef_imports"
+
+
+-- indexEnv :: Connection -> P.Environment -> IO ()
+-- indexEnv conn env = 
+
+type DbQualifer a = (Maybe P.ModuleName, Maybe Int, Maybe Int, a)
+
+toDbQualifer :: P.Qualified a -> DbQualifer a
+toDbQualifer (P.Qualified (P.BySourcePos pos) a) = (Nothing, Just (P.sourcePosLine pos), Just (P.sourcePosColumn pos), a)
+toDbQualifer (P.Qualified (P.ByModuleName mn) a) = (Just mn, Nothing, Nothing, a)
+
+type EnvValue = (P.SourceType, P.NameKind, P.NameVisibility)
+
+insertEnvValue :: Connection -> P.Qualified P.Ident -> EnvValue -> IO ()
+insertEnvValue conn ident val =
+  SQL.execute
+    conn
+    "INSERT OR REPLACE INTO env_values (module_name, line, column, ident, source_type, name_kind, name_visibility) VALUES (?, ?, ?, ?, ?, ?, ?)"
+    (toDbQualifer ident :. val)
+
+selectEnvValue :: Connection -> P.Qualified P.Ident -> IO (Maybe (P.SourceType, P.NameKind, P.NameVisibility))
+selectEnvValue conn ident =
+  SQL.query
+    conn
+    "SELECT source_type, name_kind, name_visibility FROM env_values WHERE module_name IS ? AND line IS ? AND column is ? AND ident = ?"
+    (toDbQualifer ident)
+    <&> head
+
+type EnvType = (P.SourceType, P.TypeKind)
+
+insertType :: Connection -> P.Qualified (P.ProperName 'P.TypeName) -> EnvType -> IO ()
+insertType conn ident val =
+  SQL.execute
+    conn
+    "INSERT OR REPLACE INTO env_types (module_name, line, column, type_name, source_type, type_kind) VALUES (?, ?, ?, ?, ?, ?)"
+    (toDbQualifer ident :. val)
+
+selectType :: Connection -> P.Qualified (P.ProperName 'P.TypeName) -> IO (Maybe EnvType)
+selectType conn ident =
+  SQL.query
+    conn
+    "SELECT source_type, type_kind FROM env_types WHERE module_name IS ? AND line IS ? AND column is ? AND type_name = ?"
+    (toDbQualifer ident)
+    <&> head
+
+insertDataConstructor :: Connection -> P.Qualified (P.ProperName 'P.ConstructorName) -> (P.DataDeclType, P.ProperName 'P.TypeName, P.SourceType, [P.Ident]) -> IO ()
+insertDataConstructor conn ident (ddt, ty, st, idents) =
+  SQL.execute
+    conn
+    "INSERT OR REPLACE INTO env_data_constructors (constructor_name, data_decl_type, type_name, source_type, idents) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    (toDbQualifer ident :. (ddt, ty, st, serialise idents))
+
+selectDataConstructor :: Connection -> P.Qualified (P.ProperName 'P.ConstructorName) -> IO (Maybe (P.DataDeclType, P.ProperName 'P.TypeName, P.SourceType, [P.Ident]))
+selectDataConstructor conn ident =
+  SQL.query
+    conn
+    "SELECT data_decl_type, type_name, source_type, idents FROM env_data_constructors WHERE module_name IS ? AND line IS ? AND column is ? AND constructor_name = ?"
+    (toDbQualifer ident)
+    <&> (head >>> fmap deserialiseIdents)
+  where
+    deserialiseIdents (ddt, ty, st, idents) = (ddt, ty, st, deserialise idents)
+
+insertTypeSynonym :: Connection -> P.Qualified (P.ProperName 'P.TypeName) -> ([(Text, Maybe P.SourceType)], P.SourceType) -> IO ()
+insertTypeSynonym conn ident (idents, st) =
+  SQL.execute
+    conn
+    "INSERT OR REPLACE INTO env_type_synonyms (module_name, line, column, type_name, idents, source_type) VALUES (?, ?, ?, ?, ?)"
+    (toDbQualifer ident :. (serialise idents, st))
+
+selectTypeSynonym :: Connection -> P.Qualified (P.ProperName 'P.TypeName) -> IO (Maybe ([(Text, Maybe P.SourceType)], P.SourceType))
+selectTypeSynonym conn ident =
+  SQL.query
+    conn
+    "SELECT idents, source_type FROM env_type_synonyms WHERE module_name IS ? AND line IS ? AND column is ? AND type_name = ?"
+    (toDbQualifer ident)
+    <&> (head >>> fmap deserialiseIdents)
+    where
+      deserialiseIdents (idents, st) = (deserialise idents, st)
+
+insertTypeClass :: Connection -> P.Qualified (P.ProperName 'P.ClassName) -> P.TypeClassData -> IO ()
+insertTypeClass conn ident tcd =
+  SQL.execute
+    conn
+    "INSERT OR REPLACE INTO env_type_classes (module_name, line, column, class_name, class) VALUES (?, ?, ?, ?, ?)"
+    (toDbQualifer ident :. SQL.Only tcd)
+
+selectTypeClass :: Connection -> P.Qualified (P.ProperName 'P.ClassName) -> IO (Maybe P.TypeClassData)
+selectTypeClass conn ident =
+  SQL.query
+    conn
+    "SELECT class FROM env_type_classes WHERE module_name IS ? AND line IS ? AND column is ? AND class_name = ?"
+    (toDbQualifer ident)
+    <&> (fmap SQL.fromOnly . head)
+
+initEnvTables :: Connection -> IO ()
+initEnvTables conn = do
+  SQL.execute_ conn "CREATE TABLE IF NOT EXISTS env_values (module_name TEXT, line INT, column INT, ident TEXT, source_type BLOB, name_kind TEXT, name_visibility TEXT, debug TEXT)"
+  SQL.execute_ conn "CREATE TABLE IF NOT EXISTS env_types (module_name TEXT, line INT, column INT, type_name TEXT PRIMARY KEY, source_type BLOB, type_kind TEXT, debug TEXT)"
+  SQL.execute_ conn "CREATE TABLE IF NOT EXISTS env_data_constructors (module_name TEXT, line INT, column INT, constructor_name TEXT PRIMARY KEY, data_decl_type TEXT, type_name TEXT, source_type BLOB, idents BLOB, debug TEXT)"
+  SQL.execute_ conn "CREATE TABLE IF NOT EXISTS env_type_synonyms (module_name TEXT, line INT, column INT, type_name TEXT PRIMARY KEY, idents BLOB, source_type BLOB, debug TEXT)"
+  SQL.execute_ conn "CREATE TABLE IF NOT EXISTS env_type_classes (module_name TEXT, line INT, column INT, class_name TEXT PRIMARY KEY, class BLOB, debug TEXT)"
+
+addEnvIndexes :: Connection -> IO ()
+addEnvIndexes conn = do 
+  SQL.execute_ conn "CREATE UNIQUE INDEX env_values_idx ON env_values(module_name, line, column, ident)"
+  SQL.execute_ conn "CREATE UNIQUE INDEX env_types_idx ON env_types(module_name, line, column, type_name)"
+  SQL.execute_ conn "CREATE UNIQUE INDEX env_data_constructors_idx ON env_data_constructors(module_name, line, column, constructor_name)"
+  SQL.execute_ conn "CREATE UNIQUE INDEX env_type_synonyms_idx ON env_type_synonyms(module_name, line, column, type_name)"
+  SQL.execute_ conn "CREATE UNIQUE INDEX env_type_classes_idx ON env_type_classes(module_name, line, column, class_name)"
+
+
+dropEnvTables :: Connection -> IO ()
+dropEnvTables conn = do
+  SQL.execute_ conn "DROP TABLE IF EXISTS env_values"
+  SQL.execute_ conn "DROP TABLE IF EXISTS env_types"
+  SQL.execute_ conn "DROP TABLE IF EXISTS env_data_constructors"
+  SQL.execute_ conn "DROP TABLE IF EXISTS env_type_synonyms"
+  SQL.execute_ conn "DROP TABLE IF EXISTS env_type_classes"

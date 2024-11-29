@@ -23,6 +23,8 @@ import Data.Text qualified as T
 
 import Language.PureScript.AST.SourcePos (SourcePos, pattern SourcePos)
 import Data.Aeson qualified as A
+import Database.SQLite.Simple.ToField (ToField (toField))
+import Database.SQLite.Simple.FromField (FromField (fromField), ResultError (ConversionFailed), returnError)
 
 -- | A sum of the possible name types, useful for error and lint messages.
 data Name
@@ -159,6 +161,7 @@ coerceOpName = OpName . runOpName
 --
 newtype ProperName (a :: ProperNameType) = ProperName { runProperName :: Text }
   deriving (Show, Eq, Ord, Generic)
+  deriving newtype (ToField, FromField)
 
 instance NFData (ProperName a)
 instance Serialise (ProperName a)
@@ -168,6 +171,8 @@ instance ToJSON (ProperName a) where
 
 instance FromJSON (ProperName a) where
   parseJSON = fmap ProperName . parseJSON
+
+  
 
 -- |
 -- The closed set of proper name types.
@@ -192,7 +197,7 @@ coerceProperName = ProperName . runProperName
 --
 newtype ModuleName = ModuleName Text
   deriving (Show, Eq, Ord, Generic)
-  deriving newtype Serialise
+  deriving newtype (Serialise, ToField, FromField)
 
 instance NFData ModuleName
 
@@ -323,3 +328,10 @@ instance FromJSONKey ModuleName where
 
 $(deriveJSON (defaultOptions { sumEncoding = ObjectWithSingleField }) ''InternalIdentData)
 $(deriveJSON (defaultOptions { sumEncoding = ObjectWithSingleField }) ''Ident)
+
+instance ToField Ident where 
+  toField = toField . A.encode
+
+
+instance FromField Ident where
+  fromField  f = (either (returnError ConversionFailed f) pure . A.eitherDecode) =<< fromField f
