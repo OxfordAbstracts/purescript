@@ -81,7 +81,6 @@ desugarTypeClassesUsingMemberMap classes = flip evalStateT initialState . desuga
       , classes
       ]
 
-
 -- TODO add desugarModuleSqlite which uses the DB instead of MemberMap to store the type class data
 
 desugarModule

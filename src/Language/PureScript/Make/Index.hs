@@ -13,39 +13,62 @@ module Language.PureScript.Make.Index
     getExportedNames,
     selectEnvValue,
     insertEnvValue,
+    insertType,
+    selectType,
+    insertDataConstructor,
+    selectDataConstructor,
+    insertTypeSynonym,
+    selectTypeSynonym,
+    selectTypeClass,
   )
 where
 
 import Codec.Serialise (deserialise, serialise)
 import Control.Arrow ((>>>))
+-- import Database.SQLite.Simple.Types ((:.))
+
+import Control.Concurrent.Async.Lifted (mapConcurrently_)
 import Data.List (partition)
+import Data.Map qualified as Map
 import Data.Set qualified as Set
 import Data.Text qualified as T
 import Database.SQLite.Simple (Connection, NamedParam ((:=)), type (:.) (..))
 import Database.SQLite.Simple qualified as SQL
 import Distribution.Compat.Directory (makeAbsolute)
 import Language.LSP.Server (MonadLsp)
--- import Database.SQLite.Simple.Types ((:.))
-import Language.PureScript (internalCompilerError)
+import Language.PureScript (internalError)
 import Language.PureScript qualified as P
+import Language.PureScript.AST.Declarations (DeclarationRef)
 import Language.PureScript.Environment (Environment)
+import Language.PureScript.Environment qualified as E
 import Language.PureScript.Externs (ExternsFile (efModuleName))
 import Language.PureScript.Lsp.NameType (LspNameType (DctorNameType), declNameType, externDeclNameType, lspNameType)
 import Language.PureScript.Lsp.Print (addDataDeclArgKind, printCtrType, printDataDeclKind, printDeclarationType, printEfDeclName, printEfDeclType, printName, printType, printTypeClassKind)
 import Language.PureScript.Lsp.ServerConfig (ServerConfig)
 import Language.PureScript.Lsp.Util (efDeclSourceSpan, getOperatorValueName)
+import Language.PureScript.Names (Qualified ())
 import Language.PureScript.TypeChecker.Monad (emptyCheckState)
 import Protolude hiding (moduleName)
 
 addAllIndexing :: (MonadIO m) => Connection -> P.MakeActions m -> P.MakeActions m
 addAllIndexing conn ma =
   addAstModuleIndexing conn $
-    addExternIndexing conn ma
+    addEnvIndexing conn $
+      addExternIndexing conn ma
 
 addAstModuleIndexing :: (MonadIO m) => Connection -> P.MakeActions m -> P.MakeActions m
 addAstModuleIndexing conn ma =
   ma
-    { P.codegen = \prevEnv checkSt astM m docs ext -> lift (indexAstModule conn (P.checkEnv checkSt) astM ext (getExportedNames ext)) <* P.codegen ma prevEnv checkSt astM m docs ext
+    { P.codegen = \prevEnv checkSt astM m docs ext ->
+        lift (indexAstModule conn (P.checkEnv checkSt) astM ext (getExportedNames ext)) <* P.codegen ma prevEnv checkSt astM m docs ext
+    }
+
+addEnvIndexing :: (MonadIO m) => Connection -> P.MakeActions m -> P.MakeActions m
+addEnvIndexing conn ma =
+  ma
+    { P.codegen = \prevEnv checkSt astM@(P.Module _ _ _ _ refs) m docs ext -> do
+        lift (indexExportedEnv (P.getModuleName astM) (P.checkEnv checkSt) refs conn)
+        P.codegen ma prevEnv checkSt astM m docs ext
     }
 
 indexAstModule :: (MonadIO m) => Connection -> Environment -> P.Module -> ExternsFile -> Set P.Name -> m ()
@@ -327,16 +350,51 @@ dropTables conn = do
   SQL.execute_ conn "DROP TABLE IF EXISTS ast_modules"
   SQL.execute_ conn "DROP TABLE IF EXISTS externs"
   SQL.execute_ conn "DROP TABLE IF EXISTS ef_imports"
+  dropEnvTables conn
 
+indexExportedEnv :: (MonadIO m) => P.ModuleName -> E.Environment -> Maybe [DeclarationRef] -> Connection -> m ()
+indexExportedEnv moduleName env refs conn = liftIO do
+  deleteModuleEnv
+  envFromModule E.names & filter nameExported & mapConcurrently_ (uncurry $ insertEnvValue conn)
+  envFromModule E.types & filter typeExported & mapConcurrently_ (uncurry $ insertType conn)
+  envFromModule E.dataConstructors & filter dataConstructorExported & mapConcurrently_ (uncurry $ insertDataConstructor conn)
+  envFromModule E.typeSynonyms & filter typeExported & mapConcurrently_ (uncurry $ insertTypeSynonym conn)
+  envFromModule E.typeClasses & filter typeClasseExported & mapConcurrently_ (uncurry $ insertTypeClass conn)
+  where
+    envFromModule :: (E.Environment -> Map.Map (Qualified k) v) -> [(Qualified k, v)]
+    envFromModule f = f env & Map.toList & filter ((== Just moduleName) . P.getQual . fst)
 
--- indexEnv :: Connection -> P.Environment -> IO ()
--- indexEnv conn env = 
+    deleteModuleEnv = do
+      SQL.execute conn "DELETE FROM env_values WHERE module_name = ?" (SQL.Only moduleName)
+      SQL.execute conn "DELETE FROM env_types WHERE module_name = ?" (SQL.Only moduleName)
+      SQL.execute conn "DELETE FROM env_data_constructors WHERE module_name = ?" (SQL.Only moduleName)
+      SQL.execute conn "DELETE FROM env_type_synonyms WHERE module_name = ?" (SQL.Only moduleName)
+      SQL.execute conn "DELETE FROM env_type_classes WHERE module_name = ?" (SQL.Only moduleName)
 
-type DbQualifer a = (Maybe P.ModuleName, Maybe Int, Maybe Int, a)
+    refMatch :: (Qualified a -> DeclarationRef -> Bool) -> (Qualified a, b) -> Bool
+    refMatch f (k, _) = maybe True (any (f k)) refs
+
+    nameExported = refMatch \k -> \case
+      P.ValueRef _ ident -> ident == P.disqualify k
+      _ -> False
+
+    typeClasseExported = refMatch \k -> \case
+      P.TypeClassRef _ className -> className == P.disqualify k
+      _ -> False
+
+    typeExported = refMatch \k -> \case
+      P.TypeRef _ typeName _ -> typeName == P.disqualify k
+      _ -> False
+
+    dataConstructorExported = refMatch \k -> \case
+      P.TypeRef _ _ ctrs -> maybe False (elem (P.disqualify k)) ctrs
+      _ -> False
+
+type DbQualifer a = (P.ModuleName, a)
 
 toDbQualifer :: P.Qualified a -> DbQualifer a
-toDbQualifer (P.Qualified (P.BySourcePos pos) a) = (Nothing, Just (P.sourcePosLine pos), Just (P.sourcePosColumn pos), a)
-toDbQualifer (P.Qualified (P.ByModuleName mn) a) = (Just mn, Nothing, Nothing, a)
+toDbQualifer (P.Qualified (P.ByModuleName mn) a) = (mn, a)
+toDbQualifer (P.Qualified (P.BySourcePos _) _) = internalError "toDbQualifer called with BySourcePos"
 
 type EnvValue = (P.SourceType, P.NameKind, P.NameVisibility)
 
@@ -344,14 +402,14 @@ insertEnvValue :: Connection -> P.Qualified P.Ident -> EnvValue -> IO ()
 insertEnvValue conn ident val =
   SQL.execute
     conn
-    "INSERT OR REPLACE INTO env_values (module_name, line, column, ident, source_type, name_kind, name_visibility) VALUES (?, ?, ?, ?, ?, ?, ?)"
+    "INSERT OR REPLACE INTO env_values (module_name, ident, source_type, name_kind, name_visibility) VALUES (?, ?, ?, ?, ?)"
     (toDbQualifer ident :. val)
 
 selectEnvValue :: Connection -> P.Qualified P.Ident -> IO (Maybe (P.SourceType, P.NameKind, P.NameVisibility))
 selectEnvValue conn ident =
   SQL.query
     conn
-    "SELECT source_type, name_kind, name_visibility FROM env_values WHERE module_name IS ? AND line IS ? AND column is ? AND ident = ?"
+    "SELECT source_type, name_kind, name_visibility FROM env_values WHERE module_name = ? AND ident = ?"
     (toDbQualifer ident)
     <&> head
 
@@ -361,14 +419,14 @@ insertType :: Connection -> P.Qualified (P.ProperName 'P.TypeName) -> EnvType ->
 insertType conn ident val =
   SQL.execute
     conn
-    "INSERT OR REPLACE INTO env_types (module_name, line, column, type_name, source_type, type_kind) VALUES (?, ?, ?, ?, ?, ?)"
+    "INSERT OR REPLACE INTO env_types (module_name, type_name, source_type, type_kind) VALUES (?, ?, ?, ?)"
     (toDbQualifer ident :. val)
 
 selectType :: Connection -> P.Qualified (P.ProperName 'P.TypeName) -> IO (Maybe EnvType)
 selectType conn ident =
   SQL.query
     conn
-    "SELECT source_type, type_kind FROM env_types WHERE module_name IS ? AND line IS ? AND column is ? AND type_name = ?"
+    "SELECT source_type, type_kind FROM env_types WHERE module_name = ? AND type_name = ?"
     (toDbQualifer ident)
     <&> head
 
@@ -376,14 +434,14 @@ insertDataConstructor :: Connection -> P.Qualified (P.ProperName 'P.ConstructorN
 insertDataConstructor conn ident (ddt, ty, st, idents) =
   SQL.execute
     conn
-    "INSERT OR REPLACE INTO env_data_constructors (constructor_name, data_decl_type, type_name, source_type, idents) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    "INSERT OR REPLACE INTO env_data_constructors (module_name, constructor_name, data_decl_type, type_name, source_type, idents) VALUES (?, ?, ?, ?, ?, ?)"
     (toDbQualifer ident :. (ddt, ty, st, serialise idents))
 
 selectDataConstructor :: Connection -> P.Qualified (P.ProperName 'P.ConstructorName) -> IO (Maybe (P.DataDeclType, P.ProperName 'P.TypeName, P.SourceType, [P.Ident]))
 selectDataConstructor conn ident =
   SQL.query
     conn
-    "SELECT data_decl_type, type_name, source_type, idents FROM env_data_constructors WHERE module_name IS ? AND line IS ? AND column is ? AND constructor_name = ?"
+    "SELECT data_decl_type, type_name, source_type, idents FROM env_data_constructors WHERE module_name = ? AND constructor_name = ?"
     (toDbQualifer ident)
     <&> (head >>> fmap deserialiseIdents)
   where
@@ -393,50 +451,50 @@ insertTypeSynonym :: Connection -> P.Qualified (P.ProperName 'P.TypeName) -> ([(
 insertTypeSynonym conn ident (idents, st) =
   SQL.execute
     conn
-    "INSERT OR REPLACE INTO env_type_synonyms (module_name, line, column, type_name, idents, source_type) VALUES (?, ?, ?, ?, ?)"
+    "INSERT OR REPLACE INTO env_type_synonyms (module_name, type_name, idents, source_type) VALUES (?, ?, ?, ?)"
     (toDbQualifer ident :. (serialise idents, st))
 
 selectTypeSynonym :: Connection -> P.Qualified (P.ProperName 'P.TypeName) -> IO (Maybe ([(Text, Maybe P.SourceType)], P.SourceType))
 selectTypeSynonym conn ident =
   SQL.query
     conn
-    "SELECT idents, source_type FROM env_type_synonyms WHERE module_name IS ? AND line IS ? AND column is ? AND type_name = ?"
+    "SELECT idents, source_type FROM env_type_synonyms WHERE module_name = ? AND type_name = ?"
     (toDbQualifer ident)
     <&> (head >>> fmap deserialiseIdents)
-    where
-      deserialiseIdents (idents, st) = (deserialise idents, st)
+  where
+    deserialiseIdents (idents, st) = (deserialise idents, st)
 
 insertTypeClass :: Connection -> P.Qualified (P.ProperName 'P.ClassName) -> P.TypeClassData -> IO ()
 insertTypeClass conn ident tcd =
   SQL.execute
     conn
-    "INSERT OR REPLACE INTO env_type_classes (module_name, line, column, class_name, class) VALUES (?, ?, ?, ?, ?)"
+    "INSERT OR REPLACE INTO env_type_classes (module_name, class_name, class) VALUES (?, ?, ?)"
     (toDbQualifer ident :. SQL.Only tcd)
 
 selectTypeClass :: Connection -> P.Qualified (P.ProperName 'P.ClassName) -> IO (Maybe P.TypeClassData)
 selectTypeClass conn ident =
   SQL.query
     conn
-    "SELECT class FROM env_type_classes WHERE module_name IS ? AND line IS ? AND column is ? AND class_name = ?"
+    "SELECT class FROM env_type_classes WHERE module_name = ? AND class_name = ?"
     (toDbQualifer ident)
     <&> (fmap SQL.fromOnly . head)
 
 initEnvTables :: Connection -> IO ()
 initEnvTables conn = do
-  SQL.execute_ conn "CREATE TABLE IF NOT EXISTS env_values (module_name TEXT, line INT, column INT, ident TEXT, source_type BLOB, name_kind TEXT, name_visibility TEXT, debug TEXT)"
-  SQL.execute_ conn "CREATE TABLE IF NOT EXISTS env_types (module_name TEXT, line INT, column INT, type_name TEXT PRIMARY KEY, source_type BLOB, type_kind TEXT, debug TEXT)"
-  SQL.execute_ conn "CREATE TABLE IF NOT EXISTS env_data_constructors (module_name TEXT, line INT, column INT, constructor_name TEXT PRIMARY KEY, data_decl_type TEXT, type_name TEXT, source_type BLOB, idents BLOB, debug TEXT)"
-  SQL.execute_ conn "CREATE TABLE IF NOT EXISTS env_type_synonyms (module_name TEXT, line INT, column INT, type_name TEXT PRIMARY KEY, idents BLOB, source_type BLOB, debug TEXT)"
-  SQL.execute_ conn "CREATE TABLE IF NOT EXISTS env_type_classes (module_name TEXT, line INT, column INT, class_name TEXT PRIMARY KEY, class BLOB, debug TEXT)"
+  SQL.execute_ conn "CREATE TABLE IF NOT EXISTS env_values (module_name TEXT, ident TEXT, source_type BLOB, name_kind TEXT, name_visibility TEXT, debug TEXT)"
+  SQL.execute_ conn "CREATE TABLE IF NOT EXISTS env_types (module_name TEXT, type_name TEXT PRIMARY KEY, source_type BLOB, type_kind TEXT, debug TEXT)"
+  SQL.execute_ conn "CREATE TABLE IF NOT EXISTS env_data_constructors (module_name TEXT, constructor_name TEXT PRIMARY KEY, data_decl_type TEXT, type_name TEXT, source_type BLOB, idents BLOB, debug TEXT)"
+  SQL.execute_ conn "CREATE TABLE IF NOT EXISTS env_type_synonyms (module_name TEXT, type_name TEXT PRIMARY KEY, idents BLOB, source_type BLOB, debug TEXT)"
+  SQL.execute_ conn "CREATE TABLE IF NOT EXISTS env_type_classes (module_name TEXT, class_name TEXT PRIMARY KEY, class BLOB, debug TEXT)"
+  addEnvIndexes conn
 
 addEnvIndexes :: Connection -> IO ()
-addEnvIndexes conn = do 
-  SQL.execute_ conn "CREATE UNIQUE INDEX env_values_idx ON env_values(module_name, line, column, ident)"
-  SQL.execute_ conn "CREATE UNIQUE INDEX env_types_idx ON env_types(module_name, line, column, type_name)"
-  SQL.execute_ conn "CREATE UNIQUE INDEX env_data_constructors_idx ON env_data_constructors(module_name, line, column, constructor_name)"
-  SQL.execute_ conn "CREATE UNIQUE INDEX env_type_synonyms_idx ON env_type_synonyms(module_name, line, column, type_name)"
-  SQL.execute_ conn "CREATE UNIQUE INDEX env_type_classes_idx ON env_type_classes(module_name, line, column, class_name)"
-
+addEnvIndexes conn = do
+  SQL.execute_ conn "CREATE UNIQUE INDEX IF NOT EXISTS env_values_idx ON env_values(module_name, ident)"
+  SQL.execute_ conn "CREATE UNIQUE INDEX IF NOT EXISTS env_types_idx ON env_types(module_name, type_name)"
+  SQL.execute_ conn "CREATE UNIQUE INDEX IF NOT EXISTS env_data_constructors_idx ON env_data_constructors(module_name, constructor_name)"
+  SQL.execute_ conn "CREATE UNIQUE INDEX IF NOT EXISTS env_type_synonyms_idx ON env_type_synonyms(module_name, type_name)"
+  SQL.execute_ conn "CREATE UNIQUE INDEX IF NOT EXISTS env_type_classes_idx ON env_type_classes(module_name, class_name)"
 
 dropEnvTables :: Connection -> IO ()
 dropEnvTables conn = do

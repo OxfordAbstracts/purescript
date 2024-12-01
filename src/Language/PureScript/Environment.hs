@@ -31,7 +31,6 @@ import Language.PureScript.Constants.Prim qualified as C
 import Codec.Serialise qualified as S
 import Database.SQLite.Simple.ToField (ToField (toField))
 import Database.SQLite.Simple.FromField (FromField (fromField))
-import Database.SQLite.Simple (ToRow (toRow))
 
 -- | The @Environment@ defines all values and types which are currently in scope:
 data Environment = Environment
