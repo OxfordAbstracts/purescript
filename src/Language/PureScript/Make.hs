@@ -93,6 +93,18 @@ rebuildModuleWithIndex act exEnv externs m moduleIndex = do
   let env = foldl' (flip applyExternsFileToEnvironment) initEnvironment externs
   rebuildModuleWithProvidedEnv emptyCheckState act exEnv env externs m moduleIndex
 
+rebuildModuleWithIndexDb ::
+  forall m.
+  (MonadError MultipleErrors m, MonadWriter MultipleErrors m) =>
+  MakeActions m ->
+  Env ->
+  Module ->
+  Maybe (Int, Int) ->
+  m ExternsFile
+rebuildModuleWithIndexDb act exEnv m moduleIndex = do
+  env <- selectEnvFromImports
+  rebuildModuleWithProvidedEnv emptyCheckState act exEnv env externs m moduleIndex
+
 rebuildModuleWithProvidedEnv ::
   forall m.
   (MonadError MultipleErrors m, MonadWriter MultipleErrors m) =>

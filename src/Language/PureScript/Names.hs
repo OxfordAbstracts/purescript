@@ -25,6 +25,7 @@ import Language.PureScript.AST.SourcePos (SourcePos, pattern SourcePos)
 import Data.Aeson qualified as A
 import Database.SQLite.Simple.ToField (ToField (toField))
 import Database.SQLite.Simple.FromField (FromField (fromField), ResultError (ConversionFailed), returnError)
+import Data.Data (Typeable)
 
 -- | A sum of the possible name types, useful for error and lint messages.
 data Name
@@ -241,6 +242,11 @@ data Qualified a = Qualified QualifiedBy a
 
 instance NFData a => NFData (Qualified a)
 instance Serialise a => Serialise (Qualified a)
+instance ToJSON a => ToField (Qualified a) where
+  toField = toField . A.encode
+
+instance (FromJSON a, Typeable a) => FromField (Qualified a) where
+  fromField  f = (either (returnError ConversionFailed f) pure . A.eitherDecode) =<< fromField f
 
 showQualified :: (a -> Text) -> Qualified a -> Text
 showQualified f (Qualified (BySourcePos  _) a) = f a

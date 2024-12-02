@@ -42,6 +42,7 @@ data TypeClassDictionaryInScope v
 
 instance NFData v => NFData (TypeClassDictionaryInScope v)
 instance Serialise v => Serialise (TypeClassDictionaryInScope v)
+-- instance
 
 type NamedDict = TypeClassDictionaryInScope (Qualified Ident)
 

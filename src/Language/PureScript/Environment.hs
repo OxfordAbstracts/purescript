@@ -5,7 +5,7 @@ import Prelude
 
 import GHC.Generics (Generic)
 import Control.DeepSeq (NFData)
-import Control.Monad (unless)
+import Control.Monad (unless, (>=>))
 import Codec.Serialise (Serialise)
 import Data.Aeson ((.=), (.:))
 import Data.Aeson qualified as A
@@ -30,7 +30,7 @@ import Language.PureScript.Types (SourceConstraint, SourceType, Type(..), TypeVa
 import Language.PureScript.Constants.Prim qualified as C
 import Codec.Serialise qualified as S
 import Database.SQLite.Simple.ToField (ToField (toField))
-import Database.SQLite.Simple.FromField (FromField (fromField))
+import Database.SQLite.Simple.FromField (FromField (fromField), FieldParser)
 
 -- | The @Environment@ defines all values and types which are currently in scope:
 data Environment = Environment
@@ -253,10 +253,12 @@ instance NFData NameVisibility
 instance Serialise NameVisibility
 
 instance ToField NameVisibility where
-  toField = toField . S.serialise
-
+  toField = toField . show
 instance FromField NameVisibility where
-  fromField = fmap S.deserialise . fromField
+  fromField = (fromField :: FieldParser Text) >=> \case
+    "Undefined" -> pure Undefined
+    "Defined" -> pure Defined
+    other -> fail $ "invalid NameVisibility: '" ++ T.unpack other ++ "'"
 
 -- | A flag for whether a name is for an private or public value - only public values will be
 -- included in a generated externs file.
@@ -274,10 +276,14 @@ instance NFData NameKind
 instance Serialise NameKind
 
 instance ToField NameKind where
-  toField = toField . S.serialise
+  toField = toField . show
 
 instance FromField NameKind where
-  fromField = fmap S.deserialise . fromField
+  fromField = (fromField :: FieldParser Text) >=> \case
+    "Private" -> pure Private
+    "Public" -> pure Public
+    "External" -> pure External
+    other -> fail $ "invalid NameKind: '" ++ T.unpack other ++ "'"
 
 -- | The kinds of a type
 data TypeKind
@@ -313,10 +319,13 @@ data DataDeclType
 instance NFData DataDeclType
 instance Serialise DataDeclType
 instance ToField DataDeclType where
-  toField = toField . S.serialise
+  toField = toField . showDataDeclType
 
 instance FromField DataDeclType where
-  fromField = fmap S.deserialise . fromField
+  fromField = (fromField :: FieldParser Text) >=> \case 
+    "data" -> pure Data
+    "newtype" -> pure Newtype
+    other -> fail $ "invalid DataDeclType: '" ++ T.unpack other ++ "'"
 
 showDataDeclType :: DataDeclType -> Text
 showDataDeclType Data = "data"
