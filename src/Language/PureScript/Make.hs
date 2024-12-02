@@ -107,7 +107,7 @@ rebuildModuleWithIndexDb ::
   Maybe (Int, Int) ->
   m ExternsFile
 rebuildModuleWithIndexDb act conn exEnv m moduleIndex = do
-  env <- selectEnvFromImports conn m exEnv
+  env <- selectEnvFromImports conn m
   rebuildModuleWithProvidedEnvDb emptyCheckState act conn exEnv env m moduleIndex
 
 rebuildModuleWithProvidedEnv ::

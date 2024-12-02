@@ -384,8 +384,6 @@ dropTables conn = do
 
 indexExportedEnv :: (MonadIO m) => P.ModuleName -> E.Environment -> Maybe [DeclarationRef] -> Connection -> m ()
 indexExportedEnv moduleName env refs conn = do 
- when (moduleName == P.ModuleName "Data.Unit") do
-   putErrLn $ T.intercalate "\n" . fmap T.pack $ P.debugEnv env
  liftIO do
   deleteModuleEnv
   envFromModule E.names & filter nameExported & mapConcurrently_ (uncurry $ insertEnvValue conn)
