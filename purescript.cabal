@@ -378,6 +378,7 @@ library
     Language.PureScript.Make.BuildPlan
     Language.PureScript.Make.Cache
     Language.PureScript.Make.Index
+    Language.PureScript.Make.Index.Select
     Language.PureScript.Make.Monad
     Language.PureScript.ModuleDependencies
     Language.PureScript.Names

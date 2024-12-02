@@ -1,6 +1,6 @@
 -- |
 -- Desugaring passes
-module Language.PureScript.Sugar (desugar, desugarLsp, module S) where
+module Language.PureScript.Sugar (desugar, desugarUsingDb, module S) where
 
 import Control.Category ((>>>))
 import Control.Monad.Supply.Class (MonadSupply)
@@ -73,7 +73,7 @@ desugar externs =
     >=> desugarTypeClasses externs
     >=> createBindingGroupsModule
 
-desugarLsp ::
+desugarUsingDb ::
   (MonadSupply m) =>
   (MonadWriter MultipleErrors m) =>
   (MonadError MultipleErrors m) =>
@@ -83,7 +83,7 @@ desugarLsp ::
   Environment ->
   Module ->
   m Module
-desugarLsp fixities typeFixities env =
+desugarUsingDb fixities typeFixities env =
   desugarSignedLiterals
     >>> desugarObjectConstructors
     >=> desugarDoModule
@@ -92,7 +92,7 @@ desugarLsp fixities typeFixities env =
     >>> desugarCasesModule
     >=> desugarTypeDeclarationsModule
     >=> desugarImports
-    >=> rebracketFixitiesOnly fixities typeFixities
+    >=> rebracketFixitiesOnly (const True) fixities typeFixities
     >=> checkFixityExports
     >=> deriveInstances
     >=> desugarTypeClassesUsingMemberMap typeClassData

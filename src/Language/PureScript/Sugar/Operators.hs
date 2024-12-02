@@ -10,7 +10,9 @@ module Language.PureScript.Sugar.Operators
     rebracket,
     rebracketFixitiesOnly,
     rebracketFiltered,
+    rebracketFiltered',
     checkFixityExports,
+    fromExternFixities,
   )
 where
 
@@ -78,14 +80,17 @@ rebracketFixitiesOnly ::
   forall m.
   (MonadError MultipleErrors m) =>
   (MonadSupply m) =>
+  (Declaration -> Bool) ->
   [(P.ModuleName, [ExternsFixity])] ->
   [(P.ModuleName, [ExternsTypeFixity])] ->
   Module ->
   m Module
-rebracketFixitiesOnly exFixities exTypeFixities =
-  rebracketFiltered' CalledByCompile (const False) $
-    fixities <> typeFixities
-
+rebracketFixitiesOnly pred_ exFixities exTypeFixities =
+  rebracketFiltered' CalledByCompile pred_ $ fromExternFixities exFixities exTypeFixities
+    -- fixities <> typeFixities
+-- 
+fromExternFixities :: (Foldable t1, Foldable t2) => t2 (P.ModuleName, [ExternsFixity]) -> t1 (P.ModuleName, [ExternsTypeFixity]) -> [Either ValueFixityRecord TypeFixityRecord]
+fromExternFixities exFixities exTypeFixities  = fixities <> typeFixities
   where 
     fixities = concatMap (\(mName, fs) -> fmap (fromFixity mName) fs) exFixities
     typeFixities = concatMap (\(mName, fs) -> fmap (fromTypeFixity mName) fs) exTypeFixities

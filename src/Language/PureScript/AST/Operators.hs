@@ -12,6 +12,7 @@ import Data.Aeson ((.=))
 import Data.Aeson qualified as A
 
 import Language.PureScript.Crash (internalError)
+import Database.SQLite.Simple.FromField (FromField (fromField))
 
 -- |
 -- A precedence level for an infix operator
@@ -26,6 +27,9 @@ data Associativity = Infixl | Infixr | Infix
 
 instance NFData Associativity
 instance Serialise Associativity
+
+instance FromField Associativity where
+  fromField = fmap readAssoc . fromField
 
 showAssoc :: Associativity -> String
 showAssoc Infixl = "infixl"

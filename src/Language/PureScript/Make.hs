@@ -1,3 +1,5 @@
+{-# OPTIONS_GHC -Wno-unused-top-binds #-}
+
 module Language.PureScript.Make
   ( -- * Make API
     rebuildModule,
@@ -31,6 +33,7 @@ import Data.Map qualified as M
 import Data.Maybe (fromMaybe)
 import Data.Set qualified as S
 import Data.Text qualified as T
+import Database.SQLite.Simple (Connection)
 import Debug.Trace (traceMarkerIO)
 import Language.PureScript.AST (ErrorMessageHint (..), Module (..), SourceSpan (..), getModuleName, getModuleSourceSpan, importPrim)
 import Language.PureScript.CST qualified as CST
@@ -39,17 +42,18 @@ import Language.PureScript.Crash (internalError)
 import Language.PureScript.Docs.Convert qualified as Docs
 import Language.PureScript.Environment (Environment, initEnvironment)
 import Language.PureScript.Errors (MultipleErrors, SimpleErrorMessage (..), addHint, defaultPPEOptions, errorMessage', errorMessage'', prettyPrintMultipleErrors)
-import Language.PureScript.Externs (ExternsFile, applyExternsFileToEnvironment, moduleToExternsFile)
+import Language.PureScript.Externs (ExternsFile, ExternsFixity, ExternsTypeFixity, applyExternsFileToEnvironment, moduleToExternsFile)
 import Language.PureScript.Linter (Name (..), lint, lintImports)
 import Language.PureScript.Make.Actions as Actions
 import Language.PureScript.Make.BuildPlan (BuildJobResult (..), BuildPlan (..), getResult)
 import Language.PureScript.Make.BuildPlan qualified as BuildPlan
 import Language.PureScript.Make.Cache qualified as Cache
+import Language.PureScript.Make.Index.Select (selectEnvFromImports, selectFixitiesFromModule)
 import Language.PureScript.Make.Monad as Monad
 import Language.PureScript.ModuleDependencies (DependencyDepth (..), moduleSignature, sortModules)
 import Language.PureScript.Names (ModuleName, isBuiltinModuleName, runModuleName)
 import Language.PureScript.Renamer (renameInModule)
-import Language.PureScript.Sugar (Env, collapseBindingGroups, createBindingGroups, desugar, desugarCaseGuards, externsEnv, primEnv)
+import Language.PureScript.Sugar (Env, collapseBindingGroups, createBindingGroups, desugar, desugarCaseGuards, desugarUsingDb, externsEnv, primEnv)
 import Language.PureScript.TypeChecker (CheckState (..), emptyCheckState, typeCheckModule)
 import Language.PureScript.TypeChecker.Monad qualified as P
 import System.Directory (doesFileExist)
@@ -95,15 +99,16 @@ rebuildModuleWithIndex act exEnv externs m moduleIndex = do
 
 rebuildModuleWithIndexDb ::
   forall m.
-  (MonadError MultipleErrors m, MonadWriter MultipleErrors m) =>
+  (MonadError MultipleErrors m, MonadWriter MultipleErrors m, MonadIO m) =>
   MakeActions m ->
+  Connection ->
   Env ->
   Module ->
   Maybe (Int, Int) ->
   m ExternsFile
-rebuildModuleWithIndexDb act exEnv m moduleIndex = do
-  env <- selectEnvFromImports
-  rebuildModuleWithProvidedEnv emptyCheckState act exEnv env externs m moduleIndex
+rebuildModuleWithIndexDb act conn exEnv m moduleIndex = do
+  env <- selectEnvFromImports conn m exEnv
+  rebuildModuleWithProvidedEnvDb emptyCheckState act conn exEnv env m moduleIndex
 
 rebuildModuleWithProvidedEnv ::
   forall m.
@@ -157,6 +162,60 @@ rebuildModuleWithProvidedEnv initialCheckState MakeActions {..} exEnv env extern
   evalSupplyT nextVar'' $ codegen env checkSt mod' renamed docs exts
   return exts
 
+rebuildModuleWithProvidedEnvDb ::
+  forall m.
+  (MonadError MultipleErrors m, MonadWriter MultipleErrors m, MonadIO m) =>
+  (Environment -> CheckState) ->
+  MakeActions m ->
+  Connection ->
+  Env ->
+  Environment ->
+  Module ->
+  Maybe (Int, Int) ->
+  m ExternsFile
+rebuildModuleWithProvidedEnvDb initialCheckState MakeActions {..} conn exEnv env m@(Module _ _ moduleName _ _) moduleIndex = do
+  progress $ CompilingModule moduleName moduleIndex
+  let withPrim = importPrim m
+  lint withPrim
+  (ops, typeOps) <- liftIO $ selectFixitiesFromModule conn m
+
+  ((Module ss coms _ elaborated exps, checkSt), nextVar) <-
+    desugarAndTypeCheckDb initialCheckState withCheckStateOnError withCheckState moduleName withPrim exEnv env ops typeOps
+  let env' = P.checkEnv checkSt
+
+  -- desugar case declarations *after* type- and exhaustiveness checking
+  -- since pattern guards introduces cases which the exhaustiveness checker
+  -- reports as not-exhaustive.
+  (deguarded, nextVar') <- runSupplyT nextVar $ do
+    desugarCaseGuards elaborated
+
+  regrouped <- createBindingGroups moduleName . collapseBindingGroups $ deguarded
+  let mod' = Module ss coms moduleName regrouped exps
+
+      corefn = CF.moduleToCoreFn env' mod'
+      (optimized, nextVar'') = runSupply nextVar' $ CF.optimizeCoreFn corefn
+      (renamedIdents, renamed) = renameInModule optimized
+      exts = moduleToExternsFile mod' env' renamedIdents
+  ffiCodegen renamed
+  -- It may seem more obvious to write `docs <- Docs.convertModule m env' here,
+  -- but I have not done so for two reasons:
+  -- 1. This should never fail; any genuine errors in the code should have been
+  -- caught earlier in this function. Therefore if we do fail here it indicates
+  -- a bug in the compiler, which should be reported as such.
+  -- 2. We do not want to perform any extra work generating docs unless the
+  -- user has asked for docs to be generated.
+  let docs = case Docs.convertModuleWithoutExterns ops typeOps exEnv env' withPrim of
+        Left errs ->
+          internalError $
+            "Failed to produce docs for "
+              ++ T.unpack (runModuleName moduleName)
+              ++ "; details:\n"
+              ++ prettyPrintMultipleErrors defaultPPEOptions errs
+        Right d -> d
+
+  evalSupplyT nextVar'' $ codegen env checkSt mod' renamed docs exts
+  return exts
+
 desugarAndTypeCheck ::
   forall m.
   (MonadError MultipleErrors m, MonadWriter MultipleErrors m) =>
@@ -192,19 +251,56 @@ desugarAndTypeCheck initialCheckState withCheckStateOnError withCheckState modul
       lift $ lift $ withCheckStateOnError checkSt
       throwError errs
 
+desugarAndTypeCheckDb ::
+  forall m.
+  (MonadError MultipleErrors m, MonadWriter MultipleErrors m) =>
+  (Environment -> CheckState) ->
+  (CheckState -> m ()) ->
+  (CheckState -> m ()) ->
+  ModuleName ->
+  Module ->
+  Env ->
+  Environment ->
+  [(ModuleName, [ExternsFixity])] ->
+  [(ModuleName, [ExternsTypeFixity])] ->
+  m ((Module, CheckState), Integer)
+desugarAndTypeCheckDb initialCheckState withCheckStateOnError withCheckState moduleName withPrim exEnv env ops typeOps = runSupplyT 0 $ do
+  (desugared, (exEnv', usedImports)) <- runStateT (desugarUsingDb ops typeOps env withPrim) (exEnv, mempty)
+  let modulesExports = (\(_, _, exports) -> exports) <$> exEnv'
+  (checked, checkSt@(CheckState {..})) <- runStateT (catchError (typeCheckModule modulesExports desugared) mergeCheckState) $ initialCheckState env
+  lift $ withCheckState checkSt
+  let usedImports' =
+        foldl'
+          ( flip $ \(fromModuleName, newtypeCtorName) ->
+              M.alter (Just . (fmap DctorName newtypeCtorName :) . fold) fromModuleName
+          )
+          usedImports
+          checkConstructorImportsForCoercible
+  -- Imports cannot be linted before type checking because we need to
+  -- known which newtype constructors are used to solve Coercible
+  -- constraints in order to not report them as unused.
+  censor (addHint (ErrorInModule moduleName)) $ lintImports checked exEnv' usedImports'
+  return (checked, checkSt)
+  where
+    mergeCheckState errs = do
+      checkSt <- get
+      lift $ lift $ withCheckStateOnError checkSt
+      throwError errs
+
 -- | Compiles in "make" mode, compiling each module separately to a @.js@ file and an @externs.cbor@ file.
 --
 -- If timestamps or hashes have not changed, existing externs files can be used to provide upstream modules' types without
 -- having to typecheck those modules again.
 make ::
   forall m.
-  (MonadBaseControl IO m, MonadError MultipleErrors m, MonadWriter MultipleErrors m) =>
+  (MonadBaseControl IO m, MonadIO m, MonadError MultipleErrors m, MonadWriter MultipleErrors m) =>
   MakeActions m ->
   [CST.PartialResult Module] ->
   m [ExternsFile]
 make ma@MakeActions {..} ms = do
   checkModuleNames
   cacheDb <- readCacheDb
+  conn <- getDbConnection
 
   (sorted, graph) <- sortModules Transitive (moduleSignature . CST.resPartial) ms
 
@@ -225,6 +321,7 @@ make ma@MakeActions {..} ms = do
     let moduleName = getModuleName . CST.resPartial $ m
     let deps = fromMaybe (internalError "make: module not found in dependency graph.") (lookup moduleName graph)
     buildModule
+      conn
       lock
       buildPlan
       moduleName
@@ -298,8 +395,8 @@ make ma@MakeActions {..} ms = do
     inOrderOf :: (Ord a) => [a] -> [a] -> [a]
     inOrderOf xs ys = let s = S.fromList xs in filter (`S.member` s) ys
 
-    buildModule :: QSem -> BuildPlan -> ModuleName -> Int -> FilePath -> [CST.ParserWarning] -> Either (NEL.NonEmpty CST.ParserError) Module -> [ModuleName] -> m ()
-    buildModule lock buildPlan moduleName cnt fp pwarnings mres deps = do
+    buildModule :: Connection -> QSem -> BuildPlan -> ModuleName -> Int -> FilePath -> [CST.ParserWarning] -> Either (NEL.NonEmpty CST.ParserError) Module -> [ModuleName] -> m ()
+    buildModule conn lock buildPlan moduleName cnt fp pwarnings mres deps = do
       result <- flip catchError (return . BuildJobFailed) $ do
         let pwarnings' = CST.toMultipleWarnings fp pwarnings
         tell pwarnings'
@@ -332,7 +429,7 @@ make ma@MakeActions {..} ms = do
               -- Force the externs and warnings to avoid retaining excess module
               -- data after the module is finished compiling.
               extsAndWarnings <- evaluate . force <=< listen $ do
-                rebuildModuleWithIndex ma env externs m (Just (idx, cnt))
+                rebuildModuleWithIndexDb ma conn env m (Just (idx, cnt))
               liftBase $ traceMarkerIO $ T.unpack (runModuleName moduleName) <> " end"
               return extsAndWarnings
             return $ BuildJobSucceeded (pwarnings' <> warnings) exts

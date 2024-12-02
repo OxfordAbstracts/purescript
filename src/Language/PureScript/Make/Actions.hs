@@ -60,6 +60,8 @@ import System.FilePath (makeRelative, normalise, splitDirectories, splitPath, (<
 import System.FilePath.Posix qualified as Posix
 import System.IO (stderr)
 import Prelude
+import Database.SQLite.Simple (Connection)
+import Language.PureScript.DB (mkConnection)
 
 -- | Determines when to rebuild a module
 data RebuildPolicy
@@ -130,6 +132,8 @@ data MakeActions m = MakeActions
     -- | Write the given cache database to some external source (e.g. a file on
     -- disk).
     writeCacheDb :: CacheDb -> m (),
+    -- | Get database connection 
+    getDbConnection :: m Connection,
     -- | Write to the output directory the package.json file allowing Node.js to
     -- load .js files as ES modules.
     writePackageJson :: m (),
@@ -193,6 +197,7 @@ buildMakeActions outputDir filePathMap foreigns usePrefix =
     progress
     readCacheDb
     writeCacheDb
+    getDbConnection
     writePackageJson
     outputPrimDocs
   where
@@ -352,6 +357,9 @@ buildMakeActions outputDir filePathMap foreigns usePrefix =
 
     writeCacheDb :: CacheDb -> Make ()
     writeCacheDb = writeCacheDb' outputDir
+
+    getDbConnection :: Make Connection
+    getDbConnection = liftIO $ snd <$> mkConnection outputDir
 
     writePackageJson :: Make ()
     writePackageJson = writePackageJson' outputDir

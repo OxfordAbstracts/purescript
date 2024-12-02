@@ -137,6 +137,12 @@ newtype OpName (a :: OpNameType) = OpName { runOpName :: Text }
 instance NFData (OpName a)
 instance Serialise (OpName a)
 
+instance ToField (OpName a) where
+  toField = toField . A.encode
+
+instance Typeable a => FromField (OpName a) where
+  fromField  f = (either (returnError ConversionFailed f) pure . A.eitherDecode) =<< fromField f
+
 instance ToJSON (OpName a) where
   toJSON = toJSON . runOpName
 

@@ -3,6 +3,7 @@
 
 module Language.PureScript.Docs.Convert
   ( convertModule
+  , convertModuleWithoutExterns
   ) where
 
 import Protolude hiding (check)
@@ -29,6 +30,8 @@ import Language.PureScript.Sugar qualified as P
 import Language.PureScript.Types qualified as P
 import Language.PureScript.Constants.Prim qualified as Prim
 import Language.PureScript.Sugar (RebracketCaller(CalledByDocs))
+import Language.PureScript.Externs (ExternsFixity)
+import Language.PureScript.Sugar.Operators (fromExternFixities)
 
 -- |
 -- Convert a single module to a Docs.Module, making use of a pre-existing
@@ -45,6 +48,17 @@ convertModule ::
 convertModule externs env checkEnv =
   fmap (insertValueTypesAndAdjustKinds checkEnv . convertSingleModule) . partiallyDesugar externs env
 
+
+convertModuleWithoutExterns ::
+  MonadError P.MultipleErrors m =>
+  [(P.ModuleName, [ExternsFixity])] ->
+  [(P.ModuleName, [P.ExternsTypeFixity])] ->
+  P.Env ->
+  P.Environment ->
+  P.Module ->
+  m Module
+convertModuleWithoutExterns fixities typeFixities env checkEnv =
+  fmap (insertValueTypesAndAdjustKinds checkEnv . convertSingleModule) . partiallyDesugarWithouExterns fixities typeFixities env
 -- |
 -- Convert FFI declarations into `DataDeclaration` so that the declaration's
 -- roles (if any) can annotate the generated type parameter names.
@@ -268,6 +282,31 @@ partiallyDesugar externs env = evalSupplyT 0 . desugar'
       >=> P.desugarTypeDeclarationsModule
       >=> fmap fst . runWriterT . flip evalStateT (env, mempty) . P.desugarImports
       >=> P.rebracketFiltered CalledByDocs isInstanceDecl externs
+
+  isInstanceDecl P.TypeInstanceDeclaration {} = True
+  isInstanceDecl _ = False
+
+-- |
+-- Partially desugar modules so that they are suitable for extracting
+-- documentation information from. This version does not use externs files
+--
+partiallyDesugarWithouExterns ::
+  (MonadError P.MultipleErrors m) =>
+  [(P.ModuleName, [ExternsFixity])] ->
+  [(P.ModuleName, [P.ExternsTypeFixity])] ->
+  P.Env ->
+  P.Module ->
+  m P.Module
+partiallyDesugarWithouExterns  fixities typeFixities env = evalSupplyT 0 . desugar'
+  where
+  desugar' =
+    P.desugarDoModule
+      >=> P.desugarAdoModule
+      >=> P.desugarLetPatternModule
+      >>> P.desugarCasesModule
+      >=> P.desugarTypeDeclarationsModule
+      >=> fmap fst . runWriterT . flip evalStateT (env, mempty) . P.desugarImports
+      >=> P.rebracketFiltered' CalledByDocs isInstanceDecl  (fromExternFixities fixities typeFixities)
 
   isInstanceDecl P.TypeInstanceDeclaration {} = True
   isInstanceDecl _ = False

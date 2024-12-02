@@ -39,6 +39,7 @@ import Language.PureScript.TypeClassDictionaries (NamedDict, TypeClassDictionary
 import Language.PureScript.Types (SourceConstraint, SourceType, srcInstanceType)
 
 import Paths_purescript as Paths
+import Database.SQLite.Simple (FromRow (fromRow), field)
 
 -- | The data which will be serialized to an externs file
 data ExternsFile = ExternsFile
@@ -93,6 +94,9 @@ data ExternsFixity = ExternsFixity
 
 instance Serialise ExternsFixity
 
+instance FromRow ExternsFixity where 
+  fromRow = ExternsFixity <$> field <*> field <*> field <*> field
+
 -- | A type fixity declaration in an externs file
 data ExternsTypeFixity = ExternsTypeFixity
   {
@@ -107,6 +111,9 @@ data ExternsTypeFixity = ExternsTypeFixity
   } deriving (Show, Generic, NFData)
 
 instance Serialise ExternsTypeFixity
+
+instance FromRow ExternsTypeFixity where 
+  fromRow = ExternsTypeFixity <$> field <*> field <*> field <*> field
 
 -- | A type or value declaration appearing in an externs file
 data ExternsDeclaration =

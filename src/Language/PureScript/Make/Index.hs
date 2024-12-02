@@ -11,26 +11,15 @@ module Language.PureScript.Make.Index
     dropTables,
     indexExtern,
     getExportedNames,
-    selectEnvValue,
     insertEnvValue,
     insertType,
-    selectType,
     insertDataConstructor,
-    selectDataConstructor,
     insertTypeSynonym,
-    selectTypeSynonym,
-    selectTypeClass,
-    selectEnv,
-    selectEnvFromImports,
   )
 where
 
-import Codec.Serialise (deserialise, serialise)
-import Control.Arrow ((>>>))
--- import Database.SQLite.Simple.Types ((:.))
-
-import Control.Concurrent.Async.Lifted (mapConcurrently, mapConcurrently_)
-import Control.Monad.Writer (MonadWriter (tell), execWriter)
+import Codec.Serialise (serialise)
+import Control.Concurrent.Async.Lifted (mapConcurrently_)
 import Data.List (partition)
 import Data.Map qualified as Map
 import Data.Set qualified as Set
@@ -39,7 +28,6 @@ import Database.SQLite.Simple (Connection, NamedParam ((:=)), type (:.) (..))
 import Database.SQLite.Simple qualified as SQL
 import Distribution.Compat.Directory (makeAbsolute)
 import Language.LSP.Server (MonadLsp)
-import Language.PureScript (internalError)
 import Language.PureScript qualified as P
 import Language.PureScript.AST.Declarations (DeclarationRef)
 import Language.PureScript.Environment (Environment)
@@ -52,9 +40,9 @@ import Language.PureScript.Lsp.Util (efDeclSourceSpan, getOperatorValueName)
 import Language.PureScript.Names (Qualified ())
 import Language.PureScript.TypeChecker.Monad (emptyCheckState)
 import Language.PureScript.TypeClassDictionaries (NamedDict, TypeClassDictionaryInScope (tcdClassName, tcdValue))
-import Language.PureScript.Types (Constraint (..))
 import Protolude hiding (moduleName)
 import Data.Aeson qualified as A
+import Language.PureScript.Make.Index.Select (toDbQualifer)
 
 addAllIndexing :: (MonadIO m) => Connection -> P.MakeActions m -> P.MakeActions m
 addAllIndexing conn ma =
@@ -86,6 +74,7 @@ indexAstModule conn endEnv (P.Module _ss _comments moduleName' decls _exportRefs
     [ ":module_name" := P.runModuleName moduleName',
       ":path" := path
     ]
+
   SQL.execute conn "DELETE FROM ast_declarations WHERE module_name = ?" (SQL.Only $ P.runModuleName moduleName')
 
   let declsSorted :: [P.Declaration]
@@ -96,6 +85,7 @@ indexAstModule conn endEnv (P.Module _ss _comments moduleName' decls _exportRefs
         _ -> False
 
   forM_ declsSorted \decl -> do
+    indexFixity conn moduleName' decl
     let (ss, _) = P.declSourceAnn decl
         start = P.spanStart ss
         end = P.spanEnd ss
@@ -192,6 +182,38 @@ indexAstModule conn endEnv (P.Module _ss _comments moduleName' decls _exportRefs
     disqualifyIfInModule (P.Qualified (P.ByModuleName moduleName) name) | moduleName == moduleName' = Just name
     disqualifyIfInModule (P.Qualified (P.BySourcePos _) name) = Just name
     disqualifyIfInModule _ = Nothing
+
+indexFixity :: Connection -> P.ModuleName -> P.Declaration -> IO ()
+indexFixity conn moduleName' = \case
+  P.FixityDeclaration _ (Left (P.ValueFixity (P.Fixity assoc prec) (P.Qualified (P.ByModuleName val_mod) name) op)) -> 
+    SQL.executeNamed
+      conn
+      ( SQL.Query
+          "INSERT INTO value_operators (module_name, op_name, alias_module_name, alias, associativity, precedence) \
+          \ VALUES (:module_name, :op_name, :alias_module_name, :alias, :associativity, :precedence)"
+      )
+      [ ":module_name" :=  P.runModuleName moduleName',
+        ":op_name" := P.runOpName op,
+        ":alias_module_name" :=  P.runModuleName val_mod,
+        ":alias" := A.encode name,
+        ":associativity" := P.showAssoc assoc,
+        ":precedence" := prec
+      ]
+  P.FixityDeclaration _ (Right (P.TypeFixity (P.Fixity assoc prec) (P.Qualified (P.ByModuleName ty_mod) name) op)) ->
+    SQL.executeNamed 
+     conn 
+     ( SQL.Query
+         "INSERT INTO type_operators (module_name, op_name, alias_module_name, alias, associativity, precedence) \
+         \ VALUES (:module_name, :op_name, :alias_module_name, :alias, :associativity, :precedence)"
+     )
+     [ ":module_name" :=  P.runModuleName moduleName',
+       ":op_name" := P.runOpName op,
+       ":alias_module_name" :=  P.runModuleName ty_mod,
+       ":alias" := A.encode name,
+       ":associativity" := P.showAssoc assoc,
+       ":precedence" := prec
+     ]
+  _ -> pure ()
 
 findMap :: (a -> Maybe b) -> [a] -> Maybe b
 findMap f = listToMaybe . mapMaybe f
@@ -332,6 +354,8 @@ initDb conn = do
   SQL.execute_ conn "CREATE TABLE IF NOT EXISTS available_srcs (path TEXT PRIMARY KEY NOT NULL, UNIQUE(path) on conflict replace)"
   SQL.execute_ conn "CREATE TABLE IF NOT EXISTS export_environments (path TEXT PRIMARY KEY NOT NULL, hash INT NOT NULL, value BLOB NOT NULL, UNIQUE(path) on conflict replace)"
   SQL.execute_ conn "CREATE TABLE IF NOT EXISTS environments (path TEXT PRIMARY KEY NOT NULL, hash INT NOT NULL, value BLOB NOT NULL, UNIQUE(path) on conflict replace)"
+  SQL.execute_ conn "CREATE TABLE IF NOT EXISTS value_operators (module_name TEXT references ast_modules(module_name) ON DELETE CASCADE, op_name TEXT, alias_module_name TEXT, alias TEXT, associativity TEXT, precedence INTEGER, UNIQUE(module_name, op_name) on conflict replace)"
+  SQL.execute_ conn "CREATE TABLE IF NOT EXISTS type_operators (module_name TEXT references ast_modules(module_name) ON DELETE CASCADE, op_name TEXT, alias_module_name TEXT, alias TEXT, associativity TEXT, precedence INTEGER, UNIQUE(module_name, op_name) on conflict replace)"
   initEnvTables conn
   addDbIndexes conn
 
@@ -359,7 +383,10 @@ dropTables conn = do
   dropEnvTables conn
 
 indexExportedEnv :: (MonadIO m) => P.ModuleName -> E.Environment -> Maybe [DeclarationRef] -> Connection -> m ()
-indexExportedEnv moduleName env refs conn = liftIO do
+indexExportedEnv moduleName env refs conn = do 
+ when (moduleName == P.ModuleName "Data.Unit") do
+   putErrLn $ T.intercalate "\n" . fmap T.pack $ P.debugEnv env
+ liftIO do
   deleteModuleEnv
   envFromModule E.names & filter nameExported & mapConcurrently_ (uncurry $ insertEnvValue conn)
   envFromModule E.types & filter typeExported & mapConcurrently_ (uncurry $ insertType conn)
@@ -414,69 +441,6 @@ indexExportedEnv moduleName env refs conn = liftIO do
       P.TypeRef _ _ ctrs -> maybe False (elem (P.disqualify k)) ctrs
       _ -> False
 
-selectEnv :: (MonadIO m) => Connection -> [P.ModuleName] -> m E.Environment
-selectEnv conn deps = do
-  values <- liftIO $ join <$> mapConcurrently (selectModuleEnvValues conn) deps
-  types <- liftIO $ join <$> mapConcurrently (selectModuleEnvTypes conn) deps
-  dataConstructors <- liftIO $ join <$> mapConcurrently (selectModuleDataConstructors conn) deps
-  typeSynonyms <- liftIO $ join <$> mapConcurrently (selectModuleTypeSynonyms conn) deps
-  typeClasses <- liftIO $ join <$> mapConcurrently (selectModuleTypeClasses conn) deps
-  pure
-    E.initEnvironment
-      { E.names = Map.fromList values,
-        E.types = Map.fromList types,
-        E.dataConstructors = Map.fromList dataConstructors,
-        E.typeSynonyms = Map.fromList typeSynonyms,
-        E.typeClasses = Map.fromList typeClasses
-      }
-
-selectEnvFromImports :: (MonadIO m) => Connection -> P.Module -> P.Env -> m E.Environment
-selectEnvFromImports conn (P.Module _ _ moduleName' decls _) env = liftIO do
-  case Map.lookup moduleName' env of
-    Just (_, P.Imports {..}, _) -> do
-      names <- selectWithKeys importedValues selectEnvValue --  importedValues & Map.keys & mapConcurrently selectValues & fmap (Map.fromList . catMaybes) --  mapConcurrently (selectEnvValue conn) <&> catMaybes <&> _
-      types <- selectWithKeys importedTypes selectType
-      typeSynonyms <- selectWithKeys importedTypes selectTypeSynonym
-      dataConstructors <- selectWithKeys importedDataConstructors selectDataConstructor
-      typeClasses <- selectWithKeys importedTypeClasses selectTypeClass
-      dicts <- selectDictsByClassName conn dictionaryClassnames
-      pure $ E.Environment names (P.allPrimTypes <> types) dataConstructors typeSynonyms (P.typeClassDictionariesEnvMap dicts) (P.allPrimClasses <> typeClasses)
-    Nothing -> pure E.initEnvironment
-  where
-    selectWithKeys :: (Ord a) => Map.Map a x -> (Connection -> a -> IO (Maybe b)) -> IO (Map.Map a b)
-    selectWithKeys a sel = a & Map.keys & mapConcurrently selWithKey <&> Map.fromList . catMaybes
-      where
-        selWithKey key = do
-          val <- sel conn key
-          pure $ fmap (key,) val
-
-    dictionaryClassnames :: [P.Qualified (P.ProperName 'P.ClassName)]
-    dictionaryClassnames = execWriter . onDecls =<< decls
-      where
-        (onDecls, _, _) = P.everywhereOnValuesM pure onExpr pure
-
-        onExpr e = do
-          case e of
-            P.TypeClassDictionary c _ _ -> tell [constraintClass c]
-            P.DeferredDictionary c _ -> tell [c]
-            P.DerivedInstancePlaceholder c _ -> tell [c]
-            _ -> pure ()
-          pure e
-
--- selectValues :: Qualified P.Ident -> IO (Maybe (Qualified P.Ident, (P.SourceType, E.NameKind, E.NameVisibility)))
--- selectValues ident = do
---   val <- selectEnvValue conn ident
---   pure $ fmap (ident, ) val
-
--- selectValues :: [Qualified P.Ident] -> IO (Map (Qualified P.Ident) (P.SourceType, E.NameKind, E.NameVisibility))
--- selectValues = _
-
-type DbQualifer a = (P.ModuleName, a)
-
-toDbQualifer :: P.Qualified a -> DbQualifer a
-toDbQualifer (P.Qualified (P.ByModuleName mn) a) = (mn, a)
-toDbQualifer (P.Qualified (P.BySourcePos _) _) = internalError "toDbQualifer called with BySourcePos"
-
 type EnvValue = (P.SourceType, P.NameKind, P.NameVisibility)
 
 insertEnvValue :: Connection -> P.Qualified P.Ident -> EnvValue -> IO ()
@@ -485,22 +449,6 @@ insertEnvValue conn ident val =
     conn
     "INSERT OR REPLACE INTO env_values (module_name, ident, source_type, name_kind, name_visibility) VALUES (?, ?, ?, ?, ?)"
     (toDbQualifer ident :. val)
-
-selectEnvValue :: Connection -> P.Qualified P.Ident -> IO (Maybe (P.SourceType, P.NameKind, P.NameVisibility))
-selectEnvValue conn ident =
-  SQL.query
-    conn
-    "SELECT source_type, name_kind, name_visibility FROM env_values WHERE module_name = ? AND ident = ?"
-    (toDbQualifer ident)
-    <&> head
-
-selectModuleEnvValues :: Connection -> P.ModuleName -> IO [(P.Qualified P.Ident, (P.SourceType, P.NameKind, P.NameVisibility))]
-selectModuleEnvValues conn moduleName' =
-  SQL.query
-    conn
-    "SELECT ident, source_type, name_kind, name_visibility FROM env_values WHERE module_name = ?"
-    (SQL.Only moduleName')
-    <&> fmap (\(ident, st, nk, nv) -> (P.Qualified (P.ByModuleName moduleName') ident, (st, nk, nv)))
 
 type EnvType = (P.SourceType, P.TypeKind)
 
@@ -511,46 +459,12 @@ insertType conn ident val =
     "INSERT OR REPLACE INTO env_types (module_name, type_name, source_type, type_kind) VALUES (?, ?, ?, ?)"
     (toDbQualifer ident :. val)
 
-selectType :: Connection -> P.Qualified (P.ProperName 'P.TypeName) -> IO (Maybe EnvType)
-selectType conn ident =
-  SQL.query
-    conn
-    "SELECT source_type, type_kind FROM env_types WHERE module_name = ? AND type_name = ?"
-    (toDbQualifer ident)
-    <&> head
-
-selectModuleEnvTypes :: Connection -> P.ModuleName -> IO [(P.Qualified (P.ProperName 'P.TypeName), EnvType)]
-selectModuleEnvTypes conn moduleName' =
-  SQL.query
-    conn
-    "SELECT type_name, source_type, type_kind FROM env_types WHERE module_name = ?"
-    (SQL.Only moduleName')
-    <&> fmap (\(ty, st, tk) -> (P.Qualified (P.ByModuleName moduleName') ty, (st, tk)))
-
 insertDataConstructor :: Connection -> P.Qualified (P.ProperName 'P.ConstructorName) -> (P.DataDeclType, P.ProperName 'P.TypeName, P.SourceType, [P.Ident]) -> IO ()
 insertDataConstructor conn ident (ddt, ty, st, idents) =
   SQL.execute
     conn
     "INSERT OR REPLACE INTO env_data_constructors (module_name, constructor_name, data_decl_type, type_name, source_type, idents) VALUES (?, ?, ?, ?, ?, ?)"
     (toDbQualifer ident :. (ddt, ty, st, serialise idents))
-
-selectDataConstructor :: Connection -> P.Qualified (P.ProperName 'P.ConstructorName) -> IO (Maybe (P.DataDeclType, P.ProperName 'P.TypeName, P.SourceType, [P.Ident]))
-selectDataConstructor conn ident =
-  SQL.query
-    conn
-    "SELECT data_decl_type, type_name, source_type, idents FROM env_data_constructors WHERE module_name = ? AND constructor_name = ?"
-    (toDbQualifer ident)
-    <&> (head >>> fmap deserialiseIdents)
-  where
-    deserialiseIdents (ddt, ty, st, idents) = (ddt, ty, st, deserialise idents)
-
-selectModuleDataConstructors :: Connection -> P.ModuleName -> IO [(P.Qualified (P.ProperName 'P.ConstructorName), (P.DataDeclType, P.ProperName 'P.TypeName, P.SourceType, [P.Ident]))]
-selectModuleDataConstructors conn moduleName' =
-  SQL.query
-    conn
-    "SELECT constructor_name, data_decl_type, type_name, source_type, idents FROM env_data_constructors WHERE module_name = ?"
-    (SQL.Only moduleName')
-    <&> fmap (\(ctr, ddt, ty, st, idents) -> (P.Qualified (P.ByModuleName moduleName') ctr, (ddt, ty, st, deserialise idents)))
 
 insertTypeSynonym :: Connection -> P.Qualified (P.ProperName 'P.TypeName) -> ([(Text, Maybe P.SourceType)], P.SourceType) -> IO ()
 insertTypeSynonym conn ident (idents, st) =
@@ -559,24 +473,6 @@ insertTypeSynonym conn ident (idents, st) =
     "INSERT OR REPLACE INTO env_type_synonyms (module_name, type_name, idents, source_type) VALUES (?, ?, ?, ?)"
     (toDbQualifer ident :. (serialise idents, st))
 
-selectTypeSynonym :: Connection -> P.Qualified (P.ProperName 'P.TypeName) -> IO (Maybe ([(Text, Maybe P.SourceType)], P.SourceType))
-selectTypeSynonym conn ident =
-  SQL.query
-    conn
-    "SELECT idents, source_type FROM env_type_synonyms WHERE module_name = ? AND type_name = ?"
-    (toDbQualifer ident)
-    <&> (head >>> fmap deserialiseIdents)
-  where
-    deserialiseIdents (idents, st) = (deserialise idents, st)
-
-selectModuleTypeSynonyms :: Connection -> P.ModuleName -> IO [(P.Qualified (P.ProperName 'P.TypeName), ([(Text, Maybe P.SourceType)], P.SourceType))]
-selectModuleTypeSynonyms conn moduleName' =
-  SQL.query
-    conn
-    "SELECT type_name, idents, source_type FROM env_type_synonyms WHERE module_name = ?"
-    (SQL.Only moduleName')
-    <&> fmap (\(ty, idents, st) -> (P.Qualified (P.ByModuleName moduleName') ty, (deserialise idents, st)))
-
 insertTypeClass :: Connection -> P.Qualified (P.ProperName 'P.ClassName) -> P.TypeClassData -> IO ()
 insertTypeClass conn ident tcd =
   SQL.execute
@@ -584,49 +480,12 @@ insertTypeClass conn ident tcd =
     "INSERT OR REPLACE INTO env_type_classes (module_name, class_name, class) VALUES (?, ?, ?)"
     (toDbQualifer ident :. SQL.Only tcd)
 
-selectTypeClass :: Connection -> P.Qualified (P.ProperName 'P.ClassName) -> IO (Maybe P.TypeClassData)
-selectTypeClass conn ident =
-  SQL.query
-    conn
-    "SELECT class FROM env_type_classes WHERE module_name = ? AND class_name = ?"
-    (toDbQualifer ident)
-    <&> (fmap SQL.fromOnly . head)
-
-selectModuleTypeClasses :: Connection -> P.ModuleName -> IO [(P.Qualified (P.ProperName 'P.ClassName), P.TypeClassData)]
-selectModuleTypeClasses conn moduleName' =
-  SQL.query
-    conn
-    "SELECT class_name, class FROM env_type_classes WHERE module_name = ?"
-    (SQL.Only moduleName')
-    <&> fmap (first (P.Qualified (P.ByModuleName moduleName')))
-
 insertNamedDict :: Connection -> NamedDict -> IO ()
 insertNamedDict conn dict =
   SQL.execute
     conn
     "INSERT OR REPLACE INTO env_type_class_instances (module_name, instance_name, class_name, dict) VALUES (?, ?, ?, ?)"
     (toDbQualifer (tcdValue dict) :. (tcdClassName dict, serialise dict))
-
-selectDictsByClassName :: Connection -> [P.Qualified (P.ProperName 'P.ClassName)] -> IO [NamedDict]
-selectDictsByClassName conn classNames =
-  SQL.query 
-    conn
-    "SELECT dict FROM env_type_class_instances WHERE class_name IN (SELECT value FROM json_each(?))"
-    (SQL.Only $ A.encode classNames)
-    <&> fmap (SQL.fromOnly >>> deserialise)
-
-
--- insertTypeClassInstance ::
---   Connection ->
---   P.Qualified (P.ProperName 'P.ClassName) ->
---   P.Qualified P.Ident ->
---   NEL.NonEmpty NamedDict ->
---   IO ()
--- insertTypeClassInstance conn className instanceName dicts =
---   SQL.execute
---     conn
---     "INSERT OR REPLACE INTO env_type_class_instances (module_name, instance_name, class_name, dicts) VALUES (?, ?, ?, ?)"
---     (toDbQualifer instanceName :. (className,  serialise dicts))
 
 initEnvTables :: Connection -> IO ()
 initEnvTables conn = do
