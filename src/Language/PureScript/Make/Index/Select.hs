@@ -23,6 +23,7 @@ import Language.PureScript.TypeClassDictionaries (NamedDict, TypeClassDictionary
 import Language.PureScript.Types qualified as P
 import Protolude hiding (moduleName)
 import Protolude.Partial (fromJust)
+import Language.PureScript.Names (coerceProperName)
 
 selectFixitiesFromModule :: Connection -> P.Module -> IO ([(P.ModuleName, [ExternsFixity])], [(P.ModuleName, [ExternsTypeFixity])])
 selectFixitiesFromModule conn (P.Module _ _ modName decls _) = do
@@ -58,10 +59,8 @@ selectValueFixity conn modName op =
     "SELECT associativity, precedence, op_name, alias FROM value_operators WHERE op_name = ? and module_name = ?"
     (P.disqualify op, m)
     <&> fmap (m,) . head
-    where 
-      m = fromMaybe modName $ P.getQual op
-
-
+  where
+    m = fromMaybe modName $ P.getQual op
 
 selectTypeFixities :: Connection -> P.ModuleName -> [P.Qualified (P.OpName 'P.TypeOpName)] -> IO [(P.ModuleName, [ExternsTypeFixity])]
 selectTypeFixities conn modName ops = collectModuleNames . catMaybes <$> mapConcurrently (selectTypeFixity conn modName) ops
@@ -73,31 +72,14 @@ selectTypeFixity conn modName op =
     "SELECT  associativity, precedence, op_name, alias FROM type_operators WHERE op_name = ? and module_name = ?"
     (P.disqualify op, m)
     <&> fmap (m,) . head
-    where 
-      m = fromMaybe modName $ P.getQual op
-
+  where
+    m = fromMaybe modName $ P.getQual op
 
 collectModuleNames :: [(P.ModuleName, a)] -> [(P.ModuleName, [a])]
 collectModuleNames = Map.toList . Map.fromListWith (<>) . fmap (fmap pure)
 
-selectEnv :: (MonadIO m) => Connection -> [P.ModuleName] -> m E.Environment
-selectEnv conn deps = do
-  values <- liftIO $ join <$> mapConcurrently (selectModuleEnvValues conn) deps
-  types <- liftIO $ join <$> mapConcurrently (selectModuleEnvTypes conn) deps
-  dataConstructors <- liftIO $ join <$> mapConcurrently (selectModuleDataConstructors conn) deps
-  typeSynonyms <- liftIO $ join <$> mapConcurrently (selectModuleTypeSynonyms conn) deps
-  typeClasses <- liftIO $ join <$> mapConcurrently (selectModuleTypeClasses conn) deps
-  pure
-    E.initEnvironment
-      { E.names = Map.fromList values,
-        E.types = Map.fromList types,
-        E.dataConstructors = Map.fromList dataConstructors,
-        E.typeSynonyms = Map.fromList typeSynonyms,
-        E.typeClasses = Map.fromList typeClasses
-      }
-
 selectEnvFromImports :: (MonadIO m) => Connection -> P.Module -> m E.Environment
-selectEnvFromImports conn (P.Module _ _ _ decls _) = liftIO do
+selectEnvFromImports conn (P.Module _ _ _mName' decls _) = liftIO do
   envFns :: [E.Environment -> E.Environment] <- forConcurrently decls \case
     P.ImportDeclaration _ mName idt _ -> do
       case idt of
@@ -107,7 +89,16 @@ selectEnvFromImports conn (P.Module _ _ _ decls _) = liftIO do
           pure $ foldl' (>>>) identity edits
         P.Hiding refs -> importModuleHiding refs mName
     _ -> pure identity
-  pure $ foldl' (&) E.initEnvironment envFns
+  let env = foldl' (&) E.initEnvironment envFns
+      -- imports :: [(P.ModuleName, P.ImportDeclarationType)]
+      -- imports =
+      --   decls >>= \case
+      --     P.ImportDeclaration _ mName idt _ -> [(mName, idt)]
+      --     _ -> []
+  -- when (mName' == P.ModuleName "Data.HeytingAlgebra") do
+  --   (putErrLn :: [Char] -> IO ()) $ intercalate "\n" $ fmap (show :: (P.ModuleName, P.ImportDeclarationType) -> [Char]) imports
+  --   putErrLn $ intercalate "\n" $ debugTypeClasses env
+  pure env
   where
     importModule = importModuleHiding []
 
@@ -153,10 +144,10 @@ selectEnvFromImports conn (P.Module _ _ _ decls _) = liftIO do
       typeSynonyms <-
         filter (\(ty, _) -> not $ Set.member (P.disqualify ty) hiddenTypes)
           <$> selectModuleTypeSynonyms conn mName
-      typeClasses <- 
+      typeClasses <-
         filter (\(tc, _) -> not $ Set.member (P.disqualify tc) hiddenTypeClasses)
           <$> selectModuleTypeClasses conn mName
-      instances <- 
+      instances <-
         filter (\inst -> not $ Set.member (P.disqualify $ tcdValue inst) hiddenInstances)
           <$> selectModuleClassInstances conn mName
       pure $ \env' ->
@@ -172,23 +163,30 @@ selectEnvFromImports conn (P.Module _ _ _ decls _) = liftIO do
     importRef :: P.ModuleName -> P.DeclarationRef -> IO (E.Environment -> E.Environment)
     importRef mName = \case
       P.TypeClassRef _ className -> do
-        let qual = P.Qualified (P.ByModuleName mName) className
+        let 
+           qual = P.Qualified (P.ByModuleName mName) className
+           typeQual = P.Qualified (P.ByModuleName mName) $ coerceProperName className
         typeClass <- selectTypeClass conn qual
-        pure $ \env' -> env' {E.typeClasses = E.typeClasses env' <> Map.fromList [(qual, fromJust typeClass)]}
+        type' <- selectType conn typeQual
+        pure $ \env' ->
+          env'
+            { E.typeClasses = E.typeClasses env' <> Map.fromList [(qual, fromJust typeClass)]
+            , E.types = E.types env' <> Map.fromList [(typeQual, fromJust type')]
+            }
       P.TypeRef _ tyName ctrs -> do
         let qual = P.Qualified (P.ByModuleName mName) tyName
         type' <- selectType conn qual
-        ctrVals <-  case ctrs of 
-          Nothing -> selectTypeDataConstructors conn qual 
+        ctrVals <- case ctrs of
+          Nothing -> selectTypeDataConstructors conn qual
           Just ctrs' -> forConcurrently ctrs' \ctr -> do
             let qual' = P.Qualified (P.ByModuleName mName) ctr
             val <- selectDataConstructor conn qual'
             pure (qual', fromJust val)
-
         pure $ \env' ->
           env'
             { E.types = E.types env' <> Map.fromList [(qual, fromJust type')],
               E.dataConstructors = E.dataConstructors env' <> Map.fromList ctrVals
+              -- E.typeClasses = E.typeClasses env' <> maybe mempty (\tc -> Map.fromList [(classQual, tc)]) class'
             }
       P.ValueRef _ ident -> do
         let qual = P.Qualified (P.ByModuleName mName) ident
@@ -253,8 +251,9 @@ selectTypeDataConstructors conn ident =
     <&> fmap (\(ctr, ddt, ty, st, idents) -> (P.Qualified (P.ByModuleName moduleName') ctr, (ddt, ty, st, deserialise idents)))
   where
     moduleName' = fromJust $ P.getQual ident
-  --   deserialiseIdents (ddt, ty, st, idents) = (ddt, ty, st, deserialise idents)
-    
+
+--   deserialiseIdents (ddt, ty, st, idents) = (ddt, ty, st, deserialise idents)
+
 selectModuleDataConstructors :: Connection -> P.ModuleName -> IO [(P.Qualified (P.ProperName 'P.ConstructorName), (P.DataDeclType, P.ProperName 'P.TypeName, P.SourceType, [P.Ident]))]
 selectModuleDataConstructors conn moduleName' =
   SQL.query

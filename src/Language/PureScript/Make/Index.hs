@@ -387,7 +387,7 @@ indexExportedEnv moduleName env refs conn = do
  liftIO do
   deleteModuleEnv
   envFromModule E.names & filter nameExported & mapConcurrently_ (uncurry $ insertEnvValue conn)
-  envFromModule E.types & filter typeExported & mapConcurrently_ (uncurry $ insertType conn)
+  envFromModule E.types & filter typeOrClassExported & mapConcurrently_ (uncurry $ insertType conn)
   envFromModule E.dataConstructors & filter dataConstructorExported & mapConcurrently_ (uncurry $ insertDataConstructor conn)
   envFromModule E.typeSynonyms & filter typeExported & mapConcurrently_ (uncurry $ insertTypeSynonym conn)
   envFromModule E.typeClasses & filter typeClassExported & mapConcurrently_ (uncurry $ insertTypeClass conn)
@@ -430,6 +430,9 @@ indexExportedEnv moduleName env refs conn = do
     typeClassExported = refMatch \k -> \case
       P.TypeClassRef _ className -> className == P.disqualify k
       _ -> False
+
+    typeOrClassExported :: (Qualified (P.ProperName 'P.TypeName), b) -> Bool
+    typeOrClassExported kv = typeExported kv || typeClassExported (first (fmap P.coerceProperName) kv)
 
     typeExported = refMatch \k -> \case
       P.TypeRef _ typeName _ -> typeName == P.disqualify k
