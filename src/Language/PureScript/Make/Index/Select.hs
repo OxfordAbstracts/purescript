@@ -4,7 +4,7 @@ module Language.PureScript.Make.Index.Select where
 
 import Codec.Serialise (deserialise)
 import Control.Arrow ((>>>))
-import Control.Concurrent.Async.Lifted (forConcurrently, mapConcurrently)
+import Control.Concurrent.Async.Lifted (forConcurrently)
 import Data.Aeson qualified as A
 import Data.ByteString.Lazy qualified as Lazy
 import Data.Map qualified as Map
@@ -25,6 +25,7 @@ import Language.PureScript.TypeClassDictionaries (NamedDict, TypeClassDictionary
 import Language.PureScript.Types qualified as P
 import Protolude hiding (moduleName)
 import Protolude.Partial (fromJust)
+import Data.Text qualified as T
 
 selectFixitiesFromModuleImportsAndDecls :: Connection -> P.Module -> IO ([(P.ModuleName, [ExternsFixity])], [(P.ModuleName, [ExternsTypeFixity])])
 selectFixitiesFromModuleImportsAndDecls conn module' = do
@@ -52,7 +53,7 @@ getModuleFixities (P.Module _ _ _ decls _) = (externsFixitiesInModule, externsTy
           _ -> []
 
 selectFixitiesFromModuleImports :: Connection -> P.Module -> IO ([(P.ModuleName, [ExternsFixity])], [(P.ModuleName, [ExternsTypeFixity])])
-selectFixitiesFromModuleImports conn (P.Module _ _ _ decls _) =  do
+selectFixitiesFromModuleImports conn (P.Module _ _ _ decls _) = do
   valueOps <- catMaybes <$> forConcurrently decls (onImports (selectImportValueFixities conn))
   typeOps <- catMaybes <$> forConcurrently decls (onImports (selectImportTypeFixities conn))
   pure (valueOps, typeOps)
@@ -78,7 +79,7 @@ refValueOp = \case
   _ -> Nothing
 
 selectValueFixitiesFromModule :: Connection -> P.ModuleName -> IO (P.ModuleName, [ExternsFixity])
-selectValueFixitiesFromModule conn modName =  do
+selectValueFixitiesFromModule conn modName = do
   (modName,)
     <$> SQL.query
       conn
@@ -87,7 +88,7 @@ selectValueFixitiesFromModule conn modName =  do
 
 selectExplicitValueFixitiesFromModule :: Connection -> P.ModuleName -> [P.OpName 'P.ValueOpName] -> IO (P.ModuleName, [ExternsFixity])
 selectExplicitValueFixitiesFromModule _ modName [] = pure (modName, [])
-selectExplicitValueFixitiesFromModule conn modName ops =  do
+selectExplicitValueFixitiesFromModule conn modName ops = do
   (modName,)
     <$> SQL.query
       conn
@@ -96,7 +97,7 @@ selectExplicitValueFixitiesFromModule conn modName ops =  do
 
 selectNonHiddenValueFixitiesFromModule :: Connection -> P.ModuleName -> [P.OpName 'P.ValueOpName] -> IO (P.ModuleName, [ExternsFixity])
 selectNonHiddenValueFixitiesFromModule conn modName [] = selectValueFixitiesFromModule conn modName
-selectNonHiddenValueFixitiesFromModule conn modName ops =  do
+selectNonHiddenValueFixitiesFromModule conn modName ops = do
   (modName,)
     <$> SQL.query
       conn
@@ -131,7 +132,7 @@ selectTypeFixitiesFromModule conn modName = do
 
 selectExplicitTypeFixitiesFromModule :: Connection -> P.ModuleName -> [P.OpName 'P.TypeOpName] -> IO (P.ModuleName, [ExternsTypeFixity])
 selectExplicitTypeFixitiesFromModule _ modName [] = pure (modName, [])
-selectExplicitTypeFixitiesFromModule conn modName ops =  do
+selectExplicitTypeFixitiesFromModule conn modName ops = do
   (modName,)
     <$> SQL.query
       conn
@@ -140,25 +141,12 @@ selectExplicitTypeFixitiesFromModule conn modName ops =  do
 
 selectNonHiddenTypeFixitiesFromModule :: Connection -> P.ModuleName -> [P.OpName 'P.TypeOpName] -> IO (P.ModuleName, [ExternsTypeFixity])
 selectNonHiddenTypeFixitiesFromModule conn modName [] = selectTypeFixitiesFromModule conn modName
-selectNonHiddenTypeFixitiesFromModule conn modName ops =  do
+selectNonHiddenTypeFixitiesFromModule conn modName ops = do
   (modName,)
     <$> SQL.query
       conn
       "SELECT associativity, precedence, op_name, alias_module_name, alias FROM type_operators WHERE module_name = ? AND op_name NOT IN (SELECT value FROM json_each(?))"
       (modName, decodeUtf8 $ Lazy.toStrict $ A.encode (fmap P.runOpName ops))
-
-selectValueFixitiesFromNames :: Connection -> P.ModuleName -> [P.Qualified (P.OpName 'P.ValueOpName)] -> IO [(P.ModuleName, [ExternsFixity])]
-selectValueFixitiesFromNames conn modName ops = collectModuleNames . catMaybes <$> mapConcurrently (selectValueFixity conn modName) ops
-
-selectValueFixity :: Connection -> P.ModuleName -> P.Qualified (P.OpName 'P.ValueOpName) -> IO (Maybe (P.ModuleName, ExternsFixity))
-selectValueFixity conn _modName (P.Qualified (P.ByModuleName m) op) =  do
-  SQL.query
-    conn
-    "SELECT associativity, precedence, op_name, alias_module_name, alias FROM value_operators WHERE op_name = ? and module_name = ?"
-    (op, m)
-    <&> fmap (m,) . head
-selectValueFixity _ _ _ = pure Nothing
-
 
 collectModuleNames :: (Ord a) => [(P.ModuleName, a)] -> [(P.ModuleName, [a])]
 collectModuleNames = Map.toList . Map.fromListWith (<>) . fmap (fmap pure) . ordNub
@@ -274,7 +262,27 @@ selectEnvFromImports conn (P.Module _ _ _ decls _) = liftIO do
         pure $ \env' -> env' {E.typeClassDictionaries = E.typeClassDictionaries env' <> P.typeClassDictionariesEnvMap [fromJust val]}
       P.ModuleRef _ m -> importModule m
       P.ReExportRef _ _ ref -> importRef mName ref
-      _ -> pure identity
+      P.ValueOpRef _ opName -> do
+        (aliasModName, alias) <- fromJust <$> selectValueOperatorAlias conn mName opName
+        if isUpper $ T.head alias
+          then do
+            let qual = P.Qualified (P.ByModuleName aliasModName) (P.ProperName alias)
+            val <- selectDataConstructor conn qual
+            pure $ \env' -> env' {E.dataConstructors = E.dataConstructors env' <> Map.fromList [(qual, fromJust val)]}
+          else do
+            let qual = P.Qualified (P.ByModuleName aliasModName) (P.Ident alias)
+            val <- selectEnvValue conn qual
+            pure $ \env' -> env' {E.names = E.names env' <> Map.fromList [(qual, fromJust val)]}
+      P.TypeOpRef _ opName -> do 
+        (aliasModName, alias) <- fromJust <$> selectTypeOperatorAlias conn mName opName
+        let qual = P.Qualified (P.ByModuleName aliasModName) alias
+        val <- selectType conn qual
+        pure $ \env' -> 
+          env' 
+            { E.types = E.types env' <> Map.fromList [(qual, fromJust val)]
+            }
+
+
 
 selectEnvValue :: Connection -> P.Qualified P.Ident -> IO (Maybe (P.SourceType, P.NameKind, P.NameVisibility))
 selectEnvValue conn ident = do
@@ -376,7 +384,7 @@ selectClassInstance ::
   Connection ->
   P.Qualified P.Ident ->
   IO (Maybe NamedDict)
-selectClassInstance conn ident =  do
+selectClassInstance conn ident = do
   SQL.query
     conn
     "SELECT dict FROM env_type_class_instances WHERE module_name = ? AND ident = ?"
@@ -391,6 +399,21 @@ selectModuleClassInstances conn moduleName' = do
     (SQL.Only moduleName')
     <&> fmap (SQL.fromOnly >>> deserialise)
 
+selectValueOperatorAlias :: Connection -> P.ModuleName -> P.OpName 'P.ValueOpName -> IO (Maybe (P.ModuleName, Text))
+selectValueOperatorAlias conn modName opName = do
+  SQL.query
+    conn
+    "SELECT alias_module_name, alias FROM value_operators WHERE module_name = ? AND op_name = ?"
+    (modName, P.runOpName opName)
+    <&> head
+
+selectTypeOperatorAlias :: Connection -> P.ModuleName -> P.OpName 'P.TypeOpName -> IO (Maybe (P.ModuleName, P.ProperName 'P.TypeName))
+selectTypeOperatorAlias conn modName opName = do
+  SQL.query
+    conn
+    "SELECT alias_module_name, alias FROM type_operators WHERE module_name = ? AND op_name = ?"
+    (modName, P.runOpName opName)
+    <&> head
 
 
 type DbQualifer a = (P.ModuleName, a)

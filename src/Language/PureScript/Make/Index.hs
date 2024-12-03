@@ -20,7 +20,6 @@ where
 
 import Codec.Serialise (serialise)
 import Control.Concurrent.Async.Lifted (mapConcurrently_)
-import Data.Aeson qualified as A
 import Data.List (partition)
 import Data.Map qualified as Map
 import Data.Set qualified as Set
@@ -209,7 +208,7 @@ indexFixity conn moduleName' = \case
       [ ":module_name" := P.runModuleName moduleName',
         ":op_name" := P.runOpName op,
         ":alias_module_name" := P.runModuleName ty_mod,
-        ":alias" := A.encode name,
+        ":alias" := name,
         ":associativity" := P.showAssoc assoc,
         ":precedence" := prec
       ]
