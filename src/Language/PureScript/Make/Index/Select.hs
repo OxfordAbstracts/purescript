@@ -27,7 +27,7 @@ import Protolude hiding (moduleName)
 import Protolude.Partial (fromJust)
 
 selectFixitiesFromModuleImportsAndDecls :: Connection -> P.Module -> IO ([(P.ModuleName, [ExternsFixity])], [(P.ModuleName, [ExternsTypeFixity])])
-selectFixitiesFromModuleImportsAndDecls conn module' = labelError "selectFixitiesFromModuleImportsAndDecls" $ do
+selectFixitiesFromModuleImportsAndDecls conn module' = do
   (fixitiesFromImports, typeFixitiesFromImports) <- selectFixitiesFromModuleImports conn module'
   let (fixitiesFromDecls, typeFixitiesFromDecls) = getModuleFixities module'
   pure ((P.getModuleName module', fixitiesFromDecls) : fixitiesFromImports, (P.getModuleName module', typeFixitiesFromDecls) : typeFixitiesFromImports)
@@ -52,7 +52,7 @@ getModuleFixities (P.Module _ _ _ decls _) = (externsFixitiesInModule, externsTy
           _ -> []
 
 selectFixitiesFromModuleImports :: Connection -> P.Module -> IO ([(P.ModuleName, [ExternsFixity])], [(P.ModuleName, [ExternsTypeFixity])])
-selectFixitiesFromModuleImports conn (P.Module _ _ _ decls _) = labelError "selectFixitiesFromModuleImports" $ do
+selectFixitiesFromModuleImports conn (P.Module _ _ _ decls _) =  do
   valueOps <- catMaybes <$> forConcurrently decls (onImports (selectImportValueFixities conn))
   typeOps <- catMaybes <$> forConcurrently decls (onImports (selectImportTypeFixities conn))
   pure (valueOps, typeOps)
@@ -63,7 +63,7 @@ selectFixitiesFromModuleImports conn (P.Module _ _ _ decls _) = labelError "sele
       _ -> pure Nothing
 
 selectImportValueFixities :: Connection -> P.ModuleName -> ImportDeclarationType -> IO (P.ModuleName, [ExternsFixity])
-selectImportValueFixities conn modName = labelError "selectImportValueFixities" . \case
+selectImportValueFixities conn modName = \case
   P.Implicit -> selectValueFixitiesFromModule conn modName
   P.Explicit refs | refsValueOps refs /= [] -> selectExplicitValueFixitiesFromModule conn modName (refsValueOps refs)
   P.Hiding refs -> selectNonHiddenValueFixitiesFromModule conn modName (refsValueOps refs)
@@ -78,7 +78,7 @@ refValueOp = \case
   _ -> Nothing
 
 selectValueFixitiesFromModule :: Connection -> P.ModuleName -> IO (P.ModuleName, [ExternsFixity])
-selectValueFixitiesFromModule conn modName = labelError "selectValueFixitiesFromModule" do
+selectValueFixitiesFromModule conn modName =  do
   (modName,)
     <$> SQL.query
       conn
@@ -87,7 +87,7 @@ selectValueFixitiesFromModule conn modName = labelError "selectValueFixitiesFrom
 
 selectExplicitValueFixitiesFromModule :: Connection -> P.ModuleName -> [P.OpName 'P.ValueOpName] -> IO (P.ModuleName, [ExternsFixity])
 selectExplicitValueFixitiesFromModule _ modName [] = pure (modName, [])
-selectExplicitValueFixitiesFromModule conn modName ops = labelError "selectExplicitValueFixitiesFromModule" do
+selectExplicitValueFixitiesFromModule conn modName ops =  do
   (modName,)
     <$> SQL.query
       conn
@@ -96,7 +96,7 @@ selectExplicitValueFixitiesFromModule conn modName ops = labelError "selectExpli
 
 selectNonHiddenValueFixitiesFromModule :: Connection -> P.ModuleName -> [P.OpName 'P.ValueOpName] -> IO (P.ModuleName, [ExternsFixity])
 selectNonHiddenValueFixitiesFromModule conn modName [] = selectValueFixitiesFromModule conn modName
-selectNonHiddenValueFixitiesFromModule conn modName ops = labelError "selectNonHiddenValueFixitiesFromModule" do
+selectNonHiddenValueFixitiesFromModule conn modName ops =  do
   (modName,)
     <$> SQL.query
       conn
@@ -131,7 +131,7 @@ selectTypeFixitiesFromModule conn modName = do
 
 selectExplicitTypeFixitiesFromModule :: Connection -> P.ModuleName -> [P.OpName 'P.TypeOpName] -> IO (P.ModuleName, [ExternsTypeFixity])
 selectExplicitTypeFixitiesFromModule _ modName [] = pure (modName, [])
-selectExplicitTypeFixitiesFromModule conn modName ops = labelError "selectExplicitTypeFixitiesFromModule" do
+selectExplicitTypeFixitiesFromModule conn modName ops =  do
   (modName,)
     <$> SQL.query
       conn
@@ -140,7 +140,7 @@ selectExplicitTypeFixitiesFromModule conn modName ops = labelError "selectExplic
 
 selectNonHiddenTypeFixitiesFromModule :: Connection -> P.ModuleName -> [P.OpName 'P.TypeOpName] -> IO (P.ModuleName, [ExternsTypeFixity])
 selectNonHiddenTypeFixitiesFromModule conn modName [] = selectTypeFixitiesFromModule conn modName
-selectNonHiddenTypeFixitiesFromModule conn modName ops = labelError "selectNonHiddenTypeFixitiesFromModule" do
+selectNonHiddenTypeFixitiesFromModule conn modName ops =  do
   (modName,)
     <$> SQL.query
       conn
@@ -151,7 +151,7 @@ selectValueFixitiesFromNames :: Connection -> P.ModuleName -> [P.Qualified (P.Op
 selectValueFixitiesFromNames conn modName ops = collectModuleNames . catMaybes <$> mapConcurrently (selectValueFixity conn modName) ops
 
 selectValueFixity :: Connection -> P.ModuleName -> P.Qualified (P.OpName 'P.ValueOpName) -> IO (Maybe (P.ModuleName, ExternsFixity))
-selectValueFixity conn _modName (P.Qualified (P.ByModuleName m) op) = labelError "selectValueFixity" do
+selectValueFixity conn _modName (P.Qualified (P.ByModuleName m) op) =  do
   SQL.query
     conn
     "SELECT associativity, precedence, op_name, alias_module_name, alias FROM value_operators WHERE op_name = ? and module_name = ?"
@@ -159,20 +159,6 @@ selectValueFixity conn _modName (P.Qualified (P.ByModuleName m) op) = labelError
     <&> fmap (m,) . head
 selectValueFixity _ _ _ = pure Nothing
 
--- where
---   m = fromMaybe modName $ P.getQual op
-
-selectTypeFixitiesFromNames :: Connection -> P.ModuleName -> [P.Qualified (P.OpName 'P.TypeOpName)] -> IO [(P.ModuleName, [ExternsTypeFixity])]
-selectTypeFixitiesFromNames conn modName ops = collectModuleNames . catMaybes <$> mapConcurrently (selectTypeFixity conn modName) ops
-
-selectTypeFixity :: Connection -> P.ModuleName -> P.Qualified (P.OpName 'P.TypeOpName) -> IO (Maybe (P.ModuleName, ExternsTypeFixity))
-selectTypeFixity conn _modName (P.Qualified (P.ByModuleName m) op) =
-  SQL.query
-    conn
-    "SELECT  associativity, precedence, op_name, alias_module_name, alias FROM type_operators WHERE op_name = ? and module_name = ?"
-    (op, m)
-    <&> fmap (m,) . head
-selectTypeFixity _ _ _ = pure Nothing
 
 collectModuleNames :: (Ord a) => [(P.ModuleName, a)] -> [(P.ModuleName, [a])]
 collectModuleNames = Map.toList . Map.fromListWith (<>) . fmap (fmap pure) . ordNub
@@ -291,7 +277,7 @@ selectEnvFromImports conn (P.Module _ _ _ decls _) = liftIO do
       _ -> pure identity
 
 selectEnvValue :: Connection -> P.Qualified P.Ident -> IO (Maybe (P.SourceType, P.NameKind, P.NameVisibility))
-selectEnvValue conn ident = labelError "selectEnvValue" do
+selectEnvValue conn ident = do
   SQL.query
     conn
     "SELECT source_type, name_kind, name_visibility FROM env_values WHERE module_name = ? AND ident = ?"
@@ -299,7 +285,7 @@ selectEnvValue conn ident = labelError "selectEnvValue" do
     <&> head
 
 selectModuleEnvValues :: Connection -> P.ModuleName -> IO [(P.Qualified P.Ident, (P.SourceType, P.NameKind, P.NameVisibility))]
-selectModuleEnvValues conn moduleName' = labelError "selectModuleEnvValues" do
+selectModuleEnvValues conn moduleName' = do
   SQL.query
     conn
     "SELECT ident, source_type, name_kind, name_visibility FROM env_values WHERE module_name = ?"
@@ -307,7 +293,7 @@ selectModuleEnvValues conn moduleName' = labelError "selectModuleEnvValues" do
     <&> fmap (\(ident, st, nk, nv) -> (P.Qualified (P.ByModuleName moduleName') ident, (st, nk, nv)))
 
 selectType :: Connection -> P.Qualified (P.ProperName 'P.TypeName) -> IO (Maybe (P.SourceType, P.TypeKind))
-selectType conn ident = labelError "selectType" do
+selectType conn ident = do
   SQL.query
     conn
     "SELECT source_type, type_kind FROM env_types WHERE module_name = ? AND type_name = ?"
@@ -315,7 +301,7 @@ selectType conn ident = labelError "selectType" do
     <&> head
 
 selectModuleEnvTypes :: Connection -> P.ModuleName -> IO [(P.Qualified (P.ProperName 'P.TypeName), (P.SourceType, P.TypeKind))]
-selectModuleEnvTypes conn moduleName' = labelError "selectModuleEnvTypes" do
+selectModuleEnvTypes conn moduleName' = do
   SQL.query
     conn
     "SELECT type_name, source_type, type_kind FROM env_types WHERE module_name = ?"
@@ -323,7 +309,7 @@ selectModuleEnvTypes conn moduleName' = labelError "selectModuleEnvTypes" do
     <&> fmap (\(ty, st, tk) -> (P.Qualified (P.ByModuleName moduleName') ty, (st, tk)))
 
 selectDataConstructor :: Connection -> P.Qualified (P.ProperName 'P.ConstructorName) -> IO (Maybe (P.DataDeclType, P.ProperName 'P.TypeName, P.SourceType, [P.Ident]))
-selectDataConstructor conn ident = labelError "selectDataConstructor" do
+selectDataConstructor conn ident = do
   SQL.query
     conn
     "SELECT data_decl_type, type_name, source_type, idents FROM env_data_constructors WHERE module_name = ? AND constructor_name = ?"
@@ -333,7 +319,7 @@ selectDataConstructor conn ident = labelError "selectDataConstructor" do
     deserialiseIdents (ddt, ty, st, idents) = (ddt, ty, st, deserialise idents)
 
 selectTypeDataConstructors :: Connection -> P.Qualified (P.ProperName 'P.TypeName) -> IO [(P.Qualified (P.ProperName 'P.ConstructorName), (P.DataDeclType, P.ProperName 'P.TypeName, P.SourceType, [P.Ident]))]
-selectTypeDataConstructors conn ident = labelError "selectTypeDataConstructors" do
+selectTypeDataConstructors conn ident = do
   SQL.query
     conn
     "SELECT constructor_name, data_decl_type, type_name, source_type, idents FROM env_data_constructors WHERE module_name = ? AND type_name = ?"
@@ -345,7 +331,7 @@ selectTypeDataConstructors conn ident = labelError "selectTypeDataConstructors" 
 --   deserialiseIdents (ddt, ty, st, idents) = (ddt, ty, st, deserialise idents)
 
 selectModuleDataConstructors :: Connection -> P.ModuleName -> IO [(P.Qualified (P.ProperName 'P.ConstructorName), (P.DataDeclType, P.ProperName 'P.TypeName, P.SourceType, [P.Ident]))]
-selectModuleDataConstructors conn moduleName' = labelError "selectModuleDataConstructors" do
+selectModuleDataConstructors conn moduleName' = do
   SQL.query
     conn
     "SELECT constructor_name, data_decl_type, type_name, source_type, idents FROM env_data_constructors WHERE module_name = ?"
@@ -353,7 +339,7 @@ selectModuleDataConstructors conn moduleName' = labelError "selectModuleDataCons
     <&> fmap (\(ctr, ddt, ty, st, idents) -> (P.Qualified (P.ByModuleName moduleName') ctr, (ddt, ty, st, deserialise idents)))
 
 selectTypeSynonym :: Connection -> P.Qualified (P.ProperName 'P.TypeName) -> IO (Maybe ([(Text, Maybe P.SourceType)], P.SourceType))
-selectTypeSynonym conn ident = labelError "selectTypeSynonym" do
+selectTypeSynonym conn ident = do
   SQL.query
     conn
     "SELECT idents, source_type FROM env_type_synonyms WHERE module_name = ? AND type_name = ?"
@@ -363,7 +349,7 @@ selectTypeSynonym conn ident = labelError "selectTypeSynonym" do
     deserialiseIdents (idents, st) = (deserialise idents, st)
 
 selectModuleTypeSynonyms :: Connection -> P.ModuleName -> IO [(P.Qualified (P.ProperName 'P.TypeName), ([(Text, Maybe P.SourceType)], P.SourceType))]
-selectModuleTypeSynonyms conn moduleName' = labelError "selectModuleTypeSynonyms" do
+selectModuleTypeSynonyms conn moduleName' = do
   SQL.query
     conn
     "SELECT type_name, idents, source_type FROM env_type_synonyms WHERE module_name = ?"
@@ -371,7 +357,7 @@ selectModuleTypeSynonyms conn moduleName' = labelError "selectModuleTypeSynonyms
     <&> fmap (\(ty, idents, st) -> (P.Qualified (P.ByModuleName moduleName') ty, (deserialise idents, st)))
 
 selectTypeClass :: Connection -> P.Qualified (P.ProperName 'P.ClassName) -> IO (Maybe P.TypeClassData)
-selectTypeClass conn ident = labelError "selectTypeClass" do
+selectTypeClass conn ident = do
   SQL.query
     conn
     "SELECT class FROM env_type_classes WHERE module_name = ? AND class_name = ?"
@@ -379,7 +365,7 @@ selectTypeClass conn ident = labelError "selectTypeClass" do
     <&> (fmap SQL.fromOnly . head)
 
 selectModuleTypeClasses :: Connection -> P.ModuleName -> IO [(P.Qualified (P.ProperName 'P.ClassName), P.TypeClassData)]
-selectModuleTypeClasses conn moduleName' = labelError "selectModuleTypeClasses" do
+selectModuleTypeClasses conn moduleName' = do
   SQL.query
     conn
     "SELECT class_name, class FROM env_type_classes WHERE module_name = ?"
@@ -390,7 +376,7 @@ selectClassInstance ::
   Connection ->
   P.Qualified P.Ident ->
   IO (Maybe NamedDict)
-selectClassInstance conn ident =  labelError "selectClassInstance" do
+selectClassInstance conn ident =  do
   SQL.query
     conn
     "SELECT dict FROM env_type_class_instances WHERE module_name = ? AND ident = ?"
@@ -398,18 +384,13 @@ selectClassInstance conn ident =  labelError "selectClassInstance" do
     <&> (head >>> fmap (SQL.fromOnly >>> deserialise))
 
 selectModuleClassInstances :: Connection -> P.ModuleName -> IO [NamedDict]
-selectModuleClassInstances conn moduleName' = labelError "selectModuleClassInstances" do
+selectModuleClassInstances conn moduleName' = do
   SQL.query
     conn
     "SELECT dict FROM env_type_class_instances WHERE module_name = ?"
     (SQL.Only moduleName')
     <&> fmap (SQL.fromOnly >>> deserialise)
 
-
-labelError :: Text -> IO a -> IO a 
-labelError label action = catch action \(e :: SomeException) -> do 
-  putErrLn $ "Error: " <> label <> ": " <> show e
-  throwIO e
 
 
 type DbQualifer a = (P.ModuleName, a)
