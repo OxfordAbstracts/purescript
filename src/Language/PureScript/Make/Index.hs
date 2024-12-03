@@ -195,7 +195,7 @@ indexFixity conn moduleName' = \case
       [ ":module_name" :=  P.runModuleName moduleName',
         ":op_name" := P.runOpName op,
         ":alias_module_name" :=  P.runModuleName val_mod,
-        ":alias" := A.encode name,
+        ":alias" := either P.runIdent P.runProperName name,
         ":associativity" := P.showAssoc assoc,
         ":precedence" := prec
       ]
@@ -384,7 +384,7 @@ dropTables conn = do
 
 indexExportedEnv :: (MonadIO m) => P.ModuleName -> E.Environment -> Maybe [DeclarationRef] -> Connection -> m ()
 indexExportedEnv moduleName env refs conn = do 
- liftIO do
+ liftIO $ labelError "indexExportedEnv" do
   deleteModuleEnv
   envFromModule E.names & filter nameExported & mapConcurrently_ (uncurry $ insertEnvValue conn)
   envFromModule E.types & filter typeOrClassExported & mapConcurrently_ (uncurry $ insertType conn)
@@ -445,7 +445,7 @@ indexExportedEnv moduleName env refs conn = do
 type EnvValue = (P.SourceType, P.NameKind, P.NameVisibility)
 
 insertEnvValue :: Connection -> P.Qualified P.Ident -> EnvValue -> IO ()
-insertEnvValue conn ident val =
+insertEnvValue conn ident val = labelError "insertEnvValue" do
   SQL.execute
     conn
     "INSERT OR REPLACE INTO env_values (module_name, ident, source_type, name_kind, name_visibility) VALUES (?, ?, ?, ?, ?)"
@@ -454,39 +454,43 @@ insertEnvValue conn ident val =
 type EnvType = (P.SourceType, P.TypeKind)
 
 insertType :: Connection -> P.Qualified (P.ProperName 'P.TypeName) -> EnvType -> IO ()
-insertType conn ident val =
+insertType conn ident val = labelError "insertType" do
   SQL.execute
     conn
     "INSERT OR REPLACE INTO env_types (module_name, type_name, source_type, type_kind) VALUES (?, ?, ?, ?)"
     (toDbQualifer ident :. val)
 
 insertDataConstructor :: Connection -> P.Qualified (P.ProperName 'P.ConstructorName) -> (P.DataDeclType, P.ProperName 'P.TypeName, P.SourceType, [P.Ident]) -> IO ()
-insertDataConstructor conn ident (ddt, ty, st, idents) =
+insertDataConstructor conn ident (ddt, ty, st, idents) = labelError "insertDataConstructor" do
   SQL.execute
     conn
     "INSERT OR REPLACE INTO env_data_constructors (module_name, constructor_name, data_decl_type, type_name, source_type, idents) VALUES (?, ?, ?, ?, ?, ?)"
     (toDbQualifer ident :. (ddt, ty, st, serialise idents))
 
 insertTypeSynonym :: Connection -> P.Qualified (P.ProperName 'P.TypeName) -> ([(Text, Maybe P.SourceType)], P.SourceType) -> IO ()
-insertTypeSynonym conn ident (idents, st) =
+insertTypeSynonym conn ident (idents, st) = labelError "insertTypeSynonym" do
   SQL.execute
     conn
     "INSERT OR REPLACE INTO env_type_synonyms (module_name, type_name, idents, source_type) VALUES (?, ?, ?, ?)"
     (toDbQualifer ident :. (serialise idents, st))
 
 insertTypeClass :: Connection -> P.Qualified (P.ProperName 'P.ClassName) -> P.TypeClassData -> IO ()
-insertTypeClass conn ident tcd =
+insertTypeClass conn ident tcd = labelError "insertTypeClass" do
   SQL.execute
     conn
     "INSERT OR REPLACE INTO env_type_classes (module_name, class_name, class) VALUES (?, ?, ?)"
     (toDbQualifer ident :. SQL.Only tcd)
 
 insertNamedDict :: Connection -> NamedDict -> IO ()
-insertNamedDict conn dict =
+insertNamedDict conn dict = labelError "insertNamedDict" do
   SQL.execute
     conn
-    "INSERT OR REPLACE INTO env_type_class_instances (module_name, instance_name, class_name, dict) VALUES (?, ?, ?, ?)"
-    (toDbQualifer (tcdValue dict) :. (tcdClassName dict, serialise dict))
+    "INSERT OR REPLACE INTO env_type_class_instances (module_name, instance_name, class_module, class_name, dict) VALUES (?, ?, ?, ?, ?)"
+    (toDbQualifer (tcdValue dict) :. (clasMod, className, serialise dict))
+
+  where 
+    (clasMod, className) = toDbQualifer (tcdClassName dict)
+    
 
 initEnvTables :: Connection -> IO ()
 initEnvTables conn = do
@@ -495,7 +499,7 @@ initEnvTables conn = do
   SQL.execute_ conn "CREATE TABLE IF NOT EXISTS env_data_constructors (module_name TEXT, constructor_name TEXT, data_decl_type TEXT, type_name TEXT, source_type BLOB, idents BLOB, debug TEXT)"
   SQL.execute_ conn "CREATE TABLE IF NOT EXISTS env_type_synonyms (module_name TEXT, type_name TEXT, idents BLOB, source_type BLOB, debug TEXT)"
   SQL.execute_ conn "CREATE TABLE IF NOT EXISTS env_type_classes (module_name TEXT, class_name TEXT, class BLOB, debug TEXT)"
-  SQL.execute_ conn "CREATE TABLE IF NOT EXISTS env_type_class_instances (module_name TEXT, instance_name TEXT, class_name TEXT, dict BLOB, debug TEXT)"
+  SQL.execute_ conn "CREATE TABLE IF NOT EXISTS env_type_class_instances (module_name TEXT, instance_name TEXT, class_module TEXT, class_name TEXT, dict BLOB, debug TEXT)"
   addEnvIndexes conn
 
 addEnvIndexes :: Connection -> IO ()
@@ -514,3 +518,9 @@ dropEnvTables conn = do
   SQL.execute_ conn "DROP TABLE IF EXISTS env_data_constructors"
   SQL.execute_ conn "DROP TABLE IF EXISTS env_type_synonyms"
   SQL.execute_ conn "DROP TABLE IF EXISTS env_type_classes"
+
+
+labelError :: Text -> IO a -> IO a 
+labelError label action = catch action \(e :: SomeException) -> do 
+  putErrLn $ "Error: " <> label <> ": " <> show e
+  throwIO e

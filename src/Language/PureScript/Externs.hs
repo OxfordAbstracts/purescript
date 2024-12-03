@@ -40,6 +40,7 @@ import Language.PureScript.Types (SourceConstraint, SourceType, srcInstanceType)
 
 import Paths_purescript as Paths
 import Database.SQLite.Simple (FromRow (fromRow), field)
+import Control.Applicative ((<|>))
 
 -- | The data which will be serialized to an externs file
 data ExternsFile = ExternsFile
@@ -90,12 +91,19 @@ data ExternsFixity = ExternsFixity
   , efOperator :: OpName 'ValueOpName
   -- | The value the operator is an alias for
   , efAlias :: Qualified (Either Ident (ProperName 'ConstructorName))
-  } deriving (Show, Generic, NFData)
+  } deriving (Show, Eq, Ord, Generic, NFData)
 
 instance Serialise ExternsFixity
 
-instance FromRow ExternsFixity where 
-  fromRow = ExternsFixity <$> field <*> field <*> field <*> field
+instance FromRow ExternsFixity where
+  fromRow = do
+    assoc <- field
+    prec <- field
+    op <- field
+    aliasMod <- field
+    alias <- (Right <$> field) <|> (Left <$> field) 
+    pure $ ExternsFixity assoc prec op (Qualified (ByModuleName aliasMod) alias)
+    -- ExternsFixity <$> field <*> field <*> field <*> field
 
 -- | A type fixity declaration in an externs file
 data ExternsTypeFixity = ExternsTypeFixity
@@ -108,12 +116,17 @@ data ExternsTypeFixity = ExternsTypeFixity
   , efTypeOperator :: OpName 'TypeOpName
   -- | The value the operator is an alias for
   , efTypeAlias :: Qualified (ProperName 'TypeName)
-  } deriving (Show, Generic, NFData)
+  } deriving (Show, Eq, Ord, Generic, NFData)
 
 instance Serialise ExternsTypeFixity
 
-instance FromRow ExternsTypeFixity where 
-  fromRow = ExternsTypeFixity <$> field <*> field <*> field <*> field
+instance FromRow ExternsTypeFixity where
+  fromRow = do
+    assoc <- field
+    prec <- field
+    op <- field
+    aliasMod <- field
+    ExternsTypeFixity assoc prec op . Qualified (ByModuleName aliasMod) <$> field
 
 -- | A type or value declaration appearing in an externs file
 data ExternsDeclaration =

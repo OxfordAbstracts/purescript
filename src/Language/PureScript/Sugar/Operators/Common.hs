@@ -1,4 +1,5 @@
-module Language.PureScript.Sugar.Operators.Common where
+{-# OPTIONS_GHC -Wno-unused-top-binds #-}
+module Language.PureScript.Sugar.Operators.Common (Chain, matchOperators, token) where
 
 import Prelude
 
@@ -104,9 +105,10 @@ matchOperators isBinOp extractOp fromOp reapply modOpTable ops = parseChains
       opInfo :: M.Map (Qualified (OpName nameType)) (Integer, Associativity)
       opInfo = M.fromList $ concatMap (\(n, o) -> map (\(name, assoc) -> (name, (n, assoc))) o) (zip [0..] ops)
       opPrec :: Qualified (OpName nameType) -> Integer
-      opPrec = fst . fromJust . flip M.lookup opInfo
+      opPrec a = fst $ fromJust' a  $ M.lookup a opInfo
       opAssoc :: Qualified (OpName nameType) -> Associativity
-      opAssoc = snd . fromJust . flip M.lookup opInfo
+      opAssoc a = snd $ fromJust' a  $ M.lookup a opInfo 
+
       chainOpSpans :: M.Map (Qualified (OpName nameType)) (NEL.NonEmpty SourceSpan)
       chainOpSpans = foldr (\(ss, name) -> M.alter (Just . maybe (pure ss) (NEL.cons ss)) name) M.empty . mapMaybe fromOp $ rights chain
       opUsages :: Qualified (OpName nameType) -> Int
@@ -142,3 +144,9 @@ matchOperators isBinOp extractOp fromOp reapply modOpTable ops = parseChains
   mkPositionedError chainOpSpans grp =
     ErrorMessage
       [PositionedError (fromJust . flip M.lookup chainOpSpans =<< grp)]
+
+fromJust' :: Show a => a -> Maybe b -> b
+fromJust' a m = case m of 
+  Just b -> b
+  Nothing -> internalError $ "mkErrors: lookup not found for: " ++ show a
+        

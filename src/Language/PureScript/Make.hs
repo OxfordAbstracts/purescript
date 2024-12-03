@@ -1,4 +1,5 @@
 {-# OPTIONS_GHC -Wno-unused-top-binds #-}
+{-# OPTIONS_GHC -Wno-unused-imports #-}
 
 module Language.PureScript.Make
   ( -- * Make API
@@ -27,7 +28,7 @@ import Control.Monad.Writer.Class (MonadWriter (..), censor)
 import Control.Monad.Writer.Strict (MonadTrans (lift), runWriterT)
 import Data.Foldable (fold, for_)
 import Data.Function (on)
-import Data.List (foldl', sortOn)
+import Data.List (foldl', sortOn, intercalate)
 import Data.List.NonEmpty qualified as NEL
 import Data.Map qualified as M
 import Data.Maybe (fromMaybe)
@@ -48,10 +49,10 @@ import Language.PureScript.Make.Actions as Actions
 import Language.PureScript.Make.BuildPlan (BuildJobResult (..), BuildPlan (..), getResult)
 import Language.PureScript.Make.BuildPlan qualified as BuildPlan
 import Language.PureScript.Make.Cache qualified as Cache
-import Language.PureScript.Make.Index.Select (selectEnvFromImports, selectFixitiesFromModule)
+import Language.PureScript.Make.Index.Select (getModuleFixities, selectEnvFromImports, selectFixitiesFromModuleImportsAndDecls, selectFixitiesFromModuleImports)
 import Language.PureScript.Make.Monad as Monad
 import Language.PureScript.ModuleDependencies (DependencyDepth (..), moduleSignature, sortModules)
-import Language.PureScript.Names (ModuleName, isBuiltinModuleName, runModuleName)
+import Language.PureScript.Names (ModuleName(..), isBuiltinModuleName, runModuleName)
 import Language.PureScript.Renamer (renameInModule)
 import Language.PureScript.Sugar (Env, collapseBindingGroups, createBindingGroups, desugar, desugarCaseGuards, desugarUsingDb, externsEnv, primEnv)
 import Language.PureScript.TypeChecker (CheckState (..), emptyCheckState, typeCheckModule)
@@ -59,6 +60,8 @@ import Language.PureScript.TypeChecker.Monad qualified as P
 import System.Directory (doesFileExist)
 import System.FilePath (replaceExtension)
 import Prelude
+import Language.PureScript.Docs.Types qualified as Docs
+import Protolude (Print(putErrLn))
 
 -- | Rebuild a single module.
 --
@@ -177,8 +180,12 @@ rebuildModuleWithProvidedEnvDb initialCheckState MakeActions {..} conn exEnv env
   progress $ CompilingModule moduleName moduleIndex
   let withPrim = importPrim m
   lint withPrim
-  (ops, typeOps) <- liftIO $ selectFixitiesFromModule conn m
-
+  (ops, typeOps) <- liftIO $ selectFixitiesFromModuleImports conn m
+  -- when (moduleName == ModuleName "Data.NaturalTransformation") $ do 
+  --   putErrLn ( "ops:" :: T.Text)
+  --   putErrLn $ intercalate "\n" $ fmap show ops
+  --   putErrLn ( "type ops:" :: T.Text)
+  --   putErrLn $ intercalate "\n" $ fmap show typeOps
   ((Module ss coms _ elaborated exps, checkSt), nextVar) <-
     desugarAndTypeCheckDb initialCheckState withCheckStateOnError withCheckState moduleName withPrim exEnv env ops typeOps
   let env' = P.checkEnv checkSt
