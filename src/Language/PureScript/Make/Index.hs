@@ -386,7 +386,7 @@ indexExportedEnv moduleName env refs conn = liftIO do
   deleteModuleEnv
   envFromModule E.names & filter nameExported & mapConcurrently_ (uncurry $ insertEnvValue conn)
   envFromModule E.types & filter typeOrClassExported & mapConcurrently_ (uncurry $ insertType conn)
-  envFromModule E.dataConstructors & filter dataConstructorExported & mapConcurrently_ (uncurry $ insertDataConstructor conn)
+  envFromModule E.dataConstructors & filter dataConstructorExportedOrDict & mapConcurrently_ (uncurry $ insertDataConstructor conn)
   envFromModule E.typeSynonyms & filter typeExported & mapConcurrently_ (uncurry $ insertTypeSynonym conn)
   envFromModule E.typeClasses & filter typeClassExported & mapConcurrently_ (uncurry $ insertTypeClass conn)
   dicts
@@ -430,11 +430,19 @@ indexExportedEnv moduleName env refs conn = liftIO do
       _ -> False
 
     typeOrClassExported :: (Qualified (P.ProperName 'P.TypeName), b) -> Bool
-    typeOrClassExported kv = typeExported kv || typeClassExported (first (fmap P.coerceProperName) kv)
+    typeOrClassExported kv = 
+        P.isDictTypeName (P.disqualify $ fst kv)
+          || typeExported kv 
+          || typeClassExported (first (fmap P.coerceProperName) kv)
 
     typeExported = refMatch \k -> \case
       P.TypeRef _ typeName _ -> typeName == P.disqualify k
       _ -> False
+
+    dataConstructorExportedOrDict :: (Qualified (P.ProperName 'P.ConstructorName), b) -> Bool
+    dataConstructorExportedOrDict kv = 
+        P.isDictTypeName (P.disqualify $ fst kv)
+          || dataConstructorExported kv
 
     dataConstructorExported = refMatch \k -> \case
       P.TypeRef _ _ ctrs -> maybe False (elem (P.disqualify k)) ctrs
