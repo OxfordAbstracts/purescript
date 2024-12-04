@@ -42,6 +42,7 @@ import Language.PureScript.Names (Qualified ())
 import Language.PureScript.TypeChecker.Monad (emptyCheckState)
 import Language.PureScript.TypeClassDictionaries (NamedDict, TypeClassDictionaryInScope (tcdClassName, tcdValue))
 import Protolude hiding (moduleName)
+import Data.Aeson qualified as A
 
 addAllIndexing :: (MonadIO m) => Connection -> P.MakeActions m -> P.MakeActions m
 addAllIndexing conn ma =
@@ -491,8 +492,8 @@ insertNamedDict :: Connection -> NamedDict -> IO ()
 insertNamedDict conn dict = do
   SQL.execute
     conn
-    "INSERT OR REPLACE INTO env_type_class_instances (module_name, instance_name, class_module, class_name, dict) VALUES (?, ?, ?, ?, ?)"
-    (toDbQualifer (tcdValue dict) :. (clasMod, className, serialise dict))
+    "INSERT OR REPLACE INTO env_type_class_instances (module_name, instance_name, class_module, class_name, idents, dict) VALUES (?, ?, ?, ?, ?, ?)"
+    (toDbQualifer (tcdValue dict) :. (clasMod, className, A.encode (tcdValue dict), serialise dict))
   where
     (clasMod, className) = toDbQualifer (tcdClassName dict)
 
@@ -503,7 +504,7 @@ initEnvTables conn = do
   SQL.execute_ conn "CREATE TABLE IF NOT EXISTS env_data_constructors (module_name TEXT, constructor_name TEXT, data_decl_type TEXT, type_name TEXT, source_type BLOB, idents BLOB, debug TEXT)"
   SQL.execute_ conn "CREATE TABLE IF NOT EXISTS env_type_synonyms (module_name TEXT, type_name TEXT, idents BLOB, source_type BLOB, debug TEXT)"
   SQL.execute_ conn "CREATE TABLE IF NOT EXISTS env_type_classes (module_name TEXT, class_name TEXT, class BLOB, debug TEXT)"
-  SQL.execute_ conn "CREATE TABLE IF NOT EXISTS env_type_class_instances (module_name TEXT, instance_name TEXT, class_module TEXT, class_name TEXT, dict BLOB, debug TEXT)"
+  SQL.execute_ conn "CREATE TABLE IF NOT EXISTS env_type_class_instances (module_name TEXT, instance_name TEXT, class_module TEXT, class_name TEXT, idents TEXT, dict BLOB, debug TEXT)"
   addEnvIndexes conn
 
 addEnvIndexes :: Connection -> IO ()
@@ -514,6 +515,8 @@ addEnvIndexes conn = do
   SQL.execute_ conn "CREATE UNIQUE INDEX IF NOT EXISTS env_type_synonyms_idx ON env_type_synonyms(module_name, type_name)"
   SQL.execute_ conn "CREATE UNIQUE INDEX IF NOT EXISTS env_type_classes_idx ON env_type_classes(module_name, class_name)"
   SQL.execute_ conn "CREATE UNIQUE INDEX IF NOT EXISTS env_type_class_instances_idx ON env_type_class_instances(module_name, instance_name)"
+  SQL.execute_ conn "CREATE UNIQUE INDEX IF NOT EXISTS env_type_class_instances_idents_idx ON env_type_class_instances(idents)"
+  SQL.execute_ conn "CREATE UNIQUE INDEX IF NOT EXISTS env_type_class_instances_class_name_idx ON env_type_class_instances(class_name)"
 
 dropEnvTables :: Connection -> IO ()
 dropEnvTables conn = do
