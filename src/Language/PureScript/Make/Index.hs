@@ -15,11 +15,13 @@ module Language.PureScript.Make.Index
     insertType,
     insertDataConstructor,
     insertTypeSynonym,
+    addDbConnection,
   )
 where
 
 import Codec.Serialise (serialise)
 import Control.Concurrent.Async.Lifted (mapConcurrently_)
+import Data.Aeson qualified as A
 import Data.List (partition)
 import Data.Map qualified as Map
 import Data.Set qualified as Set
@@ -40,9 +42,14 @@ import Language.PureScript.Lsp.Util (efDeclSourceSpan, getOperatorValueName)
 import Language.PureScript.Make.Index.Select (toDbQualifer)
 import Language.PureScript.Names (Qualified ())
 import Language.PureScript.TypeChecker.Monad (emptyCheckState)
-import Language.PureScript.TypeClassDictionaries (NamedDict, TypeClassDictionaryInScope (tcdClassName, tcdValue))
+import Language.PureScript.TypeClassDictionaries (NamedDict, TypeClassDictionaryInScope (tcdClassName, tcdInstanceKinds, tcdInstanceTypes, tcdValue))
 import Protolude hiding (moduleName)
-import Data.Aeson qualified as A
+
+addDbConnection :: Monad m => Connection -> P.MakeActions m -> P.MakeActions m
+addDbConnection conn ma =
+  ma
+    { P.getDbConnection = pure conn
+    }
 
 addAllIndexing :: (MonadIO m) => Connection -> P.MakeActions m -> P.MakeActions m
 addAllIndexing conn ma =
@@ -356,6 +363,8 @@ initDb conn = do
   SQL.execute_ conn "CREATE TABLE IF NOT EXISTS environments (path TEXT PRIMARY KEY NOT NULL, hash INT NOT NULL, value BLOB NOT NULL, UNIQUE(path) on conflict replace)"
   SQL.execute_ conn "CREATE TABLE IF NOT EXISTS value_operators (module_name TEXT references ast_modules(module_name) ON DELETE CASCADE, op_name TEXT, alias_module_name TEXT, alias TEXT, associativity TEXT, precedence INTEGER, UNIQUE(module_name, op_name) on conflict replace)"
   SQL.execute_ conn "CREATE TABLE IF NOT EXISTS type_operators (module_name TEXT references ast_modules(module_name) ON DELETE CASCADE, op_name TEXT, alias_module_name TEXT, alias TEXT, associativity TEXT, precedence INTEGER, UNIQUE(module_name, op_name) on conflict replace)"
+  SQL.execute_ conn "CREATE TABLE IF NOT EXISTS imports (module_name TEXT, imported_module TEXT, imported_as TEXT)"
+  SQL.execute_ conn "CREATE TABLE IF NOT EXISTS exports (module_name TEXT, ident TEXT, value BLOB)"
   initEnvTables conn
   addDbIndexes conn
 
@@ -390,8 +399,11 @@ indexExportedEnv moduleName env refs conn = liftIO do
   envFromModule E.dataConstructors & filter dataConstructorExportedOrDict & mapConcurrently_ (uncurry $ insertDataConstructor conn)
   envFromModule E.typeSynonyms & filter typeExported & mapConcurrently_ (uncurry $ insertTypeSynonym conn)
   envFromModule E.typeClasses & filter typeClassExported & mapConcurrently_ (uncurry $ insertTypeClass conn)
+  when (moduleName == P.ModuleName "Data.HeytingAlgebra") do
+    putErrLn $ "typeClassDicts: \n" <> intercalate "\n" (P.debugTypeClassDictionaries env)
+    putErrLn $ ("dicts exported:\n" :: Text) <> T.intercalate "\n" (fmap (P.runIdent . P.disqualify . tcdValue) dicts)
   dicts
-    & filter ((== Just moduleName) . P.getQual . tcdValue)
+    -- & filter ((== Just moduleName) . P.getQual . tcdValue)
     & mapConcurrently_ (insertNamedDict conn)
   where
     envFromModule :: (E.Environment -> Map.Map (Qualified k) v) -> [(Qualified k, v)]
@@ -431,19 +443,19 @@ indexExportedEnv moduleName env refs conn = liftIO do
       _ -> False
 
     typeOrClassExported :: (Qualified (P.ProperName 'P.TypeName), b) -> Bool
-    typeOrClassExported kv = 
-        P.isDictTypeName (P.disqualify $ fst kv)
-          || typeExported kv 
-          || typeClassExported (first (fmap P.coerceProperName) kv)
+    typeOrClassExported kv =
+      P.isDictTypeName (P.disqualify $ fst kv)
+        || typeExported kv
+        || typeClassExported (first (fmap P.coerceProperName) kv)
 
     typeExported = refMatch \k -> \case
       P.TypeRef _ typeName _ -> typeName == P.disqualify k
       _ -> False
 
     dataConstructorExportedOrDict :: (Qualified (P.ProperName 'P.ConstructorName), b) -> Bool
-    dataConstructorExportedOrDict kv = 
-        P.isDictTypeName (P.disqualify $ fst kv)
-          || dataConstructorExported kv
+    dataConstructorExportedOrDict kv =
+      P.isDictTypeName (P.disqualify $ fst kv)
+        || dataConstructorExported kv
 
     dataConstructorExported = refMatch \k -> \case
       P.TypeRef _ _ ctrs -> maybe False (elem (P.disqualify k)) ctrs
@@ -492,8 +504,8 @@ insertNamedDict :: Connection -> NamedDict -> IO ()
 insertNamedDict conn dict = do
   SQL.execute
     conn
-    "INSERT OR REPLACE INTO env_type_class_instances (module_name, instance_name, class_module, class_name, idents, dict) VALUES (?, ?, ?, ?, ?, ?)"
-    (toDbQualifer (tcdValue dict) :. (clasMod, className, A.encode (tcdValue dict), serialise dict))
+    "INSERT OR REPLACE INTO env_type_class_instances (module_name, instance_name, class_module, class_name, types, kinds, dict) VALUES (?, ?, ?, ?, ?, ?, ?)"
+    (toDbQualifer (tcdValue dict) :. (clasMod, className, A.encode (tcdInstanceTypes dict), A.encode (tcdInstanceKinds dict), serialise dict))
   where
     (clasMod, className) = toDbQualifer (tcdClassName dict)
 
@@ -504,7 +516,7 @@ initEnvTables conn = do
   SQL.execute_ conn "CREATE TABLE IF NOT EXISTS env_data_constructors (module_name TEXT, constructor_name TEXT, data_decl_type TEXT, type_name TEXT, source_type BLOB, idents BLOB, debug TEXT)"
   SQL.execute_ conn "CREATE TABLE IF NOT EXISTS env_type_synonyms (module_name TEXT, type_name TEXT, idents BLOB, source_type BLOB, debug TEXT)"
   SQL.execute_ conn "CREATE TABLE IF NOT EXISTS env_type_classes (module_name TEXT, class_name TEXT, class BLOB, debug TEXT)"
-  SQL.execute_ conn "CREATE TABLE IF NOT EXISTS env_type_class_instances (module_name TEXT, instance_name TEXT, class_module TEXT, class_name TEXT, idents TEXT, dict BLOB, debug TEXT)"
+  SQL.execute_ conn "CREATE TABLE IF NOT EXISTS env_type_class_instances (module_name TEXT, instance_name TEXT, class_module TEXT, class_name TEXT, idents TEXT, types TEXT, kinds TEXT, dict BLOB, debug TEXT)"
   addEnvIndexes conn
 
 addEnvIndexes :: Connection -> IO ()
@@ -515,8 +527,8 @@ addEnvIndexes conn = do
   SQL.execute_ conn "CREATE UNIQUE INDEX IF NOT EXISTS env_type_synonyms_idx ON env_type_synonyms(module_name, type_name)"
   SQL.execute_ conn "CREATE UNIQUE INDEX IF NOT EXISTS env_type_classes_idx ON env_type_classes(module_name, class_name)"
   SQL.execute_ conn "CREATE UNIQUE INDEX IF NOT EXISTS env_type_class_instances_idx ON env_type_class_instances(module_name, instance_name)"
-  SQL.execute_ conn "CREATE UNIQUE INDEX IF NOT EXISTS env_type_class_instances_idents_idx ON env_type_class_instances(idents)"
-  SQL.execute_ conn "CREATE UNIQUE INDEX IF NOT EXISTS env_type_class_instances_class_name_idx ON env_type_class_instances(class_name)"
+  SQL.execute_ conn "CREATE INDEX IF NOT EXISTS env_type_class_instances_idents_idx ON env_type_class_instances(idents)"
+  SQL.execute_ conn "CREATE INDEX IF NOT EXISTS env_type_class_instances_class_name_idx ON env_type_class_instances(class_name)"
 
 dropEnvTables :: Connection -> IO ()
 dropEnvTables conn = do

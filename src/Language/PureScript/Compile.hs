@@ -6,7 +6,7 @@ import Database.SQLite.Simple (Connection)
 import Language.PureScript qualified as P
 import Language.PureScript.CST qualified as CST
 import Language.PureScript.Make (buildMakeActions, inferForeignModules, runMake)
-import Language.PureScript.Make.Index (addAllIndexing)
+import Language.PureScript.Make.Index (addAllIndexing, addDbConnection)
 import System.Directory (createDirectoryIfMissing)
 import Prelude
 
@@ -18,6 +18,7 @@ compile opts moduleFiles conn outputDir usePrefx = do
     foreigns <- inferForeignModules filePathMap
     liftIO $ createDirectoryIfMissing True outputDir
     let makeActions =
-          addAllIndexing conn $
-            buildMakeActions outputDir filePathMap foreigns usePrefx
+          addDbConnection conn $
+            addAllIndexing conn $
+              buildMakeActions outputDir filePathMap foreigns usePrefx
     P.make makeActions (map snd ms)
