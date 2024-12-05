@@ -1,5 +1,6 @@
 {-# LANGUAGE BlockArguments #-}
 {-# OPTIONS_GHC -Wno-unused-local-binds #-}
+{-# OPTIONS_GHC -Wno-unused-matches #-}
 
 module Language.PureScript.Make.Index.Select where
 
@@ -30,6 +31,10 @@ import Language.PureScript.TypeClassDictionaries (NamedDict)
 import Language.PureScript.Types qualified as P
 import Protolude hiding (moduleName)
 import Protolude.Partial (fromJust)
+import Control.Monad.Trans.Writer (execWriter, tell)
+import Control.Monad.Writer (Writer)
+import Language.PureScript.Types (Constraint(constraintClass))
+import Control.Lens (view, Field1 (_1))
 
 selectFixitiesFromModuleImportsAndDecls :: Connection -> P.Module -> IO ([(P.ModuleName, [ExternsFixity])], [(P.ModuleName, [ExternsTypeFixity])])
 selectFixitiesFromModuleImportsAndDecls conn module' = do
@@ -170,35 +175,57 @@ selectEnvFromImports conn (P.Module _ _ modName decls exports) = liftIO do
         P.Implicit -> importModule mName
         P.Explicit refs -> importRefs mName refs
         P.Hiding refs -> importModuleHiding mName refs
-
-    -- P.TypeInstanceDeclaration _ _ _ _ _ deps _className _types _ -> do
-    --   depFns <- forConcurrently deps \case
-    --     dep -> do
-    --       case P.constraintClass dep of
-    --         -- P.Qualified (P.ByModuleName depModuleName) depClassName ->
-    --         --   importClassAndTypes depModuleName depClassName
-    --         _ -> pure identity
-
-    -- pure (foldl' (>>>) identity depFns)
-
-    -- dict <- selectClassInstanceByIdents conn className types
-    -- pure $ \env' -> env' {E.typeClassDictionaries = E.typeClassDictionaries env' <> P.typeClassDictionariesEnvMap [fromJust dict]}
     _ -> pure identity
 
-  dictFns <- forConcurrently deferredDicts \case
+  -- when (modName == P.ModuleName "Data.Eq") do
+  --   putErrLn ( show decls :: Text)
+  --   for_ decls \case
+  --     P.TypeInstanceDeclaration _ _ _ _ name _ _ _ (P.ExplicitInstance [P.ValueDeclaration P.ValueDeclarationData {..}]) | name == Right (P.Ident "eqRowCons") -> do
+  --       putErrLn ("eqRowCons: " <> show valdeclExpression :: Text)
+  --     -- dict <- selectClassInstanceByIdents conn (P.Qualified (P.ByModuleName modName) cn) []
+  --     -- pure $ \env' -> env' {E.typeClassDictionaries = E.typeClassDictionaries env' <> P.typeClassDictionariesEnvMap [fromJust dict]}
+  --     _ -> pure ()
+
+  deferredDictFns <- forConcurrently deferredDicts \case
     (P.Qualified (P.ByModuleName mn) className, _types) -> importClassAndTypes mn className
     _ -> pure identity
 
-  let env = foldl' (&) E.initEnvironment (importFns <> dictFns)
-  pure env
+  constraintsFns <- forConcurrently constraints \c -> do
+    let (classMod, className) = toDbQualifer $ constraintClass c
+    importClassAndTypes classMod className
+
+  let 
+     env = foldl' (&) E.initEnvironment importFns
+  
+  envConstraintFns <- forConcurrently (getEnvConstraints env) \c -> do
+    let (classMod, className) = toDbQualifer $ constraintClass c
+    importClassAndTypes classMod className
+
+  pure $ foldl' (&) env envConstraintFns
   where
+
+    
+    constraints :: [P.SourceConstraint]
+    constraints =  (execWriter . getDeclContraints) =<< decls 
+
+    (getDeclContraints, _, _) =  P.everywhereOnValuesTopDownM declContraint exprContraint pure 
+
+    declContraint :: P.Declaration -> Writer [P.SourceConstraint] P.Declaration
+    declContraint = pure 
+
+    exprContraint :: P.Expr -> Writer [P.SourceConstraint] P.Expr
+    exprContraint e = case e of 
+      P.TypeClassDictionary c _ _ -> tell [c] >> pure e
+      _ -> pure e
+
+
     deferredDicts = getDeclDicts =<< decls
 
     getDeclDicts :: P.Declaration -> [(P.Qualified (P.ProperName 'P.ClassName), [P.SourceType])]
 
     getDeclDicts d = execState (onDecl d) []
 
-    (onDecl, _, _) = P.everywhereOnValuesM pure goExpr pure
+    (onDecl, _, _) = P.everywhereOnValuesTopDownM pure goExpr pure
 
     goExpr :: P.Expr -> State [(P.Qualified (P.ProperName 'P.ClassName), [P.SourceType])] P.Expr
     goExpr = \case
@@ -236,7 +263,6 @@ selectEnvFromImports conn (P.Module _ _ modName decls exports) = liftIO do
         let qual = P.Qualified (P.ByModuleName mName) ident
         val <- selectClassInstance conn qual
         pure $ \env' -> env' {E.typeClassDictionaries = P.addDictsToEnvMap [fromJust val] (E.typeClassDictionaries env')}
-
       P.ModuleRef _ m -> importModule m
       P.ReExportRef _ _ ref -> importRef mName ref
       P.ValueOpRef _ opName -> do
@@ -527,3 +553,13 @@ insertImport conn mn = \case
       "INSERT INTO imports (module_name, imported_module, imported_as) VALUES (?, ?, ?)"
       (mn, importedModuleName, importedAs)
   _ -> pure ()
+
+getEnvConstraints :: E.Environment -> [P.SourceConstraint]
+getEnvConstraints env = 
+  E.names env & Map.elems >>= typeConstraints . view _1
+
+typeConstraints :: P.Type a -> [P.Constraint a]
+typeConstraints = P.everythingOnTypes (<>) \case 
+  P.ConstrainedType _ c _ -> [c]
+  _ -> []
+ 
