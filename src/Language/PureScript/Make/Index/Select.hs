@@ -5,7 +5,7 @@ module Language.PureScript.Make.Index.Select where
 
 import Codec.Serialise (deserialise)
 import Control.Arrow ((>>>))
-import Control.Concurrent.Async.Lifted (forConcurrently, mapConcurrently_, forConcurrently_)
+import Control.Concurrent.Async.Lifted (forConcurrently, forConcurrently_, mapConcurrently_)
 import Data.Aeson qualified as A
 import Data.ByteString.Lazy qualified as Lazy
 import Data.List.NonEmpty qualified as NEL
@@ -25,13 +25,11 @@ import Language.PureScript.Environment qualified as P
 import Language.PureScript.Externs (ExternsFixity (..), ExternsTypeFixity (..))
 import Language.PureScript.Names (coerceProperName)
 import Language.PureScript.Names qualified as P
--- import Language.PureScript.TypeChecker.Monad (debugTypeClassDictionaries)
 import Language.PureScript.TypeChecker.Monad qualified as P
-import Language.PureScript.TypeClassDictionaries (NamedDict, TypeClassDictionaryInScope (tcdValue))
+import Language.PureScript.TypeClassDictionaries (NamedDict)
 import Language.PureScript.Types qualified as P
 import Protolude hiding (moduleName)
 import Protolude.Partial (fromJust)
-import Language.PureScript.TypeChecker.Monad (debugTypeClassDictionaries)
 
 selectFixitiesFromModuleImportsAndDecls :: Connection -> P.Module -> IO ([(P.ModuleName, [ExternsFixity])], [(P.ModuleName, [ExternsTypeFixity])])
 selectFixitiesFromModuleImportsAndDecls conn module' = do
@@ -68,7 +66,6 @@ selectFixitiesFromModuleImports conn (P.Module _ _ _ decls _refs) = do
     onImports f = \case
       P.ImportDeclaration _ mn' idt _ -> Just <$> f mn' idt
       _ -> pure Nothing
-
 
 selectImportValueFixities :: Connection -> P.ModuleName -> ImportDeclarationType -> IO (P.ModuleName, [ExternsFixity])
 selectImportValueFixities conn modName = \case
@@ -172,12 +169,11 @@ selectEnvFromImports conn (P.Module _ _ modName decls exports) = liftIO do
       case idt of
         P.Implicit -> importModule mName
         P.Explicit refs -> importRefs mName refs
-        P.Hiding refs -> importModuleHiding mName refs 
+        P.Hiding refs -> importModuleHiding mName refs
 
     -- P.TypeInstanceDeclaration _ _ _ _ _ deps _className _types _ -> do
     --   depFns <- forConcurrently deps \case
     --     dep -> do
-    --       putErrLn ( "dep: " <> show (P.constraintClass dep) :: Text)
     --       case P.constraintClass dep of
     --         -- P.Qualified (P.ByModuleName depModuleName) depClassName ->
     --         --   importClassAndTypes depModuleName depClassName
@@ -189,28 +185,13 @@ selectEnvFromImports conn (P.Module _ _ modName decls exports) = liftIO do
     -- pure $ \env' -> env' {E.typeClassDictionaries = E.typeClassDictionaries env' <> P.typeClassDictionariesEnvMap [fromJust dict]}
     _ -> pure identity
 
-
   dictFns <- forConcurrently deferredDicts \case
     (P.Qualified (P.ByModuleName mn) className, _types) -> importClassAndTypes mn className
     _ -> pure identity
 
   let env = foldl' (&) E.initEnvironment (importFns <> dictFns)
-  when (modName == P.ModuleName "Data.BooleanAlgebra") do
-    putErrLn $ ("deferredDicts:\n " :: Text) <> T.intercalate "\n" (fmap (show . fst) deferredDicts)
-    putErrLn $ "Data.BooleanAlgebra: \n" <> intercalate "\n" (debugTypeClassDictionaries env)
-
   pure env
   where
-    -- replaceModuleAlias :: P.ModuleName -> P.ModuleName
-    -- replaceModuleAlias mName = fromMaybe mName $ Map.lookup mName importAliasMap
-
-    -- importAliasMap :: Map.Map P.ModuleName P.ModuleName
-    -- importAliasMap =
-    --   Map.fromList $
-    --     decls >>= \case
-    --       P.ImportDeclaration _ mName _ (Just alias) -> [(alias, mName)]
-    --       _ -> []
-
     deferredDicts = getDeclDicts =<< decls
 
     getDeclDicts :: P.Declaration -> [(P.Qualified (P.ProperName 'P.ClassName), [P.SourceType])]
@@ -226,10 +207,9 @@ selectEnvFromImports conn (P.Module _ _ modName decls exports) = liftIO do
         pure e
       e -> pure e
 
-
     importRefs mName refs = do
-        edits :: [E.Environment -> E.Environment] <- forConcurrently refs (importRef mName)
-        pure $ foldl' (>>>) identity edits
+      edits :: [E.Environment -> E.Environment] <- forConcurrently refs (importRef mName)
+      pure $ foldl' (>>>) identity edits
 
     importRef :: P.ModuleName -> P.DeclarationRef -> IO (E.Environment -> E.Environment)
     importRef mName = \case
@@ -255,7 +235,8 @@ selectEnvFromImports conn (P.Module _ _ modName decls exports) = liftIO do
       P.TypeInstanceRef _ ident _ -> do
         let qual = P.Qualified (P.ByModuleName mName) ident
         val <- selectClassInstance conn qual
-        pure $ \env' -> env' {E.typeClassDictionaries = E.typeClassDictionaries env' <> P.typeClassDictionariesEnvMap [fromJust val]}
+        pure $ \env' -> env' {E.typeClassDictionaries = P.addDictsToEnvMap [fromJust val] (E.typeClassDictionaries env')}
+
       P.ModuleRef _ m -> importModule m
       P.ReExportRef _ _ ref -> importRef mName ref
       P.ValueOpRef _ opName -> do
@@ -284,25 +265,8 @@ selectEnvFromImports conn (P.Module _ _ modName decls exports) = liftIO do
       allRefs <- selectModuleExports conn mName
       let refs = filter (not . flip Set.member hiddenRefSet) allRefs
       importRefs mName refs
-      where 
+      where
         hiddenRefSet = Set.fromList hideRefs
-      
-    importClassOnly :: P.ModuleName -> P.ProperName 'P.ClassName -> IO (E.Environment -> E.Environment)
-    importClassOnly mName className = do
-      let qual = P.Qualified (P.ByModuleName mName) className
-      typeClass <- fromJustWithErr qual <$> selectTypeClass conn mName className
-      instances <- selectClassInstancesByClassName conn qual
-      superClassImports <- forConcurrently (typeClassSuperclasses typeClass) \super -> case P.constraintClass super of
-        P.Qualified (P.ByModuleName superModName) superClassName -> do
-          -- superModName' <- selectImportedAs' conn mName superModName
-          importClassOnly superModName superClassName
-        _ -> pure identity
-      pure $
-        foldl' (>>>) identity superClassImports >>> \env' ->
-          env'
-            { E.typeClasses = E.typeClasses env' <> Map.fromList [(qual, typeClass)],
-              E.typeClassDictionaries = E.typeClassDictionaries env' <> P.typeClassDictionariesEnvMap instances
-            }
 
     importClassAndTypes :: P.ModuleName -> P.ProperName 'P.ClassName -> IO (E.Environment -> E.Environment)
     importClassAndTypes mName className = do
@@ -324,12 +288,7 @@ selectEnvFromImports conn (P.Module _ _ modName decls exports) = liftIO do
         P.Qualified (P.ByModuleName superModName) superClassName -> do
           importClassAndTypes superModName superClassName
         _ -> pure identity
-      when (mName == P.ModuleName "Data.HeytingAlgebra") do
-        putErrLn ("HeytingAlgebra class import: \n" <> show qual :: Text)
       instances <- selectClassInstancesByClassName conn qual
-
-      when (mName == P.ModuleName "Data.HeytingAlgebra") do
-        putErrLn ("HeytingAlgebra instances: \n" <> T.intercalate "\n\n" (fmap (show . tcdValue) instances) :: Text)
 
       pure $
         foldl' (>>>) identity superClassImports >>> \env' ->
@@ -346,7 +305,7 @@ selectEnvFromImports conn (P.Module _ _ modName decls exports) = liftIO do
                   <> Map.fromList case (ctrMb, ctrData) of
                     (Just ctr', Just ctrData') -> [(ctr', ctrData')]
                     _ -> [],
-              E.typeClassDictionaries = E.typeClassDictionaries env' <> P.typeClassDictionariesEnvMap instances
+              E.typeClassDictionaries = P.addDictsToEnvMap instances (E.typeClassDictionaries env')
             }
 
 selectModuleExports :: Connection -> P.ModuleName -> IO [P.DeclarationRef]
@@ -358,16 +317,16 @@ selectModuleExports conn modName = do
     <&> fmap SQL.fromOnly
 
 insertExports :: Connection -> P.ModuleName -> Maybe [P.DeclarationRef] -> IO ()
-insertExports  conn modName = \case 
-  Nothing -> internalError "selectEnvFromImports called before desguaring module" 
+insertExports conn modName = \case
+  Nothing -> internalError "selectEnvFromImports called before desguaring module"
   Just refs -> forConcurrently_ refs (insertExport conn modName)
 
 insertExport :: Connection -> P.ModuleName -> P.DeclarationRef -> IO ()
 insertExport conn modName ref =
-   SQL.execute 
-     conn
-     "INSERT INTO exports (module_name, ident, value) VALUES (?, ?, ?)"  
-      (modName, (show $ P.declRefName ref) :: Text,  ref)
+  SQL.execute
+    conn
+    "INSERT INTO exports (module_name, ident, value) VALUES (?, ?, ?)"
+    (modName, (show $ P.declRefName ref) :: Text, ref)
 
 selectEnvValue :: Connection -> P.Qualified P.Ident -> IO (Maybe (P.SourceType, P.NameKind, P.NameVisibility))
 selectEnvValue conn ident = do
@@ -499,7 +458,7 @@ selectClassInstanceByIdents ::
 selectClassInstanceByIdents conn classNameQual idents = do
   SQL.query
     conn
-    "SELECT dict FROM env_type_class_instances WHERE module_name = ? AND class_name = ? AND idents = ?"
+    "SELECT dict FROM env_type_class_instances WHERE class_module = ? AND class_name = ? AND idents = ?"
     (modName, className, A.encode idents)
     <&> (head >>> fmap (SQL.fromOnly >>> deserialise))
   where
@@ -513,7 +472,7 @@ selectClassInstancesByClassName ::
 selectClassInstancesByClassName conn classNameQual = do
   SQL.query
     conn
-    "SELECT dict FROM env_type_class_instances WHERE module_name = ? AND class_name = ?"
+    "SELECT dict FROM env_type_class_instances WHERE class_module = ? AND class_name = ?"
     (modName, className)
     <&> fmap (SQL.fromOnly >>> deserialise)
   where

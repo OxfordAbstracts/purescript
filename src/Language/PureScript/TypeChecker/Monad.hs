@@ -205,13 +205,17 @@ withTypeClassDictionaries
   -> m a
 withTypeClassDictionaries entries action = do
   orig <- get
-
-  let mentries = typeClassDictionariesEnvMap entries
   
-  modify $ \st -> st { checkEnv = (checkEnv st) { typeClassDictionaries = M.unionWith (M.unionWith (M.unionWith (<>))) (typeClassDictionaries . checkEnv $ st) mentries } }
+  modify $ \st -> st { checkEnv = (checkEnv st) { typeClassDictionaries = addDictsToEnvMap entries (typeClassDictionaries . checkEnv $ st) } }
   a <- action
   modify $ \st -> st { checkEnv = (checkEnv st) { typeClassDictionaries = typeClassDictionaries . checkEnv $ orig } }
   return a
+
+addDictsToEnvMap :: [NamedDict] 
+     -> M.Map QualifiedBy (M.Map (Qualified (ProperName 'ClassName)) (M.Map (Qualified Ident) (NEL.NonEmpty NamedDict))) 
+    ->  M.Map QualifiedBy (M.Map (Qualified (ProperName 'ClassName)) (M.Map (Qualified Ident) (NEL.NonEmpty NamedDict)))
+addDictsToEnvMap entries envMap = 
+  M.unionWith (M.unionWith (M.unionWith (<>))) envMap (typeClassDictionariesEnvMap entries)
 
 
 typeClassDictionariesEnvMap :: [NamedDict] 
@@ -222,6 +226,7 @@ typeClassDictionariesEnvMap entries =
     | entry@TypeClassDictionaryInScope{ tcdValue = tcdValue@(Qualified qb _), tcdClassName = className }
         <- entries
     ]
+
 
 -- | Get the currently available map of type class dictionaries
 getTypeClassDictionaries

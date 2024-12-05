@@ -1,5 +1,4 @@
 {-# LANGUAGE BlockArguments #-}
-{-# LANGUAGE TypeOperators #-}
 
 module Language.PureScript.Make.Index
   ( initDb,
@@ -399,9 +398,6 @@ indexExportedEnv moduleName env refs conn = liftIO do
   envFromModule E.dataConstructors & filter dataConstructorExportedOrDict & mapConcurrently_ (uncurry $ insertDataConstructor conn)
   envFromModule E.typeSynonyms & filter typeExported & mapConcurrently_ (uncurry $ insertTypeSynonym conn)
   envFromModule E.typeClasses & filter typeClassExported & mapConcurrently_ (uncurry $ insertTypeClass conn)
-  when (moduleName == P.ModuleName "Data.HeytingAlgebra") do
-    putErrLn $ "typeClassDicts: \n" <> intercalate "\n" (P.debugTypeClassDictionaries env)
-    putErrLn $ ("dicts exported:\n" :: Text) <> T.intercalate "\n" (fmap (P.runIdent . P.disqualify . tcdValue) dicts)
   dicts
     -- & filter ((== Just moduleName) . P.getQual . tcdValue)
     & mapConcurrently_ (insertNamedDict conn)
