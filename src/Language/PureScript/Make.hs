@@ -110,8 +110,7 @@ rebuildModuleWithIndexDb ::
   Maybe (Int, Int) ->
   m ExternsFile
 rebuildModuleWithIndexDb act conn exEnv m moduleIndex = do
-  env <- selectEnvFromImports conn m
-  rebuildModuleWithProvidedEnvDb emptyCheckState act conn exEnv env m moduleIndex
+  rebuildModuleWithProvidedEnvDb emptyCheckState act conn exEnv m moduleIndex
 
 rebuildModuleWithProvidedEnv ::
   forall m.
@@ -172,11 +171,10 @@ rebuildModuleWithProvidedEnvDb ::
   MakeActions m ->
   Connection ->
   Env ->
-  Environment ->
   Module ->
   Maybe (Int, Int) ->
   m ExternsFile
-rebuildModuleWithProvidedEnvDb initialCheckState MakeActions {..} conn exEnv env m@(Module _ _ moduleName _ _) moduleIndex = do
+rebuildModuleWithProvidedEnvDb initialCheckState MakeActions {..} conn exEnv m@(Module _ _ moduleName _ _) moduleIndex = do
   progress $ CompilingModule moduleName moduleIndex
   let withPrim = importPrim m
   lint withPrim
@@ -187,7 +185,7 @@ rebuildModuleWithProvidedEnvDb initialCheckState MakeActions {..} conn exEnv env
   --   putErrLn ( "type ops:" :: T.Text)
   --   putErrLn $ intercalate "\n" $ fmap show typeOps
   ((Module ss coms _ elaborated exps, checkSt), nextVar) <-
-    desugarAndTypeCheckDb initialCheckState withCheckStateOnError withCheckState moduleName withPrim exEnv env ops typeOps
+    desugarAndTypeCheckDb initialCheckState conn withCheckStateOnError withCheckState moduleName withPrim exEnv ops typeOps
   let env' = P.checkEnv checkSt
 
   -- desugar case declarations *after* type- and exhaustiveness checking
@@ -220,7 +218,7 @@ rebuildModuleWithProvidedEnvDb initialCheckState MakeActions {..} conn exEnv env
               ++ prettyPrintMultipleErrors defaultPPEOptions errs
         Right d -> d
 
-  evalSupplyT nextVar'' $ codegen env checkSt mod' renamed docs exts
+  evalSupplyT nextVar'' $ codegen env' checkSt mod' renamed docs exts
   return exts
 
 desugarAndTypeCheck ::
@@ -260,20 +258,21 @@ desugarAndTypeCheck initialCheckState withCheckStateOnError withCheckState modul
 
 desugarAndTypeCheckDb ::
   forall m.
-  (MonadError MultipleErrors m, MonadWriter MultipleErrors m) =>
+  (MonadError MultipleErrors m, MonadIO m, MonadWriter MultipleErrors m) =>
   (Environment -> CheckState) ->
+  Connection ->
   (CheckState -> m ()) ->
   (CheckState -> m ()) ->
   ModuleName ->
   Module ->
   Env ->
-  Environment ->
   [(ModuleName, [ExternsFixity])] ->
   [(ModuleName, [ExternsTypeFixity])] ->
   m ((Module, CheckState), Integer)
-desugarAndTypeCheckDb initialCheckState withCheckStateOnError withCheckState moduleName withPrim exEnv env ops typeOps = runSupplyT 0 $ do
-  (desugared, (exEnv', usedImports)) <- runStateT (desugarUsingDb ops typeOps env withPrim) (exEnv, mempty)
+desugarAndTypeCheckDb initialCheckState conn withCheckStateOnError withCheckState moduleName withPrim exEnv ops typeOps = runSupplyT 0 $ do
+  (desugared, (exEnv', usedImports)) <- runStateT (desugarUsingDb conn ops typeOps withPrim) (exEnv, mempty)
   let modulesExports = (\(_, _, exports) -> exports) <$> exEnv'
+  env <- selectEnvFromImports conn desugared
   (checked, checkSt@(CheckState {..})) <- runStateT (catchError (typeCheckModule modulesExports desugared) mergeCheckState) $ initialCheckState env
   lift $ withCheckState checkSt
   let usedImports' =

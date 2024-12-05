@@ -35,6 +35,8 @@ import Protolude.Exceptions (hush)
 import Prelude
 import Data.ByteString.Lazy qualified as Lazy
 import Language.PureScript.Types qualified as P
+import Database.SQLite.Simple.ToField (ToField (toField))
+import Database.SQLite.Simple.FromField (FromField (fromField))
 
 -- | A map of locally-bound names in scope.
 type Context = [(Ident, SourceType)]
@@ -207,6 +209,13 @@ data DeclarationRef
   --
   | ReExportRef SourceSpan ExportSource DeclarationRef
   deriving (Show, Generic, NFData, Serialise)
+
+
+instance ToField DeclarationRef where
+  toField = toField . S.serialise
+
+instance FromField DeclarationRef where
+  fromField a = S.deserialise <$> fromField a
 
 instance Eq DeclarationRef where
   (TypeClassRef _ name) == (TypeClassRef _ name') = name == name'

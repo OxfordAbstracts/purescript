@@ -4,9 +4,9 @@
 --
 module Language.PureScript.Sugar.TypeClasses
   ( desugarTypeClasses
-  , desugarTypeClassesUsingMemberMap
   , typeClassMemberName
   , superClassDictionaryNames
+  , desugarTypeClassesUsingDB
   ) where
 
 import Prelude
@@ -14,7 +14,7 @@ import Prelude
 import Control.Arrow (first, second)
 import Control.Monad (unless)
 import Control.Monad.Error.Class (MonadError(..))
-import Control.Monad.State (MonadState(..), StateT, evalStateT, modify)
+import Control.Monad.State (StateT, evalStateT, modify, gets, MonadIO (liftIO))
 import Control.Monad.Supply.Class (MonadSupply)
 import Data.Graph (SCC(..), stronglyConnComp)
 import Data.List (find, partition)
@@ -36,10 +36,31 @@ import Language.PureScript.PSString (mkString)
 import Language.PureScript.Sugar.CaseDeclarations (desugarCases)
 import Language.PureScript.TypeClassDictionaries (superclassName)
 import Language.PureScript.Types
+import Database.SQLite.Simple (Connection)
+import Language.PureScript.Make.Index.Select (selectTypeClass)
+import Control.Monad.State.Class (get)
 
 type MemberMap = M.Map (ModuleName, ProperName 'ClassName) TypeClassData
 
-type Desugar = StateT MemberMap
+class GetTypeClass m where
+  getTypeClass :: (ModuleName, ProperName 'ClassName) -> m (Maybe TypeClassData)
+  addTypeClass :: (ModuleName, ProperName 'ClassName) -> TypeClassData -> m ()
+
+
+instance Monad m => GetTypeClass (StateT MemberMap m) where
+  getTypeClass name = gets (M.lookup name)
+  addTypeClass name tc = modify (M.insert name tc)
+
+instance (MonadIO m) => GetTypeClass (StateT (Connection, MemberMap) m) where 
+  getTypeClass qual@(m, name) = do 
+    sync <- gets (M.lookup qual . snd) 
+    case sync of 
+      Just tc -> return (Just tc)
+      Nothing -> do 
+        (conn, _) <- get
+        liftIO (selectTypeClass conn m name)
+    
+  addTypeClass name tc = modify (second (M.insert name tc))
 
 -- |
 -- Add type synonym declarations for type class dictionary types, and value declarations for type class
@@ -50,9 +71,9 @@ desugarTypeClasses
   => [ExternsFile]
   -> Module
   -> m Module
-desugarTypeClasses externs = desugarTypeClassesUsingMemberMap 
+desugarTypeClasses externs = go
     $ M.fromList (externs >>= \ExternsFile{..} -> mapMaybe (fromExternsDecl efModuleName) efDeclarations)
-  where 
+  where
   fromExternsDecl
     :: ModuleName
     -> ExternsDeclaration
@@ -60,16 +81,21 @@ desugarTypeClasses externs = desugarTypeClassesUsingMemberMap
   fromExternsDecl mn (EDClass name args members implies deps tcIsEmpty) = Just ((mn, name), typeClass) where
     typeClass = makeTypeClassData args members implies deps tcIsEmpty
   fromExternsDecl _ _ = Nothing
-  
-desugarTypeClassesUsingMemberMap
-  :: (MonadSupply m, MonadError MultipleErrors m)
-  => MemberMap
-  -> Module
-  -> m Module
-desugarTypeClassesUsingMemberMap classes = flip evalStateT initialState . desugarModule
-  where
-  initialState :: MemberMap
-  initialState =
+
+  go
+    :: (MonadSupply m, MonadError MultipleErrors m)
+    => MemberMap
+    -> Module
+    -> m Module
+  go classes = flip evalStateT initialState . desugarModule
+    where
+    initialState :: MemberMap
+    initialState = mkInitialState classes
+
+-- desugarTypeClassesUsingDb 
+
+mkInitialState :: MemberMap -> MemberMap
+mkInitialState classes = 
     mconcat
       [ M.mapKeys (qualify C.M_Prim) primClasses
       , M.mapKeys (qualify C.M_Prim_Coerce) primCoerceClasses
@@ -81,12 +107,21 @@ desugarTypeClassesUsingMemberMap classes = flip evalStateT initialState . desuga
       , classes
       ]
 
--- TODO add desugarModuleSqlite which uses the DB instead of MemberMap to store the type class data
+desugarTypeClassesUsingDB 
+  :: (MonadIO m, MonadSupply m, MonadError MultipleErrors m)
+  => Connection
+  -> Module
+  -> m Module
+desugarTypeClassesUsingDB conn = flip evalStateT initialState . desugarModule
+  where
+  initialState :: (Connection, MemberMap)
+  initialState = (conn, mkInitialState M.empty)
 
 desugarModule
-  :: (MonadSupply m, MonadError MultipleErrors m)
+  :: forall m.
+   (MonadSupply m, MonadError MultipleErrors m, GetTypeClass m) 
   => Module
-  -> Desugar m Module
+  -> m Module
 desugarModule (Module ss coms name decls (Just exps)) = do
   let (classDecls, restDecls) = partition isTypeClassDecl decls
       classVerts = fmap (\d -> (d, classDeclName d, superClassesNames d)) classDecls
@@ -94,11 +129,11 @@ desugarModule (Module ss coms name decls (Just exps)) = do
   (restNewExpss, restDeclss) <- unzip <$> parU restDecls (desugarDecl name exps)
   return $ Module ss coms name (concat restDeclss ++ concat classDeclss) $ Just (exps ++ catMaybes restNewExpss ++ catMaybes classNewExpss)
   where
-  desugarClassDecl :: (MonadSupply m, MonadError MultipleErrors m)
-    => ModuleName
+  desugarClassDecl :: 
+     ModuleName
     -> [DeclarationRef]
     -> SCC Declaration
-    -> Desugar m (Maybe DeclarationRef, [Declaration])
+    -> m (Maybe DeclarationRef, [Declaration])
   desugarClassDecl name' exps' (AcyclicSCC d) = desugarDecl name' exps' d
   desugarClassDecl _ _ (CyclicSCC ds')
     | Just ds'' <- nonEmpty ds' = throwError . errorMessage' (declSourceSpan (NEL.head ds'')) $ CycleInTypeClassDeclaration (NEL.map classDeclName ds'')
@@ -208,15 +243,16 @@ desugarModule _ = internalError "Exports should have been elaborated in name des
 --   };
 -}
 desugarDecl
-  :: (MonadSupply m, MonadError MultipleErrors m)
+  :: forall m .
+  (MonadSupply m, MonadError MultipleErrors m, GetTypeClass m)
   => ModuleName
   -> [DeclarationRef]
   -> Declaration
-  -> Desugar m (Maybe DeclarationRef, [Declaration])
+  -> m (Maybe DeclarationRef, [Declaration])
 desugarDecl mn exps = go
   where
   go d@(TypeClassDeclaration sa name args implies deps members) = do
-    modify (M.insert (mn, name) (makeTypeClassData args (map memberToNameAndType members) implies deps False))
+    addTypeClass (mn, name) (makeTypeClassData args (map memberToNameAndType members) implies deps False)
     return (Nothing, d : typeClassDictionaryDeclaration sa name args implies members : map (typeClassMemberToDictionaryAccessor mn name args) members)
   go (TypeInstanceDeclaration sa na chainId idx name deps className tys body) = do
     name' <- desugarInstName name
@@ -243,7 +279,7 @@ desugarDecl mn exps = go
 
   -- Completes the name generation for type class instances that do not have
   -- a unique name defined in source code.
-  desugarInstName :: MonadSupply m => Either Text Ident -> Desugar m Ident
+  desugarInstName :: Either Text Ident -> m Ident
   desugarInstName = either freshIdent pure
 
   expRef :: Ident -> Qualified (ProperName 'ClassName) -> [SourceType] -> Maybe DeclarationRef
@@ -326,6 +362,7 @@ unit = srcTypeApp tyRecord srcREmpty
 typeInstanceDictionaryDeclaration
   :: forall m
    . MonadError MultipleErrors m
+  => GetTypeClass m
   => SourceAnn
   -> Ident
   -> ModuleName
@@ -333,15 +370,14 @@ typeInstanceDictionaryDeclaration
   -> Qualified (ProperName 'ClassName)
   -> [SourceType]
   -> [Declaration]
-  -> Desugar m Declaration
+  -> m Declaration
 typeInstanceDictionaryDeclaration sa@(ss, _) name mn deps className tys decls =
   rethrow (addHint (ErrorInInstance className tys)) $ do
-  m <- get
 
   -- Lookup the type arguments and member types for the type class
   TypeClassData{..} <-
-    maybe (throwError . errorMessage' ss . UnknownName $ fmap TyClassName className) return $
-      M.lookup (qualify mn className) m
+    maybe (throwError . errorMessage' ss . UnknownName $ fmap TyClassName className) return =<<
+      getTypeClass (qualify mn className)
 
   -- Replace the type arguments with the appropriate types in the member types
   let memberTypes = map (second (replaceAllTypeVars (zip (map fst typeClassArguments) tys)) . tuple3To2) typeClassMembers
@@ -378,7 +414,7 @@ typeInstanceDictionaryDeclaration sa@(ss, _) name mn deps className tys decls =
 
   where
 
-  memberToValue :: [(Ident, SourceType)] -> Declaration -> Desugar m Expr
+  memberToValue :: [(Ident, SourceType)] -> Declaration -> m Expr
   memberToValue tys' (ValueDecl (ss', _) ident _ [] [MkUnguarded val]) = do
     _ <- maybe (throwError . errorMessage' ss' $ ExtraneousClassMember ident className) return $ lookup ident tys'
     return val

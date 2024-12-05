@@ -5,10 +5,7 @@ module Language.PureScript.Sugar (desugar, desugarUsingDb, module S) where
 import Control.Category ((>>>))
 import Control.Monad.Supply.Class (MonadSupply)
 import Control.Monad.Writer.Class (MonadWriter)
-import Data.Map qualified as M
 import Language.PureScript.AST (Module)
-import Language.PureScript.Environment (Environment)
-import Language.PureScript.Environment qualified as P
 import Language.PureScript.Errors (MultipleErrors)
 import Language.PureScript.Externs (ExternsFile, ExternsFixity, ExternsTypeFixity)
 import Language.PureScript.Linter.Imports (UsedImports)
@@ -25,6 +22,7 @@ import Language.PureScript.Sugar.TypeClasses as S
 import Language.PureScript.Sugar.TypeClasses.Deriving as S
 import Language.PureScript.Sugar.TypeDeclarations as S
 import Protolude
+import Database.SQLite.Simple (Connection)
 
 -- |
 -- The desugaring pipeline proceeds as follows:
@@ -74,16 +72,16 @@ desugar externs =
     >=> createBindingGroupsModule
 
 desugarUsingDb ::
-  (MonadSupply m) =>
+  (MonadSupply m, MonadIO m) =>
   (MonadWriter MultipleErrors m) =>
   (MonadError MultipleErrors m) =>
   (MonadState (Env, UsedImports) m) =>
+  Connection ->
   [(P.ModuleName, [ExternsFixity])] ->
   [(P.ModuleName, [ExternsTypeFixity])] ->
-  Environment ->
   Module ->
   m Module
-desugarUsingDb fixities typeFixities env =
+desugarUsingDb conn fixities typeFixities  =
   desugarSignedLiterals
     >>> desugarObjectConstructors
     >=> desugarDoModule
@@ -95,18 +93,5 @@ desugarUsingDb fixities typeFixities env =
     >=> rebracketFixitiesOnly (const True) fixities typeFixities
     >=> checkFixityExports
     >=> deriveInstances
-    >=> desugarTypeClassesUsingMemberMap typeClassData
+    >=> desugarTypeClassesUsingDB conn
     >=> createBindingGroupsModule
-  where
-    typeClassData =
-      P.typeClasses env
-        & M.toList
-        & mapMaybe addModuleName
-        & M.fromList
-
-addModuleName ::
-  (P.Qualified (P.ProperName 'P.ClassName), P.TypeClassData) ->
-  Maybe ((P.ModuleName, P.ProperName 'P.ClassName), P.TypeClassData)
-addModuleName = \case
-  (P.Qualified (P.ByModuleName mn) pn, tcd) -> Just ((mn, pn), tcd)
-  _ -> Nothing

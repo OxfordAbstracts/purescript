@@ -1,10 +1,11 @@
 {-# LANGUAGE BlockArguments #-}
+{-# OPTIONS_GHC -Wno-unused-local-binds #-}
 
 module Language.PureScript.Make.Index.Select where
 
 import Codec.Serialise (deserialise)
 import Control.Arrow ((>>>))
-import Control.Concurrent.Async.Lifted (forConcurrently, mapConcurrently_)
+import Control.Concurrent.Async.Lifted (forConcurrently, mapConcurrently_, forConcurrently_)
 import Data.Aeson qualified as A
 import Data.ByteString.Lazy qualified as Lazy
 import Data.List.NonEmpty qualified as NEL
@@ -24,12 +25,13 @@ import Language.PureScript.Environment qualified as P
 import Language.PureScript.Externs (ExternsFixity (..), ExternsTypeFixity (..))
 import Language.PureScript.Names (coerceProperName)
 import Language.PureScript.Names qualified as P
-import Language.PureScript.TypeChecker.Monad (debugTypeClassDictionaries)
+-- import Language.PureScript.TypeChecker.Monad (debugTypeClassDictionaries)
 import Language.PureScript.TypeChecker.Monad qualified as P
 import Language.PureScript.TypeClassDictionaries (NamedDict, TypeClassDictionaryInScope (tcdValue))
 import Language.PureScript.Types qualified as P
 import Protolude hiding (moduleName)
 import Protolude.Partial (fromJust)
+import Language.PureScript.TypeChecker.Monad (debugTypeClassDictionaries)
 
 selectFixitiesFromModuleImportsAndDecls :: Connection -> P.Module -> IO ([(P.ModuleName, [ExternsFixity])], [(P.ModuleName, [ExternsTypeFixity])])
 selectFixitiesFromModuleImportsAndDecls conn module' = do
@@ -57,9 +59,7 @@ getModuleFixities (P.Module _ _ _ decls _) = (externsFixitiesInModule, externsTy
           _ -> []
 
 selectFixitiesFromModuleImports :: Connection -> P.Module -> IO ([(P.ModuleName, [ExternsFixity])], [(P.ModuleName, [ExternsTypeFixity])])
-selectFixitiesFromModuleImports conn (P.Module _ _ mn decls _refs) = do
-  -- insertExports conn decls refs
-  insertImports conn mn decls 
+selectFixitiesFromModuleImports conn (P.Module _ _ _ decls _refs) = do
   valueOps <- catMaybes <$> forConcurrently decls (onImports (selectImportValueFixities conn))
   typeOps <- catMaybes <$> forConcurrently decls (onImports (selectImportTypeFixities conn))
   pure (valueOps, typeOps)
@@ -69,17 +69,6 @@ selectFixitiesFromModuleImports conn (P.Module _ _ mn decls _refs) = do
       P.ImportDeclaration _ mn' idt _ -> Just <$> f mn' idt
       _ -> pure Nothing
 
-insertImports :: Connection -> P.ModuleName -> [P.Declaration] -> IO ()
-insertImports conn mn = mapConcurrently_ (insertImport conn mn)
-
-insertImport :: Connection -> P.ModuleName -> P.Declaration -> IO ()
-insertImport conn mn = \case
-  P.ImportDeclaration _ importedModuleName _ importedAs -> do
-    SQL.execute
-      conn
-      "INSERT INTO imports (module_name, imported_module, imported_as) VALUES (?, ?, ?)"
-      (mn, importedModuleName, importedAs)
-  _ -> pure ()
 
 selectImportValueFixities :: Connection -> P.ModuleName -> ImportDeclarationType -> IO (P.ModuleName, [ExternsFixity])
 selectImportValueFixities conn modName = \case
@@ -175,15 +164,15 @@ type ClassDict =
     )
 
 selectEnvFromImports :: (MonadIO m) => Connection -> P.Module -> m E.Environment
-selectEnvFromImports conn (P.Module _ _ mName' decls _) = liftIO do
+selectEnvFromImports conn (P.Module _ _ modName decls exports) = liftIO do
+  insertExports conn modName exports
+  insertImports conn modName decls
   importFns :: [E.Environment -> E.Environment] <- forConcurrently decls \case
     P.ImportDeclaration _ mName idt _ -> do
       case idt of
         P.Implicit -> importModule mName
-        P.Explicit refs -> do
-          edits :: [E.Environment -> E.Environment] <- forConcurrently refs (importRef mName)
-          pure $ foldl' (>>>) identity edits
-        P.Hiding refs -> importModuleHiding refs mName
+        P.Explicit refs -> importRefs mName refs
+        P.Hiding refs -> importModuleHiding mName refs 
 
     -- P.TypeInstanceDeclaration _ _ _ _ _ deps _className _types _ -> do
     --   depFns <- forConcurrently deps \case
@@ -200,28 +189,27 @@ selectEnvFromImports conn (P.Module _ _ mName' decls _) = liftIO do
     -- pure $ \env' -> env' {E.typeClassDictionaries = E.typeClassDictionaries env' <> P.typeClassDictionariesEnvMap [fromJust dict]}
     _ -> pure identity
 
-  putErrLn $ ("deferredDicts: " :: Text) <> show deferredDicts
-  constraintFns <- forConcurrently (declConstraints <> typeConstraints) \c ->
-    case P.constraintClass c of
-      P.Qualified (P.ByModuleName mName) className ->
-        importClassOnly mName className
-      _ -> pure identity
 
-  let env = foldl' (&) E.initEnvironment (importFns <> constraintFns)
-  when (mName' == P.ModuleName "Data.BooleanAlgebra") do
+  dictFns <- forConcurrently deferredDicts \case
+    (P.Qualified (P.ByModuleName mn) className, _types) -> importClassAndTypes mn className
+    _ -> pure identity
+
+  let env = foldl' (&) E.initEnvironment (importFns <> dictFns)
+  when (modName == P.ModuleName "Data.BooleanAlgebra") do
+    putErrLn $ ("deferredDicts:\n " :: Text) <> T.intercalate "\n" (fmap (show . fst) deferredDicts)
     putErrLn $ "Data.BooleanAlgebra: \n" <> intercalate "\n" (debugTypeClassDictionaries env)
 
   pure env
   where
-    replaceModuleAlias :: P.ModuleName -> P.ModuleName
-    replaceModuleAlias mName = fromMaybe mName $ Map.lookup mName importAliasMap
+    -- replaceModuleAlias :: P.ModuleName -> P.ModuleName
+    -- replaceModuleAlias mName = fromMaybe mName $ Map.lookup mName importAliasMap
 
-    importAliasMap :: Map.Map P.ModuleName P.ModuleName
-    importAliasMap =
-      Map.fromList $
-        decls >>= \case
-          P.ImportDeclaration _ mName _ (Just alias) -> [(alias, mName)]
-          _ -> []
+    -- importAliasMap :: Map.Map P.ModuleName P.ModuleName
+    -- importAliasMap =
+    --   Map.fromList $
+    --     decls >>= \case
+    --       P.ImportDeclaration _ mName _ (Just alias) -> [(alias, mName)]
+    --       _ -> []
 
     deferredDicts = getDeclDicts =<< decls
 
@@ -238,137 +226,10 @@ selectEnvFromImports conn (P.Module _ _ mName' decls _) = liftIO do
         pure e
       e -> pure e
 
-    declConstraints :: [P.SourceConstraint]
-    declConstraints =
-      decls >>= \case
-        P.TypeClassDeclaration _ _ _ deps _ _ -> deps
-        P.TypeInstanceDeclaration _ _ _ _ _ deps _ _ _ -> deps
-        _ -> []
 
-    typeConstraints :: [P.SourceConstraint]
-    typeConstraints = getDeclTypeConstraints =<< decls
-
-    (getDeclTypeConstraints, _, _, _, _) = P.accumTypes \case
-      P.ConstrainedType _ c _ -> [c]
-      _ -> []
-
-    importModule = importModuleHiding []
-
-    -- todo: select imports from db and use same code as explicit imports
-    importModuleHiding hideRefs mName = do
-      let hiddenIdents =
-            Set.fromList $
-              hideRefs >>= \case
-                P.ValueRef _ ident -> [ident]
-                _ -> []
-
-          hiddenTypes =
-            Set.fromList $
-              hideRefs >>= \case
-                P.TypeRef _ tyName _ -> [tyName]
-                _ -> []
-
-          hiddenCtrs =
-            Set.fromList $
-              hideRefs >>= \case
-                P.TypeRef _ _ ctrs -> fold ctrs
-                _ -> []
-          hiddenTypeClasses =
-            Set.fromList $
-              hideRefs >>= \case
-                P.TypeClassRef _ className -> [className]
-                _ -> []
-
-          hiddenInstances =
-            Set.fromList $
-              hideRefs >>= \case
-                P.TypeInstanceRef _ ident _ -> [ident]
-                _ -> []
-
-      names <-
-        filter (\(ident, _) -> not $ Set.member (P.disqualify ident) hiddenIdents)
-          <$> selectModuleEnvValues conn mName
-      types <-
-        filter (\(ty, _) -> not $ Set.member (P.disqualify ty) hiddenTypes)
-          <$> selectModuleEnvTypes conn mName
-      dataConstructors <-
-        filter (\(ctr, _) -> not $ Set.member (P.disqualify ctr) hiddenCtrs)
-          <$> selectModuleDataConstructors conn mName
-      typeSynonyms <-
-        filter (\(ty, _) -> not $ Set.member (P.disqualify ty) hiddenTypes)
-          <$> selectModuleTypeSynonyms conn mName
-      typeClasses <-
-        filter (\(tc, _) -> not $ Set.member (P.disqualify tc) hiddenTypeClasses)
-          <$> selectModuleTypeClasses conn mName
-      instances <-
-        filter (\inst -> not $ Set.member (P.disqualify $ tcdValue inst) hiddenInstances)
-          <$> selectModuleClassInstances conn mName
-      pure $ \env' ->
-        env'
-          { E.names = E.names env' <> Map.fromList names,
-            E.types = E.types env' <> Map.fromList types,
-            E.dataConstructors = E.dataConstructors env' <> Map.fromList dataConstructors,
-            E.typeSynonyms = E.typeSynonyms env' <> Map.fromList typeSynonyms,
-            E.typeClasses = E.typeClasses env' <> Map.fromList typeClasses,
-            E.typeClassDictionaries = E.typeClassDictionaries env' <> P.typeClassDictionariesEnvMap instances
-          }
-
-    importClassOnly :: P.ModuleName -> P.ProperName 'P.ClassName -> IO (E.Environment -> E.Environment)
-    importClassOnly mName className = do
-      let qual = P.Qualified (P.ByModuleName mName) className
-      typeClass <- fromJustWithErr qual <$> selectTypeClass conn qual
-      instances <- selectClassInstancesByClassName conn qual
-      superClassImports <- forConcurrently (typeClassSuperclasses typeClass) \super -> case P.constraintClass super of
-        P.Qualified (P.ByModuleName superModName) superClassName -> do
-          superModName' <- selectImportedAs' conn mName superModName
-          importClassOnly superModName' superClassName
-        _ -> pure identity
-      pure $
-        foldl' (>>>) identity superClassImports >>> \env' ->
-          env'
-            { E.typeClasses = E.typeClasses env' <> Map.fromList [(qual, typeClass)],
-              E.typeClassDictionaries = E.typeClassDictionaries env' <> P.typeClassDictionariesEnvMap instances
-            }
-
-    importClassAndTypes :: P.ModuleName -> P.ProperName 'P.ClassName -> IO (E.Environment -> E.Environment)
-    importClassAndTypes mName className = do
-      let qual = P.Qualified (P.ByModuleName mName) className
-          typeQual = P.Qualified (P.ByModuleName mName) $ coerceProperName className
-      typeClass <- fromJust <$> selectTypeClass conn qual
-      type' <- selectType conn typeQual
-      let dictName = P.Qualified (P.ByModuleName mName) . P.dictTypeName . coerceProperName $ className
-      dictVal@(_, dictKind) <- fromJustWithErr dictName <$> selectType conn dictName
-
-      let ctrMb :: Maybe (P.Qualified (P.ProperName 'P.ConstructorName))
-          ctrMb =
-            P.Qualified (P.ByModuleName mName) <$> case dictKind of
-              P.DataType _ _ [(ctr', _)] -> Just ctr'
-              _ -> Nothing
-
-      ctrData <- ctrMb & maybe (pure Nothing) (\ctr -> selectDataConstructor conn ctr)
-      superClassImports <- forConcurrently (typeClassSuperclasses typeClass) \super -> case P.constraintClass super of
-        P.Qualified (P.ByModuleName superModName) superClassName -> do
-          importClassOnly (replaceModuleAlias superModName) superClassName
-        _ -> pure identity
-      instances <- selectClassInstancesByClassName conn qual
-
-      pure $
-        foldl' (>>>) identity superClassImports >>> \env' ->
-          env'
-            { E.typeClasses = E.typeClasses env' <> Map.fromList [(qual, typeClass)],
-              E.types =
-                E.types env'
-                  <> Map.fromList
-                    [ (typeQual, fromJust type'),
-                      (dictName, dictVal)
-                    ],
-              E.dataConstructors =
-                E.dataConstructors env'
-                  <> Map.fromList case (ctrMb, ctrData) of
-                    (Just ctr', Just ctrData') -> [(ctr', ctrData')]
-                    _ -> [],
-              E.typeClassDictionaries = E.typeClassDictionaries env' <> P.typeClassDictionariesEnvMap instances
-            }
+    importRefs mName refs = do
+        edits :: [E.Environment -> E.Environment] <- forConcurrently refs (importRef mName)
+        pure $ foldl' (>>>) identity edits
 
     importRef :: P.ModuleName -> P.DeclarationRef -> IO (E.Environment -> E.Environment)
     importRef mName = \case
@@ -416,6 +277,97 @@ selectEnvFromImports conn (P.Module _ _ mName' decls _) = liftIO do
           env'
             { E.types = E.types env' <> Map.fromList [(qual, fromJust val)]
             }
+
+    importModule mName = importModuleHiding mName []
+
+    importModuleHiding mName hideRefs = do
+      allRefs <- selectModuleExports conn mName
+      let refs = filter (not . flip Set.member hiddenRefSet) allRefs
+      importRefs mName refs
+      where 
+        hiddenRefSet = Set.fromList hideRefs
+      
+    importClassOnly :: P.ModuleName -> P.ProperName 'P.ClassName -> IO (E.Environment -> E.Environment)
+    importClassOnly mName className = do
+      let qual = P.Qualified (P.ByModuleName mName) className
+      typeClass <- fromJustWithErr qual <$> selectTypeClass conn mName className
+      instances <- selectClassInstancesByClassName conn qual
+      superClassImports <- forConcurrently (typeClassSuperclasses typeClass) \super -> case P.constraintClass super of
+        P.Qualified (P.ByModuleName superModName) superClassName -> do
+          -- superModName' <- selectImportedAs' conn mName superModName
+          importClassOnly superModName superClassName
+        _ -> pure identity
+      pure $
+        foldl' (>>>) identity superClassImports >>> \env' ->
+          env'
+            { E.typeClasses = E.typeClasses env' <> Map.fromList [(qual, typeClass)],
+              E.typeClassDictionaries = E.typeClassDictionaries env' <> P.typeClassDictionariesEnvMap instances
+            }
+
+    importClassAndTypes :: P.ModuleName -> P.ProperName 'P.ClassName -> IO (E.Environment -> E.Environment)
+    importClassAndTypes mName className = do
+      let qual = P.Qualified (P.ByModuleName mName) className
+          typeQual = P.Qualified (P.ByModuleName mName) $ coerceProperName className
+      typeClass <- fromJust <$> selectTypeClass conn mName className
+      type' <- selectType conn typeQual
+      let dictName = P.Qualified (P.ByModuleName mName) . P.dictTypeName . coerceProperName $ className
+      dictVal@(_, dictKind) <- fromJustWithErr dictName <$> selectType conn dictName
+
+      let ctrMb :: Maybe (P.Qualified (P.ProperName 'P.ConstructorName))
+          ctrMb =
+            P.Qualified (P.ByModuleName mName) <$> case dictKind of
+              P.DataType _ _ [(ctr', _)] -> Just ctr'
+              _ -> Nothing
+
+      ctrData <- ctrMb & maybe (pure Nothing) (\ctr -> selectDataConstructor conn ctr)
+      superClassImports <- forConcurrently (typeClassSuperclasses typeClass) \super -> case P.constraintClass super of
+        P.Qualified (P.ByModuleName superModName) superClassName -> do
+          importClassAndTypes superModName superClassName
+        _ -> pure identity
+      when (mName == P.ModuleName "Data.HeytingAlgebra") do
+        putErrLn ("HeytingAlgebra class import: \n" <> show qual :: Text)
+      instances <- selectClassInstancesByClassName conn qual
+
+      when (mName == P.ModuleName "Data.HeytingAlgebra") do
+        putErrLn ("HeytingAlgebra instances: \n" <> T.intercalate "\n\n" (fmap (show . tcdValue) instances) :: Text)
+
+      pure $
+        foldl' (>>>) identity superClassImports >>> \env' ->
+          env'
+            { E.typeClasses = E.typeClasses env' <> Map.fromList [(qual, typeClass)],
+              E.types =
+                E.types env'
+                  <> Map.fromList
+                    [ (typeQual, fromJust type'),
+                      (dictName, dictVal)
+                    ],
+              E.dataConstructors =
+                E.dataConstructors env'
+                  <> Map.fromList case (ctrMb, ctrData) of
+                    (Just ctr', Just ctrData') -> [(ctr', ctrData')]
+                    _ -> [],
+              E.typeClassDictionaries = E.typeClassDictionaries env' <> P.typeClassDictionariesEnvMap instances
+            }
+
+selectModuleExports :: Connection -> P.ModuleName -> IO [P.DeclarationRef]
+selectModuleExports conn modName = do
+  SQL.query
+    conn
+    "SELECT value FROM exports WHERE module_name = ?"
+    (SQL.Only modName)
+    <&> fmap SQL.fromOnly
+
+insertExports :: Connection -> P.ModuleName -> Maybe [P.DeclarationRef] -> IO ()
+insertExports  conn modName = \case 
+  Nothing -> internalError "selectEnvFromImports called before desguaring module" 
+  Just refs -> forConcurrently_ refs (insertExport conn modName)
+
+insertExport :: Connection -> P.ModuleName -> P.DeclarationRef -> IO ()
+insertExport conn modName ref =
+   SQL.execute 
+     conn
+     "INSERT INTO exports (module_name, ident, value) VALUES (?, ?, ?)"  
+      (modName, (show $ P.declRefName ref) :: Text,  ref)
 
 selectEnvValue :: Connection -> P.Qualified P.Ident -> IO (Maybe (P.SourceType, P.NameKind, P.NameVisibility))
 selectEnvValue conn ident = do
@@ -501,17 +453,16 @@ selectModuleTypeSynonyms conn moduleName' = do
     (SQL.Only moduleName')
     <&> fmap (\(ty, idents, st) -> (P.Qualified (P.ByModuleName moduleName') ty, (deserialise idents, st)))
 
-selectTypeClass :: Connection -> P.Qualified (P.ProperName 'P.ClassName) -> IO (Maybe P.TypeClassData)
-selectTypeClass conn ident = case Map.lookup ident P.allPrimClasses of
-  Just a -> pure $ Just a
-  Nothing ->
-    SQL.query
-      conn
-      "SELECT class FROM env_type_classes WHERE module_name = ? AND class_name = ?"
-      (modName, className)
-      <&> (fmap SQL.fromOnly . head)
-  where
-    (modName, className) = toDbQualifer ident
+selectTypeClass :: Connection -> P.ModuleName -> P.ProperName 'P.ClassName -> IO (Maybe P.TypeClassData)
+selectTypeClass conn modName className =
+  case Map.lookup (P.Qualified (P.ByModuleName modName) className) P.allPrimClasses of
+    Just a -> pure $ Just a
+    Nothing ->
+      SQL.query
+        conn
+        "SELECT class FROM env_type_classes WHERE module_name = ? AND class_name = ?"
+        (modName, className)
+        <&> (fmap SQL.fromOnly . head)
 
 selectModuleTypeClasses :: Connection -> P.ModuleName -> IO [(P.Qualified (P.ProperName 'P.ClassName), P.TypeClassData)]
 selectModuleTypeClasses conn moduleName' = do
@@ -584,7 +535,7 @@ selectTypeOperatorAlias conn modName opName = do
     (modName, P.runOpName opName)
     <&> head
 
-selectImportedAs' :: Connection -> P.ModuleName -> P.ModuleName -> IO  P.ModuleName
+selectImportedAs' :: Connection -> P.ModuleName -> P.ModuleName -> IO P.ModuleName
 selectImportedAs' conn modName importedModName = fromMaybe importedModName <$> selectImportedAs conn modName importedModName
 
 selectImportedAs :: Connection -> P.ModuleName -> P.ModuleName -> IO (Maybe P.ModuleName)
@@ -605,3 +556,15 @@ fromJustWithErr :: (HasCallStack) => (Show e) => e -> Maybe a -> a
 fromJustWithErr err = \case
   Just a -> a
   Nothing -> internalError $ "fromJustWithErr: " <> show err
+
+insertImports :: Connection -> P.ModuleName -> [P.Declaration] -> IO ()
+insertImports conn mn = mapConcurrently_ (insertImport conn mn)
+
+insertImport :: Connection -> P.ModuleName -> P.Declaration -> IO ()
+insertImport conn mn = \case
+  P.ImportDeclaration _ importedModuleName _ importedAs -> do
+    SQL.execute
+      conn
+      "INSERT INTO imports (module_name, imported_module, imported_as) VALUES (?, ?, ?)"
+      (mn, importedModuleName, importedAs)
+  _ -> pure ()
