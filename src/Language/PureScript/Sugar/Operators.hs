@@ -30,7 +30,7 @@ import Data.Maybe (listToMaybe, mapMaybe)
 import Data.Ord (Down (..))
 import Language.PureScript.AST
 import Language.PureScript.Constants.Libs qualified as C
-import Language.PureScript.Crash (internalError)
+import Language.PureScript.Crash (internalError, HasCallStack)
 import Language.PureScript.Errors (MultipleErrors, SimpleErrorMessage (..), addHint, errorMessage, errorMessage', parU, rethrow, rethrowWithPosition)
 import Language.PureScript.Externs (ExternsFile (..), ExternsFixity (..), ExternsTypeFixity (..))
 import Language.PureScript.Names (Ident (..), Name (..), OpName, OpNameType (..), ProperName, ProperNameType (..), Qualified (..), QualifiedBy (..), freshIdent', pattern ByNullSourcePos)
@@ -78,6 +78,7 @@ rebracket =
 -- | rebracket that takes the fixities without the other externs fields
 rebracketFixitiesOnly ::
   forall m.
+  HasCallStack =>
   (MonadError MultipleErrors m) =>
   (MonadSupply m) =>
   (Declaration -> Bool) ->
@@ -105,6 +106,7 @@ fromExternFixities exFixities exTypeFixities  = fixities <> typeFixities
 -- operators in value declarations.
 rebracketFiltered ::
   forall m.
+  HasCallStack =>
   (MonadError MultipleErrors m) =>
   (MonadSupply m) =>
   RebracketCaller ->
@@ -117,6 +119,7 @@ rebracketFiltered !caller pred_ externs m = do
 
 rebracketFiltered' ::
   forall m.
+  HasCallStack =>
   (MonadError MultipleErrors m) =>
   (MonadSupply m) =>
   RebracketCaller ->
@@ -226,6 +229,7 @@ data RebracketCaller
 
 rebracketModule ::
   forall m.
+  HasCallStack =>
   (MonadError MultipleErrors m) =>
   (MonadSupply m) =>
   RebracketCaller ->

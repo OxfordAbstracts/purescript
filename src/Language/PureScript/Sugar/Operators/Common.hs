@@ -18,7 +18,7 @@ import Text.Parsec.Pos qualified as P
 import Text.Parsec.Expr qualified as P
 
 import Language.PureScript.AST (Associativity(..), ErrorMessageHint(..), SourceSpan)
-import Language.PureScript.Crash (internalError)
+import Language.PureScript.Crash (internalError, HasCallStack)
 import Language.PureScript.Errors (ErrorMessage(..), MultipleErrors(..), SimpleErrorMessage(..))
 import Language.PureScript.Names (OpName, Qualified, eraseOpName)
 
@@ -62,7 +62,8 @@ opTable ops fromOp reapply =
 
 matchOperators
   :: forall m a nameType
-   . Show a
+   . HasCallStack 
+  => Show a
   => MonadError MultipleErrors m
   => (a -> Bool)
   -> (a -> Maybe (a, a, a))
@@ -145,7 +146,7 @@ matchOperators isBinOp extractOp fromOp reapply modOpTable ops = parseChains
     ErrorMessage
       [PositionedError (fromJust . flip M.lookup chainOpSpans =<< grp)]
 
-fromJust' :: Show a => a -> Maybe b -> b
+fromJust' :: HasCallStack => Show a => a -> Maybe b -> b
 fromJust' a m = case m of 
   Just b -> b
   Nothing -> internalError $ "mkErrors: lookup not found for: " ++ show a

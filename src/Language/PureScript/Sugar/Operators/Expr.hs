@@ -12,9 +12,11 @@ import Language.PureScript.AST (Associativity, Expr(..), SourceSpan)
 import Language.PureScript.Names (OpName(..), OpNameType(..), Qualified(..))
 import Language.PureScript.Sugar.Operators.Common (Chain, matchOperators, token)
 import Language.PureScript.Errors (MultipleErrors)
+import GHC.Stack (HasCallStack)
 
 matchExprOperators
   :: MonadError MultipleErrors m
+  => HasCallStack
   => [[(Qualified (OpName 'ValueOpName), Associativity)]]
   -> Expr
   -> m Expr

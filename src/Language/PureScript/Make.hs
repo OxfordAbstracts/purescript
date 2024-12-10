@@ -178,14 +178,13 @@ rebuildModuleWithProvidedEnvDb initialCheckState MakeActions {..} conn exEnv m@(
   progress $ CompilingModule moduleName moduleIndex
   let withPrim = importPrim m
   lint withPrim
-  (ops, typeOps) <- liftIO $ selectFixitiesFromModuleImports conn m
   -- when (moduleName == ModuleName "Data.NaturalTransformation") $ do 
   --   putErrLn ( "ops:" :: T.Text)
   --   putErrLn $ intercalate "\n" $ fmap show ops
   --   putErrLn ( "type ops:" :: T.Text)
   --   putErrLn $ intercalate "\n" $ fmap show typeOps
   ((Module ss coms _ elaborated exps, checkSt), nextVar) <-
-    desugarAndTypeCheckDb initialCheckState conn withCheckStateOnError withCheckState moduleName withPrim exEnv ops typeOps
+    desugarAndTypeCheckDb initialCheckState conn withCheckStateOnError withCheckState moduleName withPrim exEnv 
   let env' = P.checkEnv checkSt
 
   -- desugar case declarations *after* type- and exhaustiveness checking
@@ -209,14 +208,15 @@ rebuildModuleWithProvidedEnvDb initialCheckState MakeActions {..} conn exEnv m@(
   -- a bug in the compiler, which should be reported as such.
   -- 2. We do not want to perform any extra work generating docs unless the
   -- user has asked for docs to be generated.
-  let docs = case Docs.convertModuleWithoutExterns ops typeOps exEnv env' withPrim of
-        Left errs ->
-          internalError $
-            "Failed to produce docs for "
-              ++ T.unpack (runModuleName moduleName)
-              ++ "; details:\n"
-              ++ prettyPrintMultipleErrors defaultPPEOptions errs
-        Right d -> d
+  let docs = Docs.Module moduleName (Just "TODO") [] []
+    -- case Docs.convertModuleWithoutExterns ops typeOps exEnv env' withPrim of
+    --     Left errs ->
+    --       internalError $
+    --         "Failed to produce docs for "
+    --           ++ T.unpack (runModuleName moduleName)
+    --           ++ "; details:\n"
+    --           ++ prettyPrintMultipleErrors defaultPPEOptions errs
+    --     Right d -> d
 
   evalSupplyT nextVar'' $ codegen env' checkSt mod' renamed docs exts
   return exts
@@ -266,11 +266,9 @@ desugarAndTypeCheckDb ::
   ModuleName ->
   Module ->
   Env ->
-  [(ModuleName, [ExternsFixity])] ->
-  [(ModuleName, [ExternsTypeFixity])] ->
   m ((Module, CheckState), Integer)
-desugarAndTypeCheckDb initialCheckState conn withCheckStateOnError withCheckState moduleName withPrim exEnv ops typeOps = runSupplyT 0 $ do
-  (desugared, (exEnv', usedImports)) <- runStateT (desugarUsingDb conn ops typeOps withPrim) (exEnv, mempty)
+desugarAndTypeCheckDb initialCheckState conn withCheckStateOnError withCheckState moduleName withPrim exEnv = runSupplyT 0 $ do
+  (desugared, (exEnv', usedImports)) <- runStateT (desugarUsingDb conn exEnv withPrim) (exEnv, mempty)
   let modulesExports = (\(_, _, exports) -> exports) <$> exEnv'
   env <- selectEnvFromImports conn desugared
   (checked, checkSt@(CheckState {..})) <- runStateT (catchError (typeCheckModule modulesExports desugared) mergeCheckState) $ initialCheckState env

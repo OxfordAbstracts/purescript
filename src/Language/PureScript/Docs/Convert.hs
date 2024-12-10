@@ -297,7 +297,7 @@ partiallyDesugarWithouExterns ::
   P.Env ->
   P.Module ->
   m P.Module
-partiallyDesugarWithouExterns  fixities typeFixities env = evalSupplyT 0 . desugar'
+partiallyDesugarWithouExterns fixities typeFixities env = evalSupplyT 0 . desugar'
   where
   desugar' =
     P.desugarDoModule

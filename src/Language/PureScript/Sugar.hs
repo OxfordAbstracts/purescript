@@ -7,9 +7,8 @@ import Control.Monad.Supply.Class (MonadSupply)
 import Control.Monad.Writer.Class (MonadWriter)
 import Language.PureScript.AST (Module)
 import Language.PureScript.Errors (MultipleErrors)
-import Language.PureScript.Externs (ExternsFile, ExternsFixity, ExternsTypeFixity)
+import Language.PureScript.Externs (ExternsFile)
 import Language.PureScript.Linter.Imports (UsedImports)
-import Language.PureScript.Names qualified as P
 import Language.PureScript.Sugar.AdoNotation as S
 import Language.PureScript.Sugar.BindingGroups as S
 import Language.PureScript.Sugar.CaseDeclarations as S
@@ -23,6 +22,7 @@ import Language.PureScript.Sugar.TypeClasses.Deriving as S
 import Language.PureScript.Sugar.TypeDeclarations as S
 import Protolude
 import Database.SQLite.Simple (Connection)
+import Language.PureScript.Make.Index.Select (selectFixitiesFromModuleImports)
 
 -- |
 -- The desugaring pipeline proceeds as follows:
@@ -77,11 +77,10 @@ desugarUsingDb ::
   (MonadError MultipleErrors m) =>
   (MonadState (Env, UsedImports) m) =>
   Connection ->
-  [(P.ModuleName, [ExternsFixity])] ->
-  [(P.ModuleName, [ExternsTypeFixity])] ->
+  Env ->
   Module ->
   m Module
-desugarUsingDb conn fixities typeFixities  =
+desugarUsingDb conn  env =
   desugarSignedLiterals
     >>> desugarObjectConstructors
     >=> desugarDoModule
@@ -90,8 +89,14 @@ desugarUsingDb conn fixities typeFixities  =
     >>> desugarCasesModule
     >=> desugarTypeDeclarationsModule
     >=> desugarImports
-    >=> rebracketFixitiesOnly (const True) fixities typeFixities
+    >=> rebracketUsingDb
     >=> checkFixityExports
     >=> deriveInstances
     >=> desugarTypeClassesUsingDB conn
     >=> createBindingGroupsModule
+
+  where
+    rebracketUsingDb m = do 
+      (fixities, typeFixities) <- liftIO $ selectFixitiesFromModuleImports conn  env m 
+      rebracketFixitiesOnly (const True) fixities typeFixities m
+      
