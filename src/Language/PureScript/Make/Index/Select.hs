@@ -5,7 +5,7 @@ module Language.PureScript.Make.Index.Select where
 import Codec.Serialise (deserialise)
 import Control.Arrow ((>>>))
 import Control.Concurrent.Async.Lifted (forConcurrently, forConcurrently_, mapConcurrently, mapConcurrently_)
-import Control.Lens (Field1 (_1), Field3 (_3), view, Field2 (_2))
+import Control.Lens (Field1 (_1), Field2 (_2), Field3 (_3), view)
 import Data.Aeson qualified as A
 import Data.List.NonEmpty qualified as NEL
 import Data.Map qualified as Map
@@ -59,25 +59,22 @@ getModuleFixities (P.Module _ _ _ decls _) = (externsFixitiesInModule, externsTy
 
 selectFixitiesFromModuleImports :: Connection -> P.Env -> P.Module -> IO ([(P.ModuleName, [ExternsFixity])], [(P.ModuleName, [ExternsTypeFixity])])
 selectFixitiesFromModuleImports conn env (P.Module _ _ _modName decls _refs) = do
-  valueOps <- join . catMaybes <$> forConcurrently decls (onImports (selectImportValueFixities conn env))
-  typeOps <- catMaybes <$> forConcurrently decls (onImports (selectImportTypeFixities conn env))
-  -- when (_modName == P.ModuleName "Data.EuclideanRing") do 
-  --   putErrText $ T.intercalate "\n\n" $ fmap show imports
-  --   putErrText $ T.intercalate "\n\n" $ fmap show valueOps
-
-  pure (groupByModule valueOps, typeOps)
+  valueOps <- onImports selectImportValueFixities
+  typeOps <- onImports selectImportTypeFixities
+  pure (valueOps, typeOps)
   where
-    onImports :: (P.ModuleName -> ImportDeclarationType -> IO a) -> P.Declaration -> IO (Maybe a)
-    onImports f = \case
+    onImports ::
+      (Connection -> P.Env -> P.ModuleName -> ImportDeclarationType -> IO [(P.ModuleName, a)]) ->
+      IO [(P.ModuleName, [a])]
+    onImports fn = groupByModule . join . catMaybes <$> forConcurrently decls (whenImportDecl (fn conn env))
+
+    whenImportDecl :: (P.ModuleName -> ImportDeclarationType -> IO a) -> P.Declaration -> IO (Maybe a)
+    whenImportDecl f = \case
       P.ImportDeclaration _ mn' idt _ -> Just <$> f mn' idt
       _ -> pure Nothing
 
-
-groupByModule :: [(P.ModuleName, a)] -> [(P.ModuleName, [a])]
-groupByModule = Map.toList . Map.fromListWith (<>) . fmap (fmap pure)
-
-    -- addOr' = if _modName == P.ModuleName "Data.EuclideanRing" then (\ops -> (P.ModuleName "Nonsense", [orImport]) : ops) else identity
-    -- addOr' = if _modName == P.ModuleName "Data.EuclideanRing" then (\ops -> (P.ModuleName "Data.HeytingAlgebra", [orImport]) : ops) else identity
+    groupByModule :: [(P.ModuleName, a)] -> [(P.ModuleName, [a])]
+    groupByModule = Map.toList . Map.fromListWith (<>) . fmap (fmap pure)
 
 selectImportValueFixities :: Connection -> P.Env -> P.ModuleName -> ImportDeclarationType -> IO [(P.ModuleName, ExternsFixity)]
 selectImportValueFixities conn env modName = \case
@@ -87,35 +84,28 @@ selectImportValueFixities conn env modName = \case
   where
     exports = exportedValueOps $ lookupExports modName env
     inRefs refs opName _ = opName `elem` opRefs
-      where 
+      where
         opRefs = refsValueOps env refs
 
-lookupExports :: P.ModuleName ->  P.Env -> Exports
-lookupExports modName env  = view _3 $ fromJust $ Map.lookup modName env
+lookupExports :: P.ModuleName -> P.Env -> Exports
+lookupExports modName env = view _3 $ fromJust $ Map.lookup modName env
 
-lookupImports :: P.ModuleName ->  P.Env -> P.Imports
-lookupImports modName env  = view _2 $ fromJust $ Map.lookup modName env
-      
-refsValueOps ::  P.Env -> [P.DeclarationRef] -> [P.OpName 'P.ValueOpName]
+lookupImports :: P.ModuleName -> P.Env -> P.Imports
+lookupImports modName env = view _2 $ fromJust $ Map.lookup modName env
+
+refsValueOps :: P.Env -> [P.DeclarationRef] -> [P.OpName 'P.ValueOpName]
 refsValueOps env = (=<<) (refValueOp env)
 
 refValueOp :: P.Env -> P.DeclarationRef -> [P.OpName 'P.ValueOpName]
 refValueOp env = \case
   P.ValueOpRef _ ident -> pure ident
   P.ReExportRef _ _ ref -> refValueOp env ref
-  -- P.ModuleRef _ m -> _  env $ exportedValueOps $ lookupExports m env
   _ -> []
 
 selectValueFixitiesFromExports :: Connection -> Map (P.OpName 'P.ValueOpName) P.ExportSource -> IO [(P.ModuleName, ExternsFixity)]
 selectValueFixitiesFromExports conn = fmap catMaybes . mapConcurrently select . Map.toList
   where
-    select (opName, P.ExportSource{..}) =  fmap (exportSourceDefinedIn, ) <$> selectImportValueFixity conn  exportSourceDefinedIn opName
-
-addOr :: [ExternsFixity] -> [ExternsFixity]
-addOr ops =  ExternsFixity P.Infixr 2 (P.OpName "||") (P.Qualified (P.ByModuleName $ P.ModuleName "Data.HeytingAlgebra") $ Left $ P.Ident "disj") : ops
-
-orImport :: ExternsFixity
-orImport =  ExternsFixity P.Infixr 2 (P.OpName "||") (P.Qualified (P.ByModuleName $ P.ModuleName "Data.HeytingAlgebra") $ Left $ P.Ident "disj")
+    select (opName, P.ExportSource {..}) = fmap (exportSourceDefinedIn,) <$> selectImportValueFixity conn exportSourceDefinedIn opName
 
 selectImportValueFixity :: Connection -> P.ModuleName -> P.OpName 'P.ValueOpName -> IO (Maybe ExternsFixity)
 selectImportValueFixity conn modName opName = do
@@ -125,15 +115,15 @@ selectImportValueFixity conn modName opName = do
     (modName, opName)
     <&> head
 
-selectImportTypeFixities :: Connection -> P.Env -> P.ModuleName -> ImportDeclarationType -> IO (P.ModuleName, [ExternsTypeFixity])
-selectImportTypeFixities conn env modName = fmap (fmap (modName,) )\case
+selectImportTypeFixities :: Connection -> P.Env -> P.ModuleName -> ImportDeclarationType -> IO [(P.ModuleName, ExternsTypeFixity)]
+selectImportTypeFixities conn env modName = \case
   P.Implicit -> selectTypeFixitiesFromExports conn exports
   P.Explicit refs -> selectTypeFixitiesFromExports conn $ Map.filterWithKey (inRefs refs) exports
   P.Hiding refs -> selectTypeFixitiesFromExports conn $ Map.filterWithKey (fmap not . inRefs refs) exports
   where
     exports = P.exportedTypeOps $ view _3 $ fromJust $ Map.lookup modName env
     inRefs refs opName _ = opName `elem` opRefs
-      where 
+      where
         opRefs = refsTypeOps refs
 
 refsTypeOps :: [P.DeclarationRef] -> [P.OpName 'P.TypeOpName]
@@ -145,10 +135,10 @@ refTypeOp = \case
   P.ReExportRef _ _ ref -> refTypeOp ref
   _ -> Nothing
 
-selectTypeFixitiesFromExports :: Connection -> Map (P.OpName 'P.TypeOpName) P.ExportSource -> IO [ExternsTypeFixity]
+selectTypeFixitiesFromExports :: Connection -> Map (P.OpName 'P.TypeOpName) P.ExportSource -> IO [(P.ModuleName, ExternsTypeFixity)]
 selectTypeFixitiesFromExports conn = fmap catMaybes . mapConcurrently select . Map.toList
   where
-    select (opName, exSrc) = selectImportTypeFixity conn (P.exportSourceDefinedIn exSrc) opName
+    select (opName, P.ExportSource {..}) = fmap (exportSourceDefinedIn,) <$> selectImportTypeFixity conn exportSourceDefinedIn opName
 
 selectImportTypeFixity :: Connection -> P.ModuleName -> P.OpName 'P.TypeOpName -> IO (Maybe ExternsTypeFixity)
 selectImportTypeFixity conn modName opName = do
@@ -517,4 +507,3 @@ typeConstraints :: P.Type a -> [P.Constraint a]
 typeConstraints = P.everythingOnTypes (<>) \case
   P.ConstrainedType _ c _ -> [c]
   _ -> []
-
