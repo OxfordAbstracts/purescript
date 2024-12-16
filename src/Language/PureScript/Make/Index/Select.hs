@@ -172,16 +172,29 @@ selectEnvFromImports conn exportEnv _usedImports (P.Module _ _ modName decls exp
     ( onImportMap P.importedTypes \typeImport ->
         do
           let tyName = P.disqualify $ P.importName typeImport
-          type' <- selectType' conn (P.importSourceModule typeImport) tyName
-          pure $ \env' ->
-            env'
-              { E.types =
-                  E.types env'
-                    <> Map.fromList
-                      [ (P.importName typeImport, fromJust type'),
-                        (P.Qualified (P.ByModuleName $ P.importSourceModule typeImport) tyName, fromJust type')
-                      ]
-              }
+          synMb <- selectTypeSynonym' conn (P.importSourceModule typeImport) tyName
+          case synMb of
+            Just syn -> do
+              pure $ \env' ->
+                env'
+                  { E.typeSynonyms =
+                      E.typeSynonyms env'
+                        <> Map.fromList
+                          [ (P.importName typeImport, syn),
+                            (P.Qualified (P.ByModuleName $ P.importSourceModule typeImport) tyName, syn)
+                          ]
+                  }
+            Nothing -> do
+              type' <- selectType' conn (P.importSourceModule typeImport) tyName
+              pure $ \env' ->
+                env'
+                  { E.types =
+                      E.types env'
+                        <> Map.fromList
+                          [ (P.importName typeImport, fromJust type'),
+                            (P.Qualified (P.ByModuleName $ P.importSourceModule typeImport) tyName, fromJust type')
+                          ]
+                  }
       )
       `updateConcurrently` ( onImportMap P.importedDataConstructors \ctrImport ->
                                do
@@ -221,15 +234,27 @@ selectEnvFromImports conn exportEnv _usedImports (P.Module _ _ modName decls exp
       `updateConcurrently` ( onImportMap P.importedTypeOps \opImport -> do
                                let opName = P.disqualify $ P.importName opImport
                                (aliasModName, alias) <- fromJustWithErr opName <$> selectTypeOperatorAlias conn (P.importSourceModule opImport) opName
-                               type' <- selectType' conn aliasModName alias
-                               pure $ \env' ->
-                                 env'
-                                   { E.types =
-                                       E.types env'
-                                         <> Map.fromList
-                                           [ (P.Qualified (P.ByModuleName (P.importSourceModule opImport)) alias, fromJustWithErr opName type')
-                                           ]
-                                   }
+                               synMb <- selectTypeSynonym' conn aliasModName alias
+                               case synMb of 
+                                  Just syn -> do
+                                    pure $ \env' ->
+                                      env'
+                                        { E.typeSynonyms =
+                                            E.typeSynonyms env'
+                                              <> Map.fromList
+                                                [ (P.Qualified (P.ByModuleName (P.importSourceModule opImport)) alias, syn)
+                                                ]
+                                        }
+                                  Nothing -> do
+                                    type' <- selectType' conn aliasModName alias
+                                    pure $ \env' ->
+                                      env'
+                                        { E.types =
+                                            E.types env'
+                                              <> Map.fromList
+                                                [ (P.Qualified (P.ByModuleName (P.importSourceModule opImport)) alias, fromJustWithErr opName type')
+                                                ]
+                                        }
                            )
       `updateConcurrently` ( onImportMap P.importedValueOps \opImport -> do
                                let opName = P.disqualify $ P.importName opImport
@@ -675,6 +700,9 @@ selectTypeSynonym conn ident = do
     <&> (head >>> fmap deserialiseIdents)
   where
     deserialiseIdents (idents, st) = (deserialise idents, st)
+
+selectTypeSynonym' :: Connection -> P.ModuleName -> P.ProperName 'P.TypeName -> IO (Maybe ([(Text, Maybe P.SourceType)], P.SourceType))
+selectTypeSynonym' conn nMame ident = selectTypeSynonym conn (P.Qualified (P.ByModuleName nMame) ident)
 
 selectModuleTypeSynonyms :: Connection -> P.ModuleName -> IO [(P.Qualified (P.ProperName 'P.TypeName), ([(Text, Maybe P.SourceType)], P.SourceType))]
 selectModuleTypeSynonyms conn moduleName' = do
