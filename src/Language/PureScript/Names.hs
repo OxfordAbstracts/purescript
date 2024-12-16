@@ -21,8 +21,9 @@ import Database.SQLite.Simple.ToField (ToField (toField))
 import GHC.Generics (Generic)
 import Language.PureScript.AST.SourcePos (SourcePos, pattern SourcePos)
 import Prelude
-import Language.PureScript.Crash (internalError)
 import Protolude (isUpper)
+import Database.SQLite.Simple.Ok (Ok)
+import Data.Char (isAlphaNum)
 
 -- | A sum of the possible name types, useful for error and lint messages.
 data Name
@@ -99,14 +100,6 @@ data Ident
 instance NFData Ident
 
 instance Serialise Ident
-instance ToField Ident where
-  toField = \case 
-    Ident a -> toField a
-    _ -> internalError "unexpected InternalIdent in DB"
-    
-
-instance FromField Ident where
-  fromField a = Ident <$> fromField a
 
 unusedIdent :: Text
 unusedIdent = "$__unused"
@@ -338,4 +331,18 @@ instance FromJSONKey ModuleName where
 $(deriveJSON (defaultOptions {sumEncoding = ObjectWithSingleField}) ''InternalIdentData)
 $(deriveJSON (defaultOptions {sumEncoding = ObjectWithSingleField}) ''Ident)
 
+instance ToField Ident where
+  toField = \case 
+    Ident a -> toField a
+    ident -> toField $ A.encode ident
 
+instance FromField Ident where
+  fromField a = (decodeAlphaNumIdent =<< fromField a) <|> (decodeJsonIdent =<< fromField a)
+    where 
+      decodeAlphaNumIdent :: Text -> Ok Ident
+      decodeAlphaNumIdent txt = if all isAlphaNum $ T.unpack txt then
+        pure $ Ident txt
+      else
+        fail "Failed to decode ident"
+
+      decodeJsonIdent str = maybe (fail "Failed to decode ident") pure $ A.decode str

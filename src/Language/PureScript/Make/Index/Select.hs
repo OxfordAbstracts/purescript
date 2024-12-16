@@ -1,4 +1,9 @@
 {-# LANGUAGE BlockArguments #-}
+{-# OPTIONS_GHC -Wno-unrecognised-pragmas #-}
+{-# OPTIONS_GHC -Wno-unused-imports #-}
+{-# OPTIONS_GHC -Wno-unused-local-binds #-}
+
+{-# HLINT ignore "Redundant bracket" #-}
 
 module Language.PureScript.Make.Index.Select where
 
@@ -9,7 +14,6 @@ import Control.Lens (Field1 (_1), Field2 (_2), Field3 (_3), view)
 import Data.Aeson qualified as A
 import Data.List.NonEmpty qualified as NEL
 import Data.Map qualified as Map
-import Data.Set qualified as Set
 import Data.Text qualified as T
 import Database.SQLite.Simple (Connection)
 import Database.SQLite.Simple qualified as SQL
@@ -21,6 +25,7 @@ import Language.PureScript.Environment (TypeClassData (typeClassSuperclasses))
 import Language.PureScript.Environment qualified as E
 import Language.PureScript.Environment qualified as P
 import Language.PureScript.Externs (ExternsFixity (..), ExternsTypeFixity (..))
+import Language.PureScript.Linter.Imports qualified as P
 import Language.PureScript.Names (coerceProperName)
 import Language.PureScript.Names qualified as P
 import Language.PureScript.Sugar.Names (Exports (exportedValueOps))
@@ -88,7 +93,7 @@ selectImportValueFixities conn env modName = \case
         opRefs = refsValueOps env refs
 
 lookupExports :: P.ModuleName -> P.Env -> Exports
-lookupExports modName env = view _3 $ fromJust $ Map.lookup modName env
+lookupExports modName env = maybe P.nullExports (view _3) (Map.lookup modName env)
 
 lookupImports :: P.ModuleName -> P.Env -> P.Imports
 lookupImports modName env = view _2 $ fromJust $ Map.lookup modName env
@@ -156,92 +161,386 @@ type ClassDict =
         (Map.Map (P.Qualified P.Ident) (NEL.NonEmpty NamedDict))
     )
 
-selectEnvFromImports :: (MonadIO m) => Connection -> P.Module -> m E.Environment
-selectEnvFromImports conn (P.Module _ _ modName decls exports) = liftIO do
-  insertExports conn modName exports
+selectEnvFromImports :: (MonadIO m) => Connection -> P.Env -> P.UsedImports -> P.Module -> m E.Environment
+selectEnvFromImports conn exportEnv _usedImports (P.Module _ _ modName decls exportedRefs) = liftIO do
+  when (modName == P.ModuleName "Data.Identity") do
+    putErrText $ "\n\nData.Identity type imports: \n\n" <> T.intercalate "\n\n" (show <$> Map.toList (P.importedTypes imports))
+    putErrText $ "\n\nData.Identity class imports: \n\n" <> T.intercalate "\n\n" (show <$> Map.toList (P.importedTypeClasses imports))
+  insertExports conn modName exportedRefs
   insertImports conn modName decls
-  importFns :: [E.Environment -> E.Environment] <- forConcurrently decls \case
-    P.ImportDeclaration _ mName idt _ -> do
-      case idt of
-        P.Implicit -> importModule mName
-        P.Explicit refs -> importRefs mName refs
-        P.Hiding refs -> importModuleHiding mName refs
-    _ -> pure identity
+  importFn <-
+    ( onImportMap P.importedTypes \typeImport ->
+        do
+          let tyName = P.disqualify $ P.importName typeImport
+          type' <- selectType' conn (P.importSourceModule typeImport) tyName
+          pure $ \env' ->
+            env'
+              { E.types =
+                  E.types env'
+                    <> Map.fromList
+                      [ (P.importName typeImport, fromJust type'),
+                        (P.Qualified (P.ByModuleName $ P.importSourceModule typeImport) tyName, fromJust type')
+                      ]
+              }
+      )
+      `updateConcurrently` ( onImportMap P.importedDataConstructors \ctrImport ->
+                               do
+                                 let ctrName = P.disqualify $ P.importName ctrImport
+                                     qualified = P.Qualified (P.ByModuleName $ P.importSourceModule ctrImport) ctrName
+                                 ctr <- selectDataConstructor conn (P.Qualified (P.ByModuleName $ P.importSourceModule ctrImport) ctrName)
+                                 pure $ \env' ->
+                                   env'
+                                     { E.dataConstructors =
+                                         E.dataConstructors env'
+                                           <> Map.fromList
+                                             [ (P.importName ctrImport, fromJust ctr),
+                                               (qualified, fromJust ctr)
+                                             ]
+                                     }
+                           )
+      `updateConcurrently` ( onImportMap P.importedTypeClasses \classImport ->
+                               importClass (P.importSourceModule classImport) (P.importName classImport) (P.disqualify $ P.importName classImport)
+                           )
+      `updateConcurrently` ( onImportMap P.importedValues \valImport -> do
+                               let ident = P.disqualify $ P.importName valImport
+                               val <- selectEnvValue conn (P.Qualified (P.ByModuleName $ P.importSourceModule valImport) ident)
+                               pure $ \env' ->
+                                 env'
+                                   { E.names =
+                                       E.names env'
+                                         <> Map.fromList
+                                           [ ( P.importName valImport,
+                                               fromJustWithErr (modName, P.importSourceModule valImport, ident) val
+                                             ),
+                                             ( P.Qualified (P.ByModuleName $ P.importSourceModule valImport) ident,
+                                               fromJustWithErr (modName, P.importSourceModule valImport, ident) val
+                                             )
+                                           ]
+                                   }
+                           )
+      `updateConcurrently` ( onImportMap P.importedTypeOps \opImport -> do
+                               let opName = P.disqualify $ P.importName opImport
+                               (aliasModName, alias) <- fromJustWithErr opName <$> selectTypeOperatorAlias conn (P.importSourceModule opImport) opName
+                               type' <- selectType' conn aliasModName alias
+                               pure $ \env' ->
+                                 env'
+                                   { E.types =
+                                       E.types env'
+                                         <> Map.fromList
+                                           [ (P.Qualified (P.ByModuleName (P.importSourceModule opImport)) alias, fromJustWithErr opName type')
+                                           ]
+                                   }
+                           )
+      `updateConcurrently` ( onImportMap P.importedValueOps \opImport -> do
+                               let opName = P.disqualify $ P.importName opImport
+                               (aliasModName, alias) <- fromJustWithErr opName <$> selectValueOperatorAlias conn (P.importSourceModule opImport) opName
+                               if isUpper $ T.head alias
+                                 then do
+                                   let ctrName = P.ProperName alias
+                                       qual = P.Qualified (P.ByModuleName aliasModName) ctrName
+                                   val <- selectDataConstructor conn qual
+                                   pure $ \env' ->
+                                     env'
+                                       { E.dataConstructors =
+                                           E.dataConstructors env'
+                                             <> Map.fromList [(qual, fromJustWithErr qual val)]
+                                       }
+                                 else do
+                                   let ident = P.Ident alias
+                                       qual = P.Qualified (P.ByModuleName aliasModName) ident
+                                   val <- selectEnvValue conn qual
+                                   pure $ \env' ->
+                                     env'
+                                       { E.names =
+                                           E.names env'
+                                             <> Map.fromList [(qual, fromJustWithErr qual val)]
+                                       }
+                           )
 
-  let env = foldl' (&) E.initEnvironment importFns
+  let env = importFn E.initEnvironment
 
   envConstraintFns <- forConcurrently (getEnvConstraints env) \c -> do
     let (classMod, className) = toDbQualifer $ constraintClass c
-    importClass classMod className
+    importClass' classMod classMod className
 
   pure $ foldl' (&) env envConstraintFns
   where
-    importRefs mName refs = do
-      edits :: [E.Environment -> E.Environment] <- forConcurrently refs (importRef mName)
-      pure $ foldl' (>>>) identity edits
+    -- importName :: P.ModuleName -> P.Name -> IO (E.Environment -> E.Environment)
+    -- importName mName name = _ importRef mName $  getImportSrc mName name
+    imports :: P.Imports
+    imports = lookupImports modName exportEnv
 
-    importRef :: P.ModuleName -> P.DeclarationRef -> IO (E.Environment -> E.Environment)
-    importRef mName = \case
-      P.TypeClassRef _ className -> importClass mName className
-      P.TypeRef _ tyName ctrs -> do
-        let qual = P.Qualified (P.ByModuleName mName) tyName
-        type' <- selectType conn qual
-        ctrVals <- case ctrs of
-          Nothing -> selectTypeDataConstructors conn qual
-          Just ctrs' -> forConcurrently ctrs' \ctr -> do
-            let qual' = P.Qualified (P.ByModuleName mName) ctr
-            val <- selectDataConstructor conn qual'
-            pure (qual', fromJustWithErr qual' val)
-        pure $ \env' ->
-          env'
-            { E.types = E.types env' <> Map.fromList [(qual, fromJust type')],
-              E.dataConstructors = E.dataConstructors env' <> Map.fromList ctrVals
-            }
-      P.ValueRef _ ident -> do
-        let qual = P.Qualified (P.ByModuleName mName) ident
-        val <- selectEnvValue conn qual
-        pure $ \env' -> env' {E.names = E.names env' <> Map.fromList [(qual, fromJustWithErr qual val)]}
-      P.TypeInstanceRef _ ident _ -> do
-        let qual = P.Qualified (P.ByModuleName mName) ident
-        val <- selectClassInstance conn qual
-        pure $ \env' -> env' {E.typeClassDictionaries = P.addDictsToEnvMap [fromJust val] (E.typeClassDictionaries env')}
-      P.ModuleRef _ m -> importModule m
-      P.ReExportRef _ _ ref -> importRef mName ref
-      P.ValueOpRef _ opName -> do
-        (aliasModName, alias) <- fromJust <$> selectValueOperatorAlias conn mName opName
-        if isUpper $ T.head alias
-          then do
-            let qual = P.Qualified (P.ByModuleName aliasModName) (P.ProperName alias)
-            val <- selectDataConstructor conn qual
-            pure $ \env' -> env' {E.dataConstructors = E.dataConstructors env' <> Map.fromList [(qual, fromJustWithErr qual val)]}
-          else do
-            let qual = P.Qualified (P.ByModuleName aliasModName) (P.Ident alias)
-            val <- selectEnvValue conn qual
-            pure $ \env' -> env' {E.names = E.names env' <> Map.fromList [(qual, fromJustWithErr qual val)]}
-      P.TypeOpRef _ opName -> do
-        (aliasModName, alias) <- fromJustWithErr opName <$> selectTypeOperatorAlias conn mName opName
-        let qual = P.Qualified (P.ByModuleName aliasModName) alias
-        val <- selectType conn qual
-        pure $ \env' ->
-          env'
-            { E.types = E.types env' <> Map.fromList [(qual, fromJustWithErr qual val)]
-            }
-
-    importModule mName = importModuleHiding mName []
-
-    importModuleHiding mName hideRefs = do
-      allRefs <- selectModuleExports conn mName
-      let refs = filter (not . flip Set.member hiddenRefSet) allRefs
-      importRefs mName refs
+    onImportMap ::
+      ( P.Imports ->
+        Map
+          (P.Qualified a)
+          [P.ImportRecord a]
+      ) ->
+      ( P.ImportRecord a ->
+        IO (P.Environment -> P.Environment)
+      ) ->
+      IO (P.Environment -> P.Environment)
+    onImportMap getImports fn =
+      pipe <$> forConcurrently (Map.toList $ getImports imports) \(_, recs) ->
+        pipe <$> forConcurrently recs fn'
       where
-        hiddenRefSet = Set.fromList hideRefs
+        fn' ir = if P.importSourceModule ir == modName then pure identity else fn ir
 
-    importClass :: P.ModuleName -> P.ProperName 'P.ClassName -> IO (E.Environment -> E.Environment)
-    importClass mName className = do
+    -- importValue :: P.ModuleName -> P.Qualified P.Ident -> IO (E.Environment -> E.Environment)
+    -- importValue mName = \case
+    --   P.Qualified _ ident -> do
+    --     let qual = P.Qualified (P.ByModuleName mName) ident
+    --     val <- selectEnvValue conn qual
+    --     pure $ \env' -> env' {E.names = E.names env' <> Map.fromList [(qual, fromJustWithErr qual val)]}
+    --   where
+    --     exports = lookupExports mName exportEnv
+
+    importClass modName' qual className = do
+      typeClass <- fromJust <$> selectTypeClass conn modName' className
+      let dictName = P.Qualified (P.ByModuleName modName') . P.dictTypeName . coerceProperName $ className
+          typeQual = P.Qualified (P.ByModuleName modName') $ coerceProperName className
+      type' <- selectType conn typeQual
+      dictVal <- selectType conn dictName
+
+      let ctrMb :: Maybe (P.Qualified (P.ProperName 'P.ConstructorName))
+          ctrMb =
+            P.Qualified (P.ByModuleName modName') <$> case dictVal of
+              Just (_, P.DataType _ _ [(ctr', _)]) -> Just ctr'
+              _ -> Nothing
+
+      ctrData <- ctrMb & maybe (pure Nothing) (selectDataConstructor conn)
+      instances <- selectClassInstancesByClassName conn $ P.Qualified (P.ByModuleName modName') className
+
+      superClassImports <- forConcurrently (typeClassSuperclasses typeClass) \super -> case P.constraintClass super of
+        P.Qualified (P.ByModuleName superModName) superClassName -> do
+          -- TODO add check for existing class in env
+          importClass superModName (P.Qualified (P.ByModuleName superModName) superClassName) superClassName
+        _ -> pure identity
+
+      pure $
+        pipe superClassImports
+          >>> \env' ->
+            env'
+              { E.typeClasses =
+                  E.typeClasses env'
+                    <> Map.fromList
+                      [ (qual, typeClass),
+                        (P.Qualified (P.ByModuleName modName') className, typeClass)
+                      ],
+                E.types =
+                  E.types env'
+                    <> Map.fromList
+                      ( [ (typeQual, fromJust type')
+                        ]
+                          <> case dictVal of
+                            Just val -> [(dictName, val)]
+                            _ -> []
+                      ),
+                E.dataConstructors =
+                  E.dataConstructors env' <> Map.fromList case (ctrMb, ctrData) of
+                    (Just ctr', Just ctrData') -> [(ctr', ctrData')]
+                    _ -> [],
+                E.typeClassDictionaries = P.addDictsToEnvMap instances (E.typeClassDictionaries env')
+              }
+    importName :: P.ModuleName -> P.Qualified P.Name -> IO (E.Environment -> E.Environment)
+    importName mName (P.Qualified (P.ByModuleName _) name) = do
+      -- when (modName' /= mName) do
+      --   putErrText $ "importName called with different module names: " <> show modName' <> " and " <> show mName
+      --   putErrText $ "name: " <> show name
+      case name of
+        P.IdentName ident -> do
+          let P.ExportSource {..} = fromJustWithErr (mName, ident) $ Map.lookup ident (P.exportedValues exports)
+              qual = P.Qualified (P.ByModuleName exportSourceDefinedIn) ident
+          val <- selectEnvValue conn qual
+          let importedModuleName = getImportedModule mName ident $ P.importedValues imports
+          pure $ \env' -> env' {E.names = E.names env' <> Map.fromList [(P.Qualified (P.ByModuleName importedModuleName) ident, fromJustWithErr ident val)]}
+        P.ValOpName opName -> do
+          let P.ExportSource {..} = fromJustWithErr (mName, opName) $ Map.lookup opName (P.exportedValueOps exports)
+          (aliasModName, alias) <- fromJustWithErr (mName, opName) <$> selectValueOperatorAlias conn exportSourceDefinedIn opName
+          if isUpper $ T.head alias
+            then do
+              let ctrName = P.ProperName alias
+                  qual = P.Qualified (P.ByModuleName aliasModName) ctrName
+              val <- selectDataConstructor conn qual
+              pure $ \env' ->
+                env'
+                  { E.dataConstructors =
+                      E.dataConstructors env'
+                        <> Map.fromList [(qual, fromJustWithErr qual val)]
+                  }
+            else do
+              let ident = P.Ident alias
+                  qual = P.Qualified (P.ByModuleName aliasModName) ident
+              val <- selectEnvValue conn qual
+              pure $ \env' ->
+                env'
+                  { E.names =
+                      E.names env'
+                        <> Map.fromList [(qual, fromJustWithErr qual val)]
+                  }
+        P.TyName tyName -> do
+          let (_, P.ExportSource {..}) = fromJust $ Map.lookup tyName (P.exportedTypes exports)
+          let qual = P.Qualified (P.ByModuleName exportSourceDefinedIn) tyName
+          type' <- selectType conn qual
+          ctrVals <- selectTypeDataConstructors conn qual
+          let importedModuleName = getImportedModule mName tyName $ P.importedTypes imports
+          pure $ \env' ->
+            env'
+              { E.types = E.types env' <> Map.fromList [(P.Qualified (P.ByModuleName importedModuleName) tyName, fromJust type')],
+                E.dataConstructors = E.dataConstructors env' <> Map.fromList ctrVals
+              }
+        P.TyOpName opName -> do
+          let P.ExportSource {..} = fromJust $ Map.lookup opName (P.exportedTypeOps exports)
+          (aliasModName, alias) <- fromJustWithErr (mName, opName) <$> selectTypeOperatorAlias conn exportSourceDefinedIn opName
+          let qual = P.Qualified (P.ByModuleName aliasModName) alias
+          val <- selectType conn qual
+          let importedModuleName = getImportedModule mName alias $ P.importedTypes imports
+          pure $ \env' ->
+            env'
+              { E.types = E.types env' <> Map.fromList [(P.Qualified (P.ByModuleName importedModuleName) alias, fromJustWithErr qual val)]
+              }
+        P.TyClassName className -> do
+          let P.ExportSource {..} = fromJust $ Map.lookup className (P.exportedTypeClasses exports)
+          importClass' mName exportSourceDefinedIn className
+        P.DctorName ctrName -> do
+          let containsCtr (_, (ctrs, _)) = ctrName `elem` ctrs
+              (_, (_, P.ExportSource {..})) = fromJust $ find containsCtr $ Map.toList $ P.exportedTypes exports -- Map.find ctrName (P.exportedDataConstructors exports)
+              qual = P.Qualified (P.ByModuleName exportSourceDefinedIn) ctrName
+          val <- selectDataConstructor conn qual
+          let importedModuleName = getImportedModule mName ctrName $ P.importedDataConstructors imports
+          pure $ \env' -> env' {E.dataConstructors = E.dataConstructors env' <> Map.fromList [(P.Qualified (P.ByModuleName importedModuleName) ctrName, fromJustWithErr ctrName val)]}
+        P.ModName _ -> internalError "importName called with ModName"
+      where
+        exports :: P.Exports
+        exports = lookupExports mName exportEnv
+    importName _ _ = pure identity
+
+    getImportedModule ::
+      (Ord a) =>
+      (Foldable f) =>
+      P.ModuleName ->
+      a ->
+      Map (P.Qualified a) (f (P.ImportRecord a)) ->
+      P.ModuleName
+    getImportedModule mName ident imports' = fromMaybe mName do
+      importRecs <- Map.lookup (P.Qualified (P.ByModuleName mName) ident) imports'
+      importRec <- head importRecs
+      pure $ P.importSourceModule importRec
+    -- imports :: P.Imports
+    -- imports = lookupImports mName exportEnv
+
+    -- case
+    -- P.IdentName ident -> do
+    --   let qual = P.Qualified (P.ByModuleName mName) ident
+    --   val <- selectEnvValue conn qual
+    --   pure $ \env' -> env' {E.names = E.names env' <> Map.fromList [(qual, fromJustWithErr qual val)]}
+    -- P.ValOpName opName -> do
+    --   (aliasModName, alias) <- fromJustWithErr (mName, opName) <$> selectValueOperatorAlias conn mName opName
+    --   if isUpper $ T.head alias
+    --     then do
+    --       let qual = P.Qualified (P.ByModuleName aliasModName) (P.ProperName alias)
+    --       val <- selectDataConstructor conn qual
+    --       pure $ \env' -> env' {E.dataConstructors = E.dataConstructors env' <> Map.fromList [(qual, fromJustWithErr qual val)]}
+    --     else do
+    --       let qual = P.Qualified (P.ByModuleName aliasModName) (P.Ident alias)
+    --       val <- selectEnvValue conn qual
+    --       pure $ \env' -> env' {E.names = E.names env' <> Map.fromList [(qual, fromJustWithErr qual val)]}
+    -- P.TyName tyName -> do
+    --   let qual = P.Qualified (P.ByModuleName mName) tyName
+    --   type' <- selectType conn qual
+    --   ctrVals <- selectTypeDataConstructors conn qual
+    --   pure $ \env' ->
+    --     env'
+    --       { E.types = E.types env' <> Map.fromList [(qual, fromJustWithErr qual type')],
+    --         E.dataConstructors = E.dataConstructors env' <> Map.fromList ctrVals
+    --       }
+
+    -- P.TyOpName opName -> do
+    --   (aliasModName, alias) <- fromJustWithErr opName <$> selectTypeOperatorAlias conn mName opName
+    --   let qual = P.Qualified (P.ByModuleName aliasModName) alias
+    --   val <- selectType conn qual
+    --   pure $ \env' ->
+    --     env'
+    --       { E.types = E.types env' <> Map.fromList [(qual, fromJustWithErr qual val)]
+    --       }
+
+    -- P.DctorName dctorName -> do
+    --   let qual = P.Qualified (P.ByModuleName mName) dctorName
+    --   val <- selectDataConstructor conn qual
+    --   pure $ \env' -> env' {E.dataConstructors = E.dataConstructors env' <> Map.fromList [(qual, fromJustWithErr qual val)]}
+    -- P.TyClassName className -> do
+    --   importClass' mName className
+    -- P.ModName _ -> internalError "importName called with ModName"
+
+    -- where
+    --   exports = lookupExports mName exportEnv
+
+    -- importRef :: P.ModuleName -> P.DeclarationRef -> IO (E.Environment -> E.Environment)
+    -- importRef mName = \case
+    --   P.TypeClassRef _ className -> importClass' mName className
+    --   P.TypeRef _ tyName ctrs -> do
+    --     let qual = P.Qualified (P.ByModuleName mName) tyName
+    --     type' <- selectType conn qual
+    --     ctrVals <- case ctrs of
+    --       Nothing -> selectTypeDataConstructors conn qual
+    --       Just ctrs' -> forConcurrently ctrs' \ctr -> do
+    --         let qual' = P.Qualified (P.ByModuleName mName) ctr
+    --         val <- selectDataConstructor conn qual'
+    --         pure (qual', fromJustWithErr qual' val)
+    --     pure $ \env' ->
+    --       env'
+    --         { E.types = E.types env' <> Map.fromList [(qual, fromJust type')],
+    --           E.dataConstructors = E.dataConstructors env' <> Map.fromList ctrVals
+    --         }
+    --   P.ValueRef _ ident -> do
+    --     let qual = P.Qualified (P.ByModuleName mName) ident
+    --     val <- selectEnvValue conn qual
+    --     pure $ \env' -> env' {E.names = E.names env' <> Map.fromList [(qual, fromJustWithErr qual val)]}
+    --   P.TypeInstanceRef _ ident _ -> do
+    --     let qual = P.Qualified (P.ByModuleName mName) ident
+    --     val <- selectClassInstance conn qual
+    --     pure $ \env' -> env' {E.typeClassDictionaries = P.addDictsToEnvMap [fromJust val] (E.typeClassDictionaries env')}
+    --   P.ModuleRef _ _ -> internalError "importRef called with ModuleRef"
+    --   P.ReExportRef _ _ ref -> importRef mName ref
+    --   P.ValueOpRef _ opName -> do
+    --     (aliasModName, alias) <- fromJust <$> selectValueOperatorAlias conn mName opName
+    --     if isUpper $ T.head alias
+    --       then do
+    --         let qual = P.Qualified (P.ByModuleName aliasModName) (P.ProperName alias)
+    --         val <- selectDataConstructor conn qual
+    --         pure $ \env' -> env' {E.dataConstructors = E.dataConstructors env' <> Map.fromList [(qual, fromJustWithErr qual val)]}
+    --       else do
+    --         let qual = P.Qualified (P.ByModuleName aliasModName) (P.Ident alias)
+    --         val <- selectEnvValue conn qual
+    --         pure $ \env' -> env' {E.names = E.names env' <> Map.fromList [(qual, fromJustWithErr qual val)]}
+    --   P.TypeOpRef _ opName -> do
+    --     (aliasModName, alias) <- fromJustWithErr opName <$> selectTypeOperatorAlias conn mName opName
+    --     let qual = P.Qualified (P.ByModuleName aliasModName) alias
+    --     val <- selectType conn qual
+    --     pure $ \env' ->
+    --       env'
+    --         { E.types = E.types env' <> Map.fromList [(qual, fromJustWithErr qual val)]
+    --         }
+
+    -- importModule mName = importModuleHiding mName []
+
+    -- importModuleHiding mName hideRefs = do
+    --   allRefs <- selectModuleExports conn mName
+    --   let refs = filter (not . flip Set.member hiddenRefSet) allRefs
+    --   importRefs mName refs
+    --   where
+    --     hiddenRefSet = Set.fromList hideRefs
+
+    importClass' :: P.ModuleName -> P.ModuleName -> P.ProperName 'P.ClassName -> IO (E.Environment -> E.Environment)
+    importClass' mName _modDefinedIn className = do
+      when (mName /= _modDefinedIn) do
+        putErrText $ "importClass' called with different module names: " <> show mName <> " and " <> show _modDefinedIn
+        putErrText $ "className: " <> show className
+
       let qual = P.Qualified (P.ByModuleName mName) className
           typeQual = P.Qualified (P.ByModuleName mName) $ coerceProperName className
-      typeClass <- fromJust <$> selectTypeClass conn mName className
       type' <- selectType conn typeQual
+      typeClass <- fromJust <$> selectTypeClass conn mName className
       let dictName = P.Qualified (P.ByModuleName mName) . P.dictTypeName . coerceProperName $ className
       dictVal <- selectType conn dictName
 
@@ -251,15 +550,16 @@ selectEnvFromImports conn (P.Module _ _ modName decls exports) = liftIO do
               Just (_, P.DataType _ _ [(ctr', _)]) -> Just ctr'
               _ -> Nothing
 
-      ctrData <- ctrMb & maybe (pure Nothing) (\ctr -> selectDataConstructor conn ctr)
+      ctrData <- ctrMb & maybe (pure Nothing) (selectDataConstructor conn)
       superClassImports <- forConcurrently (typeClassSuperclasses typeClass) \super -> case P.constraintClass super of
         P.Qualified (P.ByModuleName superModName) superClassName -> do
-          importClass superModName superClassName
+          importClass' superModName superModName superClassName
         _ -> pure identity
+
       instances <- selectClassInstancesByClassName conn qual
 
       pure $
-        foldl' (>>>) identity superClassImports >>> \env' ->
+        pipe superClassImports >>> \env' ->
           env'
             { E.typeClasses = E.typeClasses env' <> Map.fromList [(qual, typeClass)],
               E.types =
@@ -327,6 +627,9 @@ selectType conn ident = case Map.lookup ident P.allPrimTypes of
   where
     (modName, ty_name) = toDbQualifer ident
 
+selectType' :: Connection -> P.ModuleName -> P.ProperName 'P.TypeName -> IO (Maybe (P.SourceType, P.TypeKind))
+selectType' conn nMame ident = selectType conn (P.Qualified (P.ByModuleName nMame) ident)
+
 selectModuleEnvTypes :: Connection -> P.ModuleName -> IO [(P.Qualified (P.ProperName 'P.TypeName), (P.SourceType, P.TypeKind))]
 selectModuleEnvTypes conn moduleName' = do
   SQL.query
@@ -354,8 +657,6 @@ selectTypeDataConstructors conn ident = do
     <&> fmap (\(ctr, ddt, ty, st, idents) -> (P.Qualified (P.ByModuleName moduleName') ctr, (ddt, ty, st, deserialise idents)))
   where
     moduleName' = fromJust $ P.getQual ident
-
---   deserialiseIdents (ddt, ty, st, idents) = (ddt, ty, st, deserialise idents)
 
 selectModuleDataConstructors :: Connection -> P.ModuleName -> IO [(P.Qualified (P.ProperName 'P.ConstructorName), (P.DataDeclType, P.ProperName 'P.TypeName, P.SourceType, [P.Ident]))]
 selectModuleDataConstructors conn moduleName' = do
@@ -507,3 +808,17 @@ typeConstraints :: P.Type a -> [P.Constraint a]
 typeConstraints = P.everythingOnTypes (<>) \case
   P.ConstrainedType _ c _ -> [c]
   _ -> []
+
+pipe :: [a -> a] -> a -> a
+pipe = foldl' (>>>) identity
+
+updateConcurrently :: IO (a -> b) -> IO (b -> c) -> IO (a -> c)
+updateConcurrently a b = do
+  f <- a
+  g <- b
+  pure $ f >>> g
+
+-- updateConcurrently :: IO (a -> b) -> IO (b -> c) -> IO (a -> c)
+-- updateConcurrently a b = do
+--   (f, g) <- concurrently a b
+--   pure $ f >>> g

@@ -404,7 +404,7 @@ typeCheckAll moduleName = traverse go
         guardWith (errorMessage (DuplicateInstance dictName ss)) $
           not (M.member qualifiedDictName dictionaries)
       case M.lookup className (typeClasses env) of
-        Nothing -> internalError "typeCheckAll: Encountered unknown type class in instance declaration"
+        Nothing -> internalError $ "typeCheckAll: Encountered unknown type class in instance declaration: " <> show moduleName <> ", " <> show className
         Just typeClass -> do
           checkInstanceArity dictName className typeClass tys
           (deps', kinds', tys', vars) <- withFreshSubstitution $ checkInstanceDeclaration moduleName (sa, deps, className, tys)

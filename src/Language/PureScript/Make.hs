@@ -270,7 +270,7 @@ desugarAndTypeCheckDb ::
 desugarAndTypeCheckDb initialCheckState conn withCheckStateOnError withCheckState moduleName withPrim exEnv = runSupplyT 0 $ do
   (desugared, (exEnv', usedImports)) <- runStateT (desugarUsingDb conn exEnv withPrim) (exEnv, mempty)
   let modulesExports = (\(_, _, exports) -> exports) <$> exEnv'
-  env <- selectEnvFromImports conn desugared
+  env <- selectEnvFromImports conn exEnv' usedImports desugared
   (checked, checkSt@(CheckState {..})) <- runStateT (catchError (typeCheckModule modulesExports desugared) mergeCheckState) $ initialCheckState env
   lift $ withCheckState checkSt
   let usedImports' =
