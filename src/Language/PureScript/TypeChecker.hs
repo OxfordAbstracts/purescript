@@ -48,7 +48,7 @@ import Language.PureScript.TypeChecker.Unify (varIfUnknown)
 import Language.PureScript.TypeClassDictionaries (NamedDict, TypeClassDictionaryInScope(..))
 import Language.PureScript.Types (Constraint(..), SourceConstraint, SourceType, Type(..), containsForAll, eqType, everythingOnTypes, overConstraintArgs, srcInstanceType, unapplyTypes)
 import Language.PureScript.Types qualified as P
-import Language.PureScript.Make.Index.Select (GetEnv)
+import Language.PureScript.Make.Index.Select (GetEnv (deleteModuleEnv, getTypeClass))
 
 addDataType
   :: (MonadState CheckState m, MonadError MultipleErrors m, MonadWriter MultipleErrors m)
@@ -132,7 +132,7 @@ valueIsNotDefined
 valueIsNotDefined moduleName name = do
   nameMb <- lookupName (Qualified (ByModuleName moduleName) name)
   case nameMb of
-    Just _ -> throwError . errorMessage $ RedefinedIdent name
+    Just found -> throwError . errorMessage $ RedefinedIdent name $ " valueIsNotDefined: " <> T.pack (show (name, found))
     Nothing -> return ()
 
 addValue
@@ -148,7 +148,7 @@ addValue moduleName name ty nameKind = do
 
 addTypeClass
   :: forall m
-   . (MonadState CheckState m, MonadError MultipleErrors m, MonadWriter MultipleErrors m)
+   . (MonadState CheckState m, MonadError MultipleErrors m, MonadWriter MultipleErrors m, GetEnv m)
   => ModuleName
   -> Qualified (ProperName 'ClassName)
   -> [(Text, Maybe SourceType)]
@@ -172,17 +172,25 @@ addTypeClass _ qualifiedClassName args implies dependencies ds kind = do
 
     mkNewClass :: m TypeClassData
     mkNewClass = do
-      env <- getEnv
       implies' <- (traverse . overConstraintArgs . traverse) replaceAllTypeSynonyms implies
-      let ctIsEmpty = null classMembers && all (typeClassIsEmpty . findSuperClass env) implies'
+      ctIsEmpty <- if null classMembers
+         then allM (fmap typeClassIsEmpty . findSuperClass) implies'
+         else pure False 
       pure $ makeTypeClassData args classMembers implies' dependencies ctIsEmpty
       where
-      findSuperClass env c = case M.lookup (constraintClass c) (typeClasses env) of
-        Just tcd -> tcd
-        Nothing -> internalError "Unknown super class in TypeClassDeclaration"
+      findSuperClass c = lookupTypeClassUnsafe $ constraintClass c
+        --  case M.lookup (constraintClass c) (typeClasses env) of
+        -- Just tcd -> tcd
+        -- Nothing -> internalError "Unknown super class in TypeClassDeclaration"
 
     toPair (TypeDeclaration (TypeDeclarationData _ ident ty)) = (ident, ty)
     toPair _ = internalError "Invalid declaration in TypeClassDeclaration"
+
+allM :: (Monad m) => (a -> m Bool) -> [a] -> m Bool
+allM _ [] = pure True
+allM f (x:xs) = do
+  b <- f x
+  if b then allM f xs else pure False
 
 addTypeClassDictionaries
   :: (MonadState CheckState m)
@@ -334,10 +342,9 @@ typeCheckAll moduleName = traverse go
   go TypeDeclaration{} =
     internalError "Type declarations should have been removed before typeCheckAlld"
   go d@(ValueDecl sa@(ss, _) name nameKind [] [MkUnguarded val]) = do
-    env <- getEnv
     let declHint = if isPlainIdent name then addHint (ErrorInValueDeclaration name) else id
     warnAndRethrow (declHint . addHint (positionedError ss)) $ do
-      val' <- checkExhaustiveExpr ss env moduleName val
+      val' <- checkExhaustiveExpr ss moduleName val
       valueIsNotDefined moduleName name
       typesOf NonRecursiveBindingGroup moduleName [((sa, name), val')] >>= \case
         [(_, (val'', ty))] -> do
@@ -349,11 +356,10 @@ typeCheckAll moduleName = traverse go
   go ValueDeclaration{} = internalError "Binders were not desugared"
   go BoundValueDeclaration{} = internalError "BoundValueDeclaration should be desugared"
   go (BindingGroupDeclaration vals) = do
-    env <- getEnv
     let sss = fmap (\(((ss, _), _), _, _) -> ss) vals
     warnAndRethrow (addHint (ErrorInBindingGroup (fmap (\((_, ident), _, _) -> ident) vals)) . addHint (PositionedError sss)) $ do
       for_ vals $ \((_, ident), _, _) -> valueIsNotDefined moduleName ident
-      vals' <- NEL.toList <$> traverse (\(sai@((ss, _), _), nk, expr) -> (sai, nk,) <$> checkExhaustiveExpr ss env moduleName expr) vals
+      vals' <- NEL.toList <$> traverse (\(sai@((ss, _), _), nk, expr) -> (sai, nk,) <$> checkExhaustiveExpr ss moduleName expr) vals
       tys <- typesOf RecursiveBindingGroup moduleName $ fmap (\(sai, _, ty) -> (sai, ty)) vals'
       vals'' <- forM [ (sai, val, nameKind, ty)
                      | (sai@(_, name), nameKind, _) <- vals'
@@ -374,15 +380,17 @@ typeCheckAll moduleName = traverse go
       return d
   go d@(ExternDeclaration (ss, _) name ty) = do
     warnAndRethrow (addHint (ErrorInForeignImport name) . addHint (positionedError ss)) $ do
-      env <- getEnv
       (elabTy, kind) <- withFreshSubstitution $ do
         ((unks, ty'), kind) <- kindOfWithUnknowns ty
         ty'' <- varIfUnknown unks ty'
         pure (ty'', kind)
       checkTypeKind elabTy kind
-      case M.lookup (Qualified (ByModuleName moduleName) name) (names env) of
-        Just _ -> throwError . errorMessage $ RedefinedIdent name
-        Nothing -> putEnv (env { names = M.insert (Qualified (ByModuleName moduleName) name) (elabTy, External, Defined) (names env) })
+      nameMb <- lookupName (Qualified (ByModuleName moduleName) name)
+      case nameMb of
+        Just _ -> throwError . errorMessage $ RedefinedIdent name $ " typeCheckAll: " <> T.pack (show (Qualified (ByModuleName moduleName) name))
+        Nothing -> do 
+          env <- getEnv
+          putEnv (env { names = M.insert (Qualified (ByModuleName moduleName) name) (elabTy, External, Defined) (names env) })
     return d
   go d@FixityDeclaration{} = return d
   go d@ImportDeclaration{} = return d
@@ -605,6 +613,7 @@ typeCheckModule _ (Module _ _ _ _ Nothing) =
   internalError "exports should have been elaborated before typeCheckModule"
 typeCheckModule modulesExports (Module ss coms mn decls (Just exps)) =
   warnAndRethrow (addHint (ErrorInModule mn)) $ do
+    deleteModuleEnv mn
     let (decls', imports) = partitionEithers $ fromImportDecl <$> decls
     for_ imports $ \((modSS,_), mName, idType, _, _) -> do 
       addIdeModule modSS mName

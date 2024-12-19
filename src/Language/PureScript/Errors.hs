@@ -81,7 +81,7 @@ data SimpleErrorMessage
   | OrphanTypeDeclaration Ident
   | OrphanKindDeclaration (ProperName 'TypeName)
   | OrphanRoleDeclaration (ProperName 'TypeName)
-  | RedefinedIdent Ident
+  | RedefinedIdent Ident Text
   | OverlappingNamesInLet Ident
   | UnknownName (Qualified Name)
   | UnknownImport ModuleName Name
@@ -774,8 +774,8 @@ prettyPrintSingleError (PPEOptions codeColor full level showDocs relPath fileCon
       line $ "The kind declaration for " <> markCode (runProperName nm) <> " should be followed by its definition."
     renderSimpleErrorMessage (OrphanRoleDeclaration nm) =
       line $ "The role declaration for " <> markCode (runProperName nm) <> " should follow its definition."
-    renderSimpleErrorMessage (RedefinedIdent name) =
-      line $ "The value " <> markCode (showIdent name) <> " has been defined multiple times"
+    renderSimpleErrorMessage (RedefinedIdent name text) =
+      line $ "The value " <> markCode (showIdent name) <> " has been defined multiple times" <> text
     renderSimpleErrorMessage (UnknownName name@(Qualified (BySourcePos _) (IdentName (Ident i)))) | i `elem` [ C.S_bind, C.S_discard ] =
       line $ "Unknown " <> printName name <> ". You're probably using do-notation, which the compiler replaces with calls to the " <> markCode "bind" <> " and " <> markCode "discard" <> " functions. Please import " <> markCode i <> " from module " <> markCode "Prelude"
     renderSimpleErrorMessage (UnknownName name@(Qualified (BySourcePos _) (IdentName (Ident C.S_negate)))) =

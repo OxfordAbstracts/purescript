@@ -44,7 +44,7 @@ import Language.PureScript.Names (pattern ByNullSourcePos, Ident(..), ModuleName
 import Language.PureScript.TypeChecker.Entailment.Coercible (GivenSolverState(..), WantedSolverState(..), initialGivenSolverState, initialWantedSolverState, insoluble, solveGivens, solveWanteds)
 import Language.PureScript.TypeChecker.Entailment.IntCompare (mkFacts, mkRelation, solveRelation)
 import Language.PureScript.TypeChecker.Kinds (elaborateKind, unifyKinds')
-import Language.PureScript.TypeChecker.Monad (CheckState(..), withErrorMessageHint, lookupTypeClassMb)
+import Language.PureScript.TypeChecker.Monad (CheckState(..), withErrorMessageHint, lookupTypeClassMb, lookupTypeClassUnsafe)
 import Language.PureScript.TypeChecker.Synonyms (replaceAllTypeSynonyms)
 import Language.PureScript.TypeChecker.Unify (freshTypeWithKind, substituteType, unifyTypes)
 import Language.PureScript.TypeClassDictionaries (NamedDict, TypeClassDictionaryInScope(..), superclassName)
@@ -867,14 +867,13 @@ matches deps TypeClassDictionaryInScope{..} tys =
 -- | Add a dictionary for the constraint to the scope, and dictionaries
 -- for all implied superclass instances.
 newDictionaries
-  :: MonadState CheckState m
+  :: (MonadState CheckState m, GetEnv m)
   => [(Qualified (ProperName 'ClassName), Integer)]
   -> Qualified Ident
   -> SourceConstraint
   -> m [NamedDict]
 newDictionaries path name (Constraint _ className instanceKinds instanceTy _) = do
-    tcs <- gets (typeClasses . checkEnv)
-    let TypeClassData{..} = fromMaybe (internalError $ "newDictionaries: type class lookup failed: " <> show (name, className)) $ M.lookup className tcs
+    TypeClassData{..} <- lookupTypeClassUnsafe className
     supDicts <- join <$> zipWithM (\(Constraint ann supName supKinds supArgs _) index ->
                                       let sub = zip (map fst typeClassArguments) instanceTy in
                                       newDictionaries ((supName, index) : path)

@@ -51,7 +51,7 @@ import Language.PureScript.AST
 import Language.PureScript.Crash (internalError)
 import Language.PureScript.Environment
 import Language.PureScript.Errors (ErrorMessage(..), MultipleErrors, SimpleErrorMessage(..), errorMessage, errorMessage', escalateWarningWhen, internalCompilerError, onErrorMessages, onTypesInErrorMessage, parU)
-import Language.PureScript.Names (pattern ByNullSourcePos, Ident(..), ModuleName, Name(..), ProperName(..), ProperNameType(..), Qualified(..), QualifiedBy(..), byMaybeModuleName, coerceProperName, freshIdent)
+import Language.PureScript.Names (pattern ByNullSourcePos, Ident(..), ModuleName, Name(..), ProperName(..), Qualified(..), QualifiedBy(..), byMaybeModuleName, coerceProperName, freshIdent)
 import Language.PureScript.TypeChecker.Deriving (deriveInstance)
 import Language.PureScript.TypeChecker.Entailment (InstanceContext, newDictionaries, replaceTypeClassDictionaries)
 import Language.PureScript.TypeChecker.Kinds (checkConstraint, checkKind, checkTypeKind, kindOf, kindOfWithScopedVars, unifyKinds', unknownsWithKinds)
@@ -78,11 +78,11 @@ data TypedValue' = TypedValue' Bool Expr SourceType
 tvToExpr :: TypedValue' -> Expr
 tvToExpr (TypedValue' c e t) = TypedValue c e t
 
--- | Lookup data about a type class in the @Environment@
-lookupTypeClass :: MonadState CheckState m => Qualified (ProperName 'ClassName) -> m TypeClassData
-lookupTypeClass name =
-  let findClass = fromMaybe (internalError "entails: type class not found in environment") . M.lookup name
-   in gets (findClass . typeClasses . checkEnv)
+-- -- | Lookup data about a type class in the @Environment@
+-- lookupTypeClass :: MonadState CheckState m => Qualified (ProperName 'ClassName) -> m TypeClassData
+-- lookupTypeClass name =
+--   let findClass = fromMaybe (internalError "entails: type class not found in environment") . M.lookup name
+--    in gets (findClass . typeClasses . checkEnv)
 
 -- | Infer the types of multiple mutually-recursive values, and return elaborated values including
 -- type class dictionaries and type annotations.
@@ -126,7 +126,7 @@ typesOf bindingGroupType moduleName vals = withFreshSubstitution $ do
         -- ambiguous types to be inferred if they can be solved by some functional
         -- dependency.
         conData <- forM unsolved $ \(_, _, con) -> do
-          TypeClassData{ typeClassDependencies } <- lookupTypeClass $ constraintClass con
+          TypeClassData{ typeClassDependencies } <- lookupTypeClassUnsafe $ constraintClass con
           let
             -- The set of unknowns mentioned in each argument.
             unknownsForArg :: [S.Set Int]
@@ -840,7 +840,7 @@ check' val (ForAll ann vis ident mbK ty _) = do
   val' <- tvToExpr <$> check skVal sk
   return $ TypedValue' True val' (ForAll ann vis ident mbK ty (Just scope))
 check' val t@(ConstrainedType _ con@(Constraint _ cls@(Qualified _ (ProperName className)) _ _ _) ty) = do
-  TypeClassData{ typeClassIsEmpty } <- lookupTypeClass cls
+  TypeClassData{ typeClassIsEmpty } <- lookupTypeClassUnsafe cls
   -- An empty class dictionary is never used; see code in `TypeChecker.Entailment`
   -- that wraps empty dictionary solutions in `Unused`.
   dictName <- if typeClassIsEmpty then pure UnusedIdent else freshIdent ("dict" <> className)

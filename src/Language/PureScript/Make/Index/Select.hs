@@ -1090,6 +1090,14 @@ insertImport conn mn = \case
       (mn, importedModuleName, importedAs)
   _ -> pure ()
 
+deleteModuleEnvImpl :: P.ModuleName -> Connection -> IO ()
+deleteModuleEnvImpl moduleName conn = do
+  SQL.execute conn "DELETE FROM env_values WHERE module_name = ?" (SQL.Only moduleName)
+  SQL.execute conn "DELETE FROM env_types WHERE module_name = ?" (SQL.Only moduleName)
+  SQL.execute conn "DELETE FROM env_data_constructors WHERE module_name = ?" (SQL.Only moduleName)
+  SQL.execute conn "DELETE FROM env_type_synonyms WHERE module_name = ?" (SQL.Only moduleName)
+  SQL.execute conn "DELETE FROM env_type_classes WHERE module_name = ?" (SQL.Only moduleName)
+
 getEnvConstraints :: E.Environment -> [P.SourceConstraint]
 getEnvConstraints env =
   E.names env & Map.elems >>= typeConstraints . view _1
@@ -1109,6 +1117,8 @@ updateConcurrently a b = do
   f <- a
   g <- b
   pure $ f >>> g
+
+
 
 -- updateConcurrently :: IO (a -> b) -> IO (b -> c) -> IO (a -> c)
 -- updateConcurrently a b = do
@@ -1131,6 +1141,7 @@ class GetEnv m where
   getTypeClass :: P.Qualified (P.ProperName 'P.ClassName) -> m (Maybe P.TypeClassData)
   getTypeClassDictionaries :: m [NamedDict]
   getTypeClassDictionary :: P.Qualified (P.ProperName 'P.ClassName) -> m (Map.Map (P.Qualified P.Ident) (NEL.NonEmpty P.NamedDict))
+  deleteModuleEnv :: P.ModuleName -> m ()
 
 
 instance (Monad m, GetEnv m) => GetEnv (MaybeT m ) where 
@@ -1141,6 +1152,7 @@ instance (Monad m, GetEnv m) => GetEnv (MaybeT m ) where
   getTypeClass = lift . getTypeClass
   getTypeClassDictionaries = lift getTypeClassDictionaries
   getTypeClassDictionary = lift . getTypeClassDictionary
+  deleteModuleEnv = lift . deleteModuleEnv
 
 instance (Monad m, Monoid w, GetEnv m) => GetEnv (WriterT w m ) where 
   getName = lift . getName
@@ -1150,6 +1162,7 @@ instance (Monad m, Monoid w, GetEnv m) => GetEnv (WriterT w m ) where
   getTypeClass = lift . getTypeClass
   getTypeClassDictionaries = lift getTypeClassDictionaries
   getTypeClassDictionary = lift . getTypeClassDictionary
+  deleteModuleEnv = lift . deleteModuleEnv
 instance (Monad m, Monoid w, GetEnv m) => GetEnv (Strict.WriterT w m ) where 
   getName = lift . getName
   getType = lift . getType
@@ -1158,6 +1171,7 @@ instance (Monad m, Monoid w, GetEnv m) => GetEnv (Strict.WriterT w m ) where
   getTypeClass = lift . getTypeClass
   getTypeClassDictionaries = lift getTypeClassDictionaries
   getTypeClassDictionary = lift . getTypeClassDictionary
+  deleteModuleEnv = lift . deleteModuleEnv
 
 newtype DbEnv m a = DbEnv (ReaderT Connection m a)
   deriving (Functor, Applicative, Monad, MonadIO, MonadState s, MonadError e, MonadWriter w, MonadTrans)
@@ -1187,6 +1201,9 @@ instance (MonadIO m) => GetEnv (DbEnv m) where
   getTypeClassDictionaries = DbEnv $ do
     conn <- ask
     liftIO $ selectAllClassInstances conn
+  deleteModuleEnv modName = DbEnv $ do
+    conn <- ask
+    liftIO $ deleteModuleEnvImpl modName conn
 
 
   getTypeClassDictionary cls = DbEnv $ do
@@ -1213,3 +1230,4 @@ instance Monad m => GetEnv (WoGetEnv m) where
   getTypeClass _ = pure Nothing
   getTypeClassDictionaries = pure []
   getTypeClassDictionary _ = pure Map.empty
+  deleteModuleEnv _ = pure ()

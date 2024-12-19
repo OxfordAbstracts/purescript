@@ -384,7 +384,12 @@ lookupConstructorMb name = do
   env <- getEnv
   case M.lookup name (dataConstructors env) of
     Nothing -> do 
-      getDataConstructor name 
+      ctrMb <- getDataConstructor name 
+      case ctrMb of 
+        Nothing -> return Nothing
+        Just ctr -> do 
+          modifyEnv (\env' -> env' { dataConstructors = M.insert name ctr (dataConstructors env') })
+          return $ Just ctr
     ctr -> return ctr
 
 lookupConstructorUnsafe 

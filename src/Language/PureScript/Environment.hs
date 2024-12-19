@@ -22,7 +22,7 @@ import Data.Text qualified as T
 import Data.List.NonEmpty qualified as NEL
 
 import Language.PureScript.AST.SourcePos (nullSourceAnn)
-import Language.PureScript.Crash (internalError)
+import Language.PureScript.Crash (internalError, HasCallStack)
 import Language.PureScript.Names (Ident, ProperName(..), ProperNameType(..), Qualified, QualifiedBy, coerceProperName)
 import Language.PureScript.Roles (Role(..))
 import Language.PureScript.TypeClassDictionaries (NamedDict)
@@ -699,9 +699,9 @@ primTypeErrorClasses =
     ]
 
 -- | Finds information about data constructors from the current environment.
-lookupConstructor :: Environment -> Qualified (ProperName 'ConstructorName) -> (DataDeclType, ProperName 'TypeName, SourceType, [Ident])
+lookupConstructor :: HasCallStack => Environment -> Qualified (ProperName 'ConstructorName) -> (DataDeclType, ProperName 'TypeName, SourceType, [Ident])
 lookupConstructor env ctor =
-  fromMaybe (internalError "Data constructor not found") $ ctor `M.lookup` dataConstructors env
+  fromMaybe (internalError $ "Data constructor not found: " <> show ctor) $ ctor `M.lookup` dataConstructors env
 
 -- | Finds information about values from the current environment.
 lookupValue :: Environment -> Qualified Ident -> Maybe (SourceType, NameKind, NameVisibility)
