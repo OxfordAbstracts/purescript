@@ -6,6 +6,7 @@ module Language.PureScript.Sugar.BindingGroups
   ( createBindingGroups
   , createBindingGroupsModule
   , collapseBindingGroups
+  , usedIdents
   , usedTypeNames
   ) where
 

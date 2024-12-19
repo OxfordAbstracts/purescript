@@ -49,7 +49,7 @@ import Language.PureScript.Make.Actions as Actions
 import Language.PureScript.Make.BuildPlan (BuildJobResult (..), BuildPlan (..), getResult)
 import Language.PureScript.Make.BuildPlan qualified as BuildPlan
 import Language.PureScript.Make.Cache qualified as Cache
-import Language.PureScript.Make.Index.Select (getModuleFixities, selectEnvFromImports, selectFixitiesFromModuleImportsAndDecls, selectFixitiesFromModuleImports)
+import Language.PureScript.Make.Index.Select (getModuleFixities, selectFixitiesFromModuleImportsAndDecls, selectFixitiesFromModuleImports, GetEnv, runDbEnv, runWoGetEnv)
 import Language.PureScript.Make.Monad as Monad
 import Language.PureScript.ModuleDependencies (DependencyDepth (..), moduleSignature, sortModules)
 import Language.PureScript.Names (ModuleName(..), isBuiltinModuleName, runModuleName)
@@ -236,7 +236,7 @@ desugarAndTypeCheck ::
 desugarAndTypeCheck initialCheckState withCheckStateOnError withCheckState moduleName externs withPrim exEnv env = runSupplyT 0 $ do
   (desugared, (exEnv', usedImports)) <- runStateT (desugar externs withPrim) (exEnv, mempty)
   let modulesExports = (\(_, _, exports) -> exports) <$> exEnv'
-  (checked, checkSt@(CheckState {..})) <- runStateT (catchError (typeCheckModule modulesExports desugared) mergeCheckState) $ initialCheckState env
+  (checked, checkSt@(CheckState {..})) <- runStateT (catchError (runWoGetEnv $ typeCheckModule modulesExports desugared) mergeCheckState) $ initialCheckState env
   lift $ withCheckState checkSt
   let usedImports' =
         foldl'
@@ -270,8 +270,9 @@ desugarAndTypeCheckDb ::
 desugarAndTypeCheckDb initialCheckState conn withCheckStateOnError withCheckState moduleName withPrim exEnv = runSupplyT 0 $ do
   (desugared, (exEnv', usedImports)) <- runStateT (desugarUsingDb conn exEnv withPrim) (exEnv, mempty)
   let modulesExports = (\(_, _, exports) -> exports) <$> exEnv'
-  env <- selectEnvFromImports conn exEnv' usedImports desugared
-  (checked, checkSt@(CheckState {..})) <- runStateT (catchError (typeCheckModule modulesExports desugared) mergeCheckState) $ initialCheckState env
+  -- env <- selectEnvFromDefinitions conn exEnv' desugared
+  let env = initEnvironment
+  (checked, checkSt@(CheckState {..})) <- runStateT (catchError (runDbEnv conn $ typeCheckModule modulesExports desugared) mergeCheckState) (initialCheckState env)
   lift $ withCheckState checkSt
   let usedImports' =
         foldl'

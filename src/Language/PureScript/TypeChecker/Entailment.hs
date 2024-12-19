@@ -44,7 +44,7 @@ import Language.PureScript.Names (pattern ByNullSourcePos, Ident(..), ModuleName
 import Language.PureScript.TypeChecker.Entailment.Coercible (GivenSolverState(..), WantedSolverState(..), initialGivenSolverState, initialWantedSolverState, insoluble, solveGivens, solveWanteds)
 import Language.PureScript.TypeChecker.Entailment.IntCompare (mkFacts, mkRelation, solveRelation)
 import Language.PureScript.TypeChecker.Kinds (elaborateKind, unifyKinds')
-import Language.PureScript.TypeChecker.Monad (CheckState(..), withErrorMessageHint)
+import Language.PureScript.TypeChecker.Monad (CheckState(..), withErrorMessageHint, lookupTypeClassMb)
 import Language.PureScript.TypeChecker.Synonyms (replaceAllTypeSynonyms)
 import Language.PureScript.TypeChecker.Unify (freshTypeWithKind, substituteType, unifyTypes)
 import Language.PureScript.TypeClassDictionaries (NamedDict, TypeClassDictionaryInScope(..), superclassName)
@@ -53,6 +53,7 @@ import Language.PureScript.Label (Label(..))
 import Language.PureScript.PSString (PSString, mkString, decodeString)
 import Language.PureScript.Constants.Libs qualified as C
 import Language.PureScript.Constants.Prim qualified as C
+import Language.PureScript.Make.Index.Select (GetEnv)
 
 -- | Describes what sort of dictionary to generate for type class instances
 data Evidence
@@ -113,7 +114,7 @@ combineContexts = M.unionWith (M.unionWith (M.unionWith (<>)))
 -- | Replace type class dictionary placeholders with inferred type class dictionaries
 replaceTypeClassDictionaries
   :: forall m
-   . (MonadState CheckState m, MonadError MultipleErrors m, MonadWriter MultipleErrors m, MonadSupply m)
+   . (MonadState CheckState m, MonadError MultipleErrors m, MonadWriter MultipleErrors m, MonadSupply m, GetEnv m)
   => Bool
   -> Expr
   -> m (Expr, [(Ident, InstanceContext, SourceConstraint)])
@@ -181,7 +182,7 @@ instance Monoid t => Monoid (Matched t) where
 -- return a type class dictionary reference.
 entails
   :: forall m
-   . (MonadState CheckState m, MonadError MultipleErrors m, MonadWriter MultipleErrors m, MonadSupply m)
+   . (MonadState CheckState m, MonadError MultipleErrors m, MonadWriter MultipleErrors m, MonadSupply m, GetEnv m)
   => SolverOptions
   -- ^ Solver options
   -> SourceConstraint
@@ -196,32 +197,32 @@ entails SolverOptions{..} constraint context hints =
   where
     forClassNameM :: Environment -> InstanceContext -> Qualified (ProperName 'ClassName) -> [SourceType] -> [SourceType] -> m [TypeClassDict]
     forClassNameM env ctx cn@C.Coercible kinds args =
-      fromMaybe (forClassName env ctx cn kinds args) <$>
+      fromMaybe (forClassName  ctx cn kinds args) <$>
         solveCoercible env ctx kinds args
-    forClassNameM env ctx cn kinds args =
-      pure $ forClassName env ctx cn kinds args
+    forClassNameM _env ctx cn kinds args =
+      pure $ forClassName ctx cn kinds args
 
-    forClassName :: Environment -> InstanceContext -> Qualified (ProperName 'ClassName) -> [SourceType] -> [SourceType] -> [TypeClassDict]
-    forClassName _ ctx cn@C.Warn _ [msg] =
+    forClassName :: InstanceContext -> Qualified (ProperName 'ClassName) -> [SourceType] -> [SourceType] -> [TypeClassDict]
+    forClassName  ctx cn@C.Warn _ [msg] =
       -- Prefer a warning dictionary in scope if there is one available.
       -- This allows us to defer a warning by propagating the constraint.
       findDicts ctx cn ByNullSourcePos ++ [TypeClassDictionaryInScope Nothing 0 (WarnInstance msg) [] C.Warn [] [] [msg] Nothing Nothing]
-    forClassName _ _ C.IsSymbol _ args | Just dicts <- solveIsSymbol args = dicts
-    forClassName _ _ C.SymbolCompare _ args | Just dicts <- solveSymbolCompare args = dicts
-    forClassName _ _ C.SymbolAppend _ args | Just dicts <- solveSymbolAppend args = dicts
-    forClassName _ _ C.SymbolCons _ args | Just dicts <- solveSymbolCons args = dicts
-    forClassName _ _ C.IntAdd _ args | Just dicts <- solveIntAdd args = dicts
-    forClassName _ ctx C.IntCompare _ args | Just dicts <- solveIntCompare ctx args = dicts
-    forClassName _ _ C.IntMul _ args | Just dicts <- solveIntMul args = dicts
-    forClassName _ _ C.IntToString _ args | Just dicts <- solveIntToString args = dicts
-    forClassName _ _ C.Reflectable _ args | Just dicts <- solveReflectable args = dicts
-    forClassName _ _ C.RowUnion kinds args | Just dicts <- solveUnion kinds args = dicts
-    forClassName _ _ C.RowNub kinds args | Just dicts <- solveNub kinds args = dicts
-    forClassName _ _ C.RowLacks kinds args | Just dicts <- solveLacks kinds args = dicts
-    forClassName _ _ C.RowCons kinds args | Just dicts <- solveRowCons kinds args = dicts
-    forClassName _ _ C.RowToList kinds args | Just dicts <- solveRowToList kinds args = dicts
-    forClassName _ ctx cn@(Qualified (ByModuleName mn) _) _ tys = concatMap (findDicts ctx cn) (ordNub (ByNullSourcePos : ByModuleName mn : map ByModuleName (mapMaybe ctorModules tys)))
-    forClassName _ _ _ _ _ = internalError "forClassName: expected qualified class name"
+    forClassName _ C.IsSymbol _ args | Just dicts <- solveIsSymbol args = dicts
+    forClassName _ C.SymbolCompare _ args | Just dicts <- solveSymbolCompare args = dicts
+    forClassName _ C.SymbolAppend _ args | Just dicts <- solveSymbolAppend args = dicts
+    forClassName _ C.SymbolCons _ args | Just dicts <- solveSymbolCons args = dicts
+    forClassName _ C.IntAdd _ args | Just dicts <- solveIntAdd args = dicts
+    forClassName  ctx C.IntCompare _ args | Just dicts <- solveIntCompare ctx args = dicts
+    forClassName _ C.IntMul _ args | Just dicts <- solveIntMul args = dicts
+    forClassName _ C.IntToString _ args | Just dicts <- solveIntToString args = dicts
+    forClassName _ C.Reflectable _ args | Just dicts <- solveReflectable args = dicts
+    forClassName _ C.RowUnion kinds args | Just dicts <- solveUnion kinds args = dicts
+    forClassName _ C.RowNub kinds args | Just dicts <- solveNub kinds args = dicts
+    forClassName _ C.RowLacks kinds args | Just dicts <- solveLacks kinds args = dicts
+    forClassName _ C.RowCons kinds args | Just dicts <- solveRowCons kinds args = dicts
+    forClassName _ C.RowToList kinds args | Just dicts <- solveRowToList kinds args = dicts
+    forClassName  ctx cn@(Qualified (ByModuleName mn) _) _ tys = concatMap (findDicts ctx cn) (ordNub (ByNullSourcePos : ByModuleName mn : map ByModuleName (mapMaybe ctorModules tys)))
+    forClassName _ _ _ _ = internalError "forClassName: expected qualified class name"
 
     ctorModules :: SourceType -> Maybe ModuleName
     ctorModules (TypeConstructor _ (Qualified (ByModuleName mn) _)) = Just mn
@@ -250,15 +251,15 @@ entails SolverOptions{..} constraint context hints =
             inferred <- lift get
             -- We need information about functional dependencies, so we have to look up the class
             -- name in the environment:
+            typeClass <- lift . lift $ lookupTypeClassMb className'
             env <- lift . lift $ gets checkEnv
-            let classesInScope = typeClasses env
             TypeClassData
               { typeClassArguments
               , typeClassDependencies
               , typeClassIsEmpty
               , typeClassCoveringSets
               , typeClassMembers 
-              } <- case M.lookup className' classesInScope of
+              } <- case typeClass of
                 Nothing -> throwError . errorMessage $ UnknownClass className'
                 Just tcd -> pure tcd
 

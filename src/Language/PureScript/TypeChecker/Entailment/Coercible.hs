@@ -47,6 +47,7 @@ import Language.PureScript.TypeChecker.Unify (alignRowsWith, freshTypeWithKind, 
 import Language.PureScript.Roles (Role(..))
 import Language.PureScript.Types (Constraint(..), SourceType, Type(..), completeBinderList, containsUnknowns, everythingOnTypes, isMonoType, replaceAllTypeVars, rowFromList, srcConstraint, srcTypeApp, unapplyTypes)
 import Language.PureScript.Constants.Prim qualified as Prim
+import Language.PureScript.Make.Index.Select (GetEnv)
 
 -- | State of the given constraints solver.
 data GivenSolverState =
@@ -118,7 +119,7 @@ initialGivenSolverState =
 -- 3c. Otherwise canonicalization can succeed with derived constraints which we
 -- add to the unsolved queue and then go back to 1.
 solveGivens
-  :: MonadError MultipleErrors m
+  :: (MonadError MultipleErrors m, GetEnv m)
   => MonadState CheckState m
   => Environment
   -> StateT GivenSolverState m ()
@@ -206,7 +207,7 @@ initialWantedSolverState givens a b =
 -- interact the latter with the former, we would report an insoluble
 -- @Coercible Boolean Char@.
 solveWanteds
-  :: MonadError MultipleErrors m
+  :: (MonadError MultipleErrors m, GetEnv m)
   => MonadWriter [ErrorMessageHint] m
   => MonadState CheckState m
   => Environment
@@ -271,7 +272,7 @@ solveWanteds env = go (0 :: Int) where
 -- @Coercible (D \@k) (D \@k)@ constraint which could be trivially solved by
 -- reflexivity instead of having to saturate the type constructors.
 unify
-  :: MonadError MultipleErrors m
+  :: (MonadError MultipleErrors m, GetEnv m)
   => MonadState CheckState m
   => (SourceType, SourceType)
   -> m (SourceType, SourceType, SourceType)
@@ -478,7 +479,7 @@ data Canonicalized
 -- | Canonicalization takes a wanted constraint and try to reduce it to a set of
 -- simpler constraints whose satisfaction will imply the goal.
 canon
-  :: MonadError MultipleErrors m
+  :: (MonadError MultipleErrors m, GetEnv m)
   => MonadWriter [ErrorMessageHint] m
   => MonadState CheckState m
   => Environment
@@ -578,7 +579,7 @@ canonUnsaturatedHigherKindedType env a b
 -- yield a constraint @Coercible r s@ and constraints on the types for each
 -- label in both rows. Labels exclusive to one row yield a failure.
 canonRow
-  :: MonadError MultipleErrors m
+  :: (MonadError MultipleErrors m, GetEnv  m)
   => MonadState CheckState m
   => SourceType
   -> SourceType

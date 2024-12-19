@@ -33,6 +33,7 @@ import Language.PureScript.TypeChecker.Kinds (elaborateKind, instantiateKind, un
 import Language.PureScript.TypeChecker.Monad (CheckState(..), Substitution(..), UnkLevel(..), Unknown, getLocalContext, guardWith, lookupUnkName, withErrorMessageHint)
 import Language.PureScript.TypeChecker.Skolems (newSkolemConstant, skolemize)
 import Language.PureScript.Types (Constraint(..), pattern REmptyKinded, RowListItem(..), SourceType, Type(..), WildcardData(..), alignRowsWith, everythingOnTypes, everywhereOnTypes, everywhereOnTypesM, getAnnForType, mkForAll, rowFromList, srcTUnknown)
+import Language.PureScript.Make.Index.Select (GetEnv)
 
 -- | Generate a fresh type variable with an unknown kind. Avoid this if at all possible.
 freshType :: (MonadState CheckState m) => m SourceType
@@ -61,7 +62,7 @@ freshTypeWithKind kind = state $ \st -> do
   (srcTUnknown t, st')
 
 -- | Update the substitution to solve a type constraint
-solveType :: (MonadError MultipleErrors m, MonadState CheckState m) => Int -> SourceType -> m ()
+solveType :: (MonadError MultipleErrors m, MonadState CheckState m, GetEnv m) => Int -> SourceType -> m ()
 solveType u t = rethrow (onErrorMessages withoutPosition) $ do
   -- We strip the position so that any errors get rethrown with the position of
   -- the original unification constraint. Otherwise errors may arise from arbitrary
@@ -106,7 +107,7 @@ unknownsInType t = everythingOnTypes (.) go t []
   go _ = id
 
 -- | Unify two types, updating the current substitution
-unifyTypes :: (MonadError MultipleErrors m, MonadState CheckState m) => SourceType -> SourceType -> m ()
+unifyTypes :: (MonadError MultipleErrors m, MonadState CheckState m, GetEnv m) => SourceType -> SourceType -> m ()
 unifyTypes t1 t2 = do
   sub <- gets checkSubstitution
   withErrorMessageHint (ErrorUnifyingTypes t1 t2) $ unifyTypes' (substituteType sub t1) (substituteType sub t2)
@@ -160,7 +161,7 @@ unifyTypes t1 t2 = do
 --
 -- Common labels are identified and unified. Remaining labels and types are unified with a
 -- trailing row unification variable, if appropriate.
-unifyRows :: forall m. (MonadError MultipleErrors m, MonadState CheckState m) => SourceType -> SourceType -> m ()
+unifyRows :: forall m. (MonadError MultipleErrors m, MonadState CheckState m, GetEnv m) => SourceType -> SourceType -> m ()
 unifyRows r1 r2 = sequence_ matches *> uncurry unifyTails rest where
   unifyTypesWithLabel l t1 t2 = withErrorMessageHint (ErrorInRowLabel l) $ unifyTypes t1 t2
 

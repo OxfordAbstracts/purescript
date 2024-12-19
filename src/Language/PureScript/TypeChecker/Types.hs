@@ -64,6 +64,7 @@ import Language.PureScript.TypeChecker.Unify (freshTypeWithKind, replaceTypeWild
 import Language.PureScript.Types
 import Language.PureScript.Label (Label(..))
 import Language.PureScript.PSString (PSString)
+import Language.PureScript.Make.Index.Select (GetEnv)
 
 data BindingGroupType
   = RecursiveBindingGroup
@@ -86,7 +87,7 @@ lookupTypeClass name =
 -- | Infer the types of multiple mutually-recursive values, and return elaborated values including
 -- type class dictionaries and type annotations.
 typesOf
-  :: (MonadSupply m, MonadState CheckState m, MonadError MultipleErrors m, MonadWriter MultipleErrors m)
+  :: (MonadSupply m, MonadState CheckState m, MonadError MultipleErrors m, MonadWriter MultipleErrors m, GetEnv m)
   => BindingGroupType
   -> ModuleName
   -> [((SourceAnn, Ident), Expr)]
@@ -265,7 +266,7 @@ data SplitBindingGroup = SplitBindingGroup
 -- This function also generates fresh unification variables for the types of
 -- declarations without type annotations, returned in the 'UntypedData' structure.
 typeDictionaryForBindingGroup
-  :: (MonadState CheckState m, MonadError MultipleErrors m, MonadWriter MultipleErrors m)
+  :: (MonadState CheckState m, MonadError MultipleErrors m, MonadWriter MultipleErrors m, GetEnv m)
   => Maybe ModuleName
   -> [((SourceAnn, Ident), Expr)]
   -> m SplitBindingGroup
@@ -302,7 +303,7 @@ typeDictionaryForBindingGroup moduleName vals = do
 
 -- | Check the type annotation of a typed value in a binding group.
 checkTypedBindingGroupElement
-  :: (MonadSupply m, MonadState CheckState m, MonadError MultipleErrors m, MonadWriter MultipleErrors m)
+  :: (MonadSupply m, MonadState CheckState m, MonadError MultipleErrors m, MonadWriter MultipleErrors m, GetEnv m)
   => ModuleName
   -> ((SourceAnn, Ident), (Expr, [(Text, SourceType)], SourceType, Bool))
   -- ^ The identifier we are trying to define, along with the expression and its type annotation
@@ -321,7 +322,7 @@ checkTypedBindingGroupElement mn (ident, (val, args, ty, checkType)) dict = do
 
 -- | Infer a type for a value in a binding group which lacks an annotation.
 typeForBindingGroupElement
-  :: (MonadSupply m, MonadState CheckState m, MonadError MultipleErrors m, MonadWriter MultipleErrors m)
+  :: (MonadSupply m, MonadState CheckState m, MonadError MultipleErrors m, MonadWriter MultipleErrors m, GetEnv m)
   => ((SourceAnn, Ident), (Expr, SourceType))
   -- ^ The identifier we are trying to define, along with the expression and its assigned type
   -- (at this point, this should be a unification variable)
@@ -341,7 +342,7 @@ typeForBindingGroupElement (ident, (val, ty)) dict = do
 -- This is necessary during type checking to avoid unifying a polymorphic type with a
 -- unification variable.
 instantiatePolyTypeWithUnknowns
-  :: (MonadState CheckState m, MonadError MultipleErrors m)
+  :: (MonadState CheckState m, MonadError MultipleErrors m, GetEnv m)
   => Expr
   -> SourceType
   -> m (Expr, SourceType)
@@ -366,7 +367,7 @@ instantiatePolyTypeWithUnknownsUntilVisible val (ForAll _ TypeVarInvisible ident
   instantiatePolyTypeWithUnknownsUntilVisible val $ replaceTypeVars ident u ty
 instantiatePolyTypeWithUnknownsUntilVisible val ty = return (val, ty)
 
-instantiateConstraint :: MonadState CheckState m => Expr -> Type SourceAnn -> m (Expr, Type SourceAnn)
+instantiateConstraint :: (MonadState CheckState m, GetEnv m) => Expr -> Type SourceAnn -> m (Expr, Type SourceAnn)
 instantiateConstraint val (ConstrainedType _ con ty) = do
   dicts <- getTypeClassDictionaries
   hints <- getHints
@@ -381,13 +382,13 @@ insertUnkName' _ _ = internalCompilerError "type is not TUnknown"
 -- | Infer a type for a value, rethrowing any error to provide a more useful error message
 -- | and add the inferred type to the IDE artifacts if necessary.
 infer
-  :: (MonadSupply m, MonadState CheckState m, MonadError MultipleErrors m, MonadWriter MultipleErrors m)
+  :: (MonadSupply m, MonadState CheckState m, MonadError MultipleErrors m, MonadWriter MultipleErrors m, GetEnv m)
   => Expr
   -> m TypedValue'
 infer val = withErrorMessageHint (ErrorInferringType val) $ inferAndAddToIde val
 
 
-inferAndAddToIde  :: (MonadSupply m, MonadState CheckState m, MonadError MultipleErrors m, MonadWriter MultipleErrors m)
+inferAndAddToIde  :: (MonadSupply m, MonadState CheckState m, MonadError MultipleErrors m, MonadWriter MultipleErrors m, GetEnv m)
   => Expr
   -> m TypedValue'
 inferAndAddToIde = infer' >=> addTypedValueToIde
@@ -400,7 +401,7 @@ addTypedValueToIde tv@(TypedValue' _ expr ty) = do
 -- | Infer a type for a value
 infer'
   :: forall m
-   . (MonadSupply m, MonadState CheckState m, MonadError MultipleErrors m, MonadWriter MultipleErrors m)
+   . (MonadSupply m, MonadState CheckState m, MonadError MultipleErrors m, MonadWriter MultipleErrors m, GetEnv m)
   => Expr
   -> m TypedValue'
 infer' v@(Literal _ (NumericLiteral (Left _))) = return $ TypedValue' True v tyInt
@@ -521,8 +522,8 @@ infer' (Var ss var) = do
       return $ TypedValue' True (App (Var ss var) (TypeClassDictionary con dicts hints)) ty'
     _ -> return $ TypedValue' True (Var ss var) ty
 infer' v@(Constructor _ c) = do
-  env <- getEnv
-  case M.lookup c (dataConstructors env) of
+  ctrMb <- lookupConstructorMb c
+  case ctrMb of
     Nothing -> throwError . errorMessage . UnknownName . fmap DctorName $ c
     Just (_, _, ty, _) -> TypedValue' True v <$> (introduceSkolemScope <=< replaceAllTypeSynonyms $ ty)
 infer' (Case vals binders) = do
@@ -572,7 +573,7 @@ inferProperties
   :: ( MonadSupply m
      , MonadState CheckState m
      , MonadError MultipleErrors m
-     , MonadWriter MultipleErrors m
+     , MonadWriter MultipleErrors m, GetEnv m
      )
   => [(PSString, Expr)]
   -> m [(PSString, (Expr, SourceType))]
@@ -584,7 +585,7 @@ inferWithinRecord
   :: ( MonadSupply m
      , MonadState CheckState m
      , MonadError MultipleErrors m
-     , MonadWriter MultipleErrors m
+     , MonadWriter MultipleErrors m, GetEnv m
      )
   => Expr
   -> m (Expr, SourceType)
@@ -606,7 +607,7 @@ propertyShouldInstantiate = \case
   _ -> False
 
 inferLetBinding
-  :: (MonadSupply m, MonadState CheckState m, MonadError MultipleErrors m, MonadWriter MultipleErrors m)
+  :: (MonadSupply m, MonadState CheckState m, MonadError MultipleErrors m, MonadWriter MultipleErrors m, GetEnv m)
   => [Declaration]
   -> [Declaration]
   -> Expr
@@ -648,7 +649,7 @@ inferLetBinding _ _ _ _ = internalError "Invalid argument to inferLetBinding"
 
 inferBinder 
   :: forall m
-   . (MonadState CheckState m, MonadError MultipleErrors m, MonadWriter MultipleErrors m)
+   . (MonadState CheckState m, MonadError MultipleErrors m, MonadWriter MultipleErrors m, GetEnv m)
   => SourceType
   -> Binder
   -> m (M.Map Ident (SourceSpan, SourceType))
@@ -662,7 +663,7 @@ inferBinder val binder = do
 -- | Infer the types of variables brought into scope by a binder
 inferBinder'
   :: forall m
-   . (MonadState CheckState m, MonadError MultipleErrors m, MonadWriter MultipleErrors m)
+   . (MonadState CheckState m, MonadError MultipleErrors m, MonadWriter MultipleErrors m, GetEnv m)
   => SourceType
   -> Binder
   -> m (M.Map Ident (SourceSpan, SourceType))
@@ -674,8 +675,8 @@ inferBinder' val (LiteralBinder _ (NumericLiteral (Right _))) = unifyTypes val t
 inferBinder' val (LiteralBinder _ (BooleanLiteral _)) = unifyTypes val tyBoolean >> return M.empty
 inferBinder' val (VarBinder ss name) = return $ M.singleton name (ss, val)
 inferBinder' val (ConstructorBinder ss ctor binders) = do
-  env <- getEnv
-  case M.lookup ctor (dataConstructors env) of
+  ctrMb <-  lookupConstructorMb ctor
+  case ctrMb of
     Just (_, _, ty, _) -> do
       (_, fn) <- instantiatePolyTypeWithUnknowns (internalError "Data constructor types cannot contain constraints") ty
       fn' <- introduceSkolemScope <=< replaceAllTypeSynonyms $ fn
@@ -742,7 +743,7 @@ binderRequiresMonotype _ = True
 
 -- | Instantiate polytypes only when necessitated by a binder.
 instantiateForBinders
-  :: (MonadSupply m, MonadState CheckState m, MonadError MultipleErrors m, MonadWriter MultipleErrors m)
+  :: (MonadSupply m, MonadState CheckState m, MonadError MultipleErrors m, MonadWriter MultipleErrors m, GetEnv m)
   => [Expr]
   -> [CaseAlternative]
   -> m ([Expr], [SourceType])
@@ -759,7 +760,7 @@ instantiateForBinders vals cas = unzip <$> zipWithM (\val inst -> do
 -- Check the types of the return values in a set of binders in a case statement
 --
 checkBinders
-  :: (MonadSupply m, MonadState CheckState m, MonadError MultipleErrors m, MonadWriter MultipleErrors m)
+  :: (MonadSupply m, MonadState CheckState m, MonadError MultipleErrors m, MonadWriter MultipleErrors m, GetEnv m)
   => [SourceType]
   -> SourceType
   -> [CaseAlternative]
@@ -775,7 +776,7 @@ checkBinders nvals ret (CaseAlternative binders result : bs) = do
   return $ r : rs
 
 checkGuardedRhs
-  :: (MonadSupply m, MonadState CheckState m, MonadError MultipleErrors m, MonadWriter MultipleErrors m)
+  :: (MonadSupply m, MonadState CheckState m, MonadError MultipleErrors m, MonadWriter MultipleErrors m, GetEnv m)
   => GuardedExpr
   -> SourceType
   -> m GuardedExpr
@@ -799,13 +800,13 @@ checkGuardedRhs (GuardedExpr (PatternGuard binder expr : guards) rhs) ret = do
 -- Check the type of a value, rethrowing errors to provide a better error message
 --
 check
-  :: (MonadSupply m, MonadState CheckState m, MonadError MultipleErrors m, MonadWriter MultipleErrors m)
+  :: (MonadSupply m, MonadState CheckState m, MonadError MultipleErrors m, MonadWriter MultipleErrors m, GetEnv m)
   => Expr
   -> SourceType
   -> m TypedValue'
 check val ty = withErrorMessageHint' val (ErrorCheckingType val ty) $ checkAndAddToIde val ty
 
-checkAndAddToIde :: (MonadSupply m, MonadState CheckState m, MonadError MultipleErrors m, MonadWriter MultipleErrors m) 
+checkAndAddToIde :: (MonadSupply m, MonadState CheckState m, MonadError MultipleErrors m, MonadWriter MultipleErrors m, GetEnv m)
   => Expr -> SourceType -> m TypedValue'
 checkAndAddToIde val ty = do
   tv <- check' val ty
@@ -815,7 +816,7 @@ checkAndAddToIde val ty = do
 --
 check'
   :: forall m
-   . (MonadSupply m, MonadState CheckState m, MonadError MultipleErrors m, MonadWriter MultipleErrors m)
+   . (MonadSupply m, MonadState CheckState m, MonadError MultipleErrors m, MonadWriter MultipleErrors m, GetEnv m)
   => Expr
   -> SourceType
   -> m TypedValue'
@@ -942,8 +943,8 @@ check' (Accessor prop val) ty = withErrorMessageHint (ErrorCheckingAccessor val 
   val' <- tvToExpr <$> check val (srcTypeApp tyRecord (srcRCons (Label prop) ty rest))
   return $ TypedValue' True (Accessor prop val') ty
 check' v@(Constructor _ c) ty = do
-  env <- getEnv
-  case M.lookup c (dataConstructors env) of
+  ctrMb <- lookupConstructorMb c
+  case ctrMb of
     Nothing -> throwError . errorMessage . UnknownName . fmap DctorName $ c
     Just (_, _, ty1, _) -> do
       repl <- introduceSkolemScope <=< replaceAllTypeSynonyms $ ty1
@@ -971,7 +972,7 @@ check' val ty = do
 -- The @lax@ parameter controls whether or not every record member has to be provided. For object updates, this is not the case.
 --
 checkProperties
-  :: (MonadSupply m, MonadState CheckState m, MonadError MultipleErrors m, MonadWriter MultipleErrors m)
+  :: (MonadSupply m, MonadState CheckState m, MonadError MultipleErrors m, MonadWriter MultipleErrors m, GetEnv m)
   => Expr
   -> [(PSString, Expr)]
   -> SourceType
@@ -1018,7 +1019,7 @@ checkProperties expr ps row lax = convert <$> go ps (toRowPair <$> ts') r' where
 -- * The elaborated expression for the function application (since we might need to
 --   insert type class dictionaries, etc.)
 checkFunctionApplication
-  :: (MonadSupply m, MonadState CheckState m, MonadError MultipleErrors m, MonadWriter MultipleErrors m)
+  :: (MonadSupply m, MonadState CheckState m, MonadError MultipleErrors m, MonadWriter MultipleErrors m, GetEnv m)
   => Expr
   -- ^ The function expression
   -> SourceType
@@ -1035,7 +1036,7 @@ checkFunctionApplication fn fnTy arg = withErrorMessageHint' fn (ErrorInApplicat
 
 -- | Check the type of a function application
 checkFunctionApplication'
-  :: (MonadSupply m, MonadState CheckState m, MonadError MultipleErrors m, MonadWriter MultipleErrors m)
+  :: (MonadSupply m, MonadState CheckState m, MonadError MultipleErrors m, MonadWriter MultipleErrors m, GetEnv m)
   => Expr
   -> SourceType
   -> Expr

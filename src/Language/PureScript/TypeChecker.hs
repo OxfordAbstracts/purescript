@@ -48,6 +48,7 @@ import Language.PureScript.TypeChecker.Unify (varIfUnknown)
 import Language.PureScript.TypeClassDictionaries (NamedDict, TypeClassDictionaryInScope(..))
 import Language.PureScript.Types (Constraint(..), SourceConstraint, SourceType, Type(..), containsForAll, eqType, everythingOnTypes, overConstraintArgs, srcInstanceType, unapplyTypes)
 import Language.PureScript.Types qualified as P
+import Language.PureScript.Make.Index.Select (GetEnv)
 
 addDataType
   :: (MonadState CheckState m, MonadError MultipleErrors m, MonadWriter MultipleErrors m)
@@ -124,13 +125,13 @@ addTypeSynonym moduleName name args ty kind = do
                , typeSynonyms = M.insert qualName (args, ty) (typeSynonyms env) }
 
 valueIsNotDefined
-  :: (MonadState CheckState m, MonadError MultipleErrors m)
+  :: (MonadState CheckState m, MonadError MultipleErrors m, GetEnv m)
   => ModuleName
   -> Ident
   -> m ()
 valueIsNotDefined moduleName name = do
-  env <- getEnv
-  case M.lookup (Qualified (ByModuleName moduleName) name) (names env) of
+  nameMb <- lookupName (Qualified (ByModuleName moduleName) name)
+  case nameMb of
     Just _ -> throwError . errorMessage $ RedefinedIdent name
     Nothing -> return ()
 
@@ -252,7 +253,7 @@ checkTypeSynonyms = void . replaceAllTypeSynonyms
 --
 typeCheckAll
   :: forall m
-   . (MonadSupply m, MonadState CheckState m, MonadError MultipleErrors m, MonadWriter MultipleErrors m)
+   . (MonadSupply m, MonadState CheckState m, MonadError MultipleErrors m, MonadWriter MultipleErrors m, GetEnv m)
   => ModuleName
   -> [Declaration]
   -> m [Declaration]
@@ -403,34 +404,32 @@ typeCheckAll moduleName = traverse go
       flip (traverse_ . traverse_) (typeClassDictionaries env) $ \dictionaries ->
         guardWith (errorMessage (DuplicateInstance dictName ss)) $
           not (M.member qualifiedDictName dictionaries)
-      case M.lookup className (typeClasses env) of
-        Nothing -> internalError $ "typeCheckAll: Encountered unknown type class in instance declaration: " <> show moduleName <> ", " <> show className
-        Just typeClass -> do
-          checkInstanceArity dictName className typeClass tys
-          (deps', kinds', tys', vars) <- withFreshSubstitution $ checkInstanceDeclaration moduleName (sa, deps, className, tys)
-          tys'' <- traverse replaceAllTypeSynonyms tys'
-          zipWithM_ (checkTypeClassInstance typeClass) [0..] tys''
-          let nonOrphanModules = findNonOrphanModules className typeClass tys''
-          checkOrphanInstance dictName className tys'' nonOrphanModules
-          let chainId = Just ch
-          checkOverlappingInstance ss chainId dictName vars className typeClass tys'' nonOrphanModules
-          _ <- traverseTypeInstanceBody checkInstanceMembers body
-          deps'' <- (traverse . overConstraintArgs . traverse) replaceAllTypeSynonyms deps'
-          let 
-              srcType = srcInstanceType ss vars className tys''
-              dict =
-                TypeClassDictionaryInScope chainId idx qualifiedDictName [] className vars kinds' tys'' (Just deps'') $
-                  if isPlainIdent dictName then Nothing else Just srcType
-                  
-          addTypeClassDictionaries (ByModuleName moduleName) . M.singleton className $ M.singleton (tcdValue dict) (pure dict)
-          let 
-            kind = M.lookup (coerceProperName <$> className) (types env)
+      typeClass <- lookupTypeClassUnsafe className
+      checkInstanceArity dictName className typeClass tys
+      (deps', kinds', tys', vars) <- withFreshSubstitution $ checkInstanceDeclaration moduleName (sa, deps, className, tys)
+      tys'' <- traverse replaceAllTypeSynonyms tys'
+      zipWithM_ (checkTypeClassInstance typeClass) [0..] tys''
+      let nonOrphanModules = findNonOrphanModules className typeClass tys''
+      checkOrphanInstance dictName className tys'' nonOrphanModules
+      let chainId = Just ch
+      checkOverlappingInstance ss chainId dictName vars className typeClass tys'' nonOrphanModules
+      _ <- traverseTypeInstanceBody checkInstanceMembers body
+      deps'' <- (traverse . overConstraintArgs . traverse) replaceAllTypeSynonyms deps'
+      let 
+          srcType = srcInstanceType ss vars className tys''
+          dict =
+            TypeClassDictionaryInScope chainId idx qualifiedDictName [] className vars kinds' tys'' (Just deps'') $
+              if isPlainIdent dictName then Nothing else Just srcType
+              
+      addTypeClassDictionaries (ByModuleName moduleName) . M.singleton className $ M.singleton (tcdValue dict) (pure dict)
+      let 
+        kind = M.lookup (coerceProperName <$> className) (types env)
 
-          addIdeClassName (Just $ fromMaybe moduleName $ getQual className) ss
-            ( ProperName $ (("typeCheckAll: " <> T.pack (show tys'') <> " : ") <>) $ runProperName $ disqualify className) 
-            $ maybe P.srcTypeWildcard fst kind
+      addIdeClassName (Just $ fromMaybe moduleName $ getQual className) ss
+        ( ProperName $ (("typeCheckAll: " <> T.pack (show tys'') <> " : ") <>) $ runProperName $ disqualify className) 
+        $ maybe P.srcTypeWildcard fst kind
 
-          return d
+      return d
 
   checkInstanceArity :: Ident -> Qualified (ProperName 'ClassName) -> TypeClassData -> [SourceType] -> m ()
   checkInstanceArity dictName className typeClass tys = do
@@ -598,7 +597,7 @@ checkNewtype name _ = throwError . errorMessage $ InvalidNewtype name
 --
 typeCheckModule
   :: forall m
-   . (MonadSupply m, MonadState CheckState m, MonadError MultipleErrors m, MonadWriter MultipleErrors m)
+   . (MonadSupply m, MonadState CheckState m, MonadError MultipleErrors m, MonadWriter MultipleErrors m, GetEnv m)
   => M.Map ModuleName Exports
   -> Module
   -> m Module

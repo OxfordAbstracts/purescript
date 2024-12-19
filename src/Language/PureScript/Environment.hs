@@ -49,7 +49,7 @@ data Environment = Environment
   -- scope (ie dictionaries brought in by a constrained type).
   , typeClasses :: M.Map (Qualified (ProperName 'ClassName)) TypeClassData
   -- ^ Type classes
-  } deriving (Show, Generic, S.Serialise)
+  } deriving (Show, Eq, Generic, S.Serialise)
 
 instance NFData Environment
 
@@ -76,7 +76,7 @@ data TypeClassData = TypeClassData
   -- ^ A sets of arguments that can be used to infer all other arguments.
   , typeClassIsEmpty :: Bool
   -- ^ Whether or not dictionaries for this type class are necessarily empty.
-  } deriving (Show, Generic, S.Serialise)
+  } deriving (Show, Generic, Eq, S.Serialise)
 
 instance NFData TypeClassData
 

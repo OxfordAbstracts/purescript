@@ -35,12 +35,11 @@ import Language.PureScript.Environment (Environment)
 import Language.PureScript.Environment qualified as E
 import Language.PureScript.Externs (ExternsFile (efModuleName))
 import Language.PureScript.Lsp.NameType (LspNameType (DctorNameType), declNameType, externDeclNameType, lspNameType)
-import Language.PureScript.Lsp.Print (addDataDeclArgKind, printCtrType, printDataDeclKind, printDeclarationType, printEfDeclName, printEfDeclType, printName, printType, printTypeClassKind)
+import Language.PureScript.Lsp.Print (printCtrType, printDataDeclKind, printDeclarationType, printEfDeclName, printEfDeclType, printName, printType, printTypeClassKind)
 import Language.PureScript.Lsp.ServerConfig (ServerConfig)
 import Language.PureScript.Lsp.Util (efDeclSourceSpan, getOperatorValueName)
 import Language.PureScript.Make.Index.Select (toDbQualifer)
 import Language.PureScript.Names (Qualified ())
-import Language.PureScript.TypeChecker.Monad (emptyCheckState)
 import Language.PureScript.TypeClassDictionaries (NamedDict, TypeClassDictionaryInScope (tcdClassName, tcdInstanceKinds, tcdInstanceTypes, tcdValue))
 import Protolude hiding (moduleName)
 
@@ -72,7 +71,7 @@ addEnvIndexing conn ma =
     }
 
 indexAstModule :: (MonadIO m) => Connection -> Environment -> P.Module -> ExternsFile -> Set P.Name -> m ()
-indexAstModule conn endEnv (P.Module _ss _comments moduleName' decls _exportRefs) extern exportedNames = liftIO do
+indexAstModule conn _endEnv (P.Module _ss _comments moduleName' decls _exportRefs) extern exportedNames = liftIO do
   path <- makeAbsolute externPath
   SQL.executeNamed
     conn
@@ -103,19 +102,13 @@ indexAstModule conn endEnv (P.Module _ss _comments moduleName' decls _exportRefs
             P.DataDeclaration _ _ tyName args _ -> case getMatchingKind P.DataSig tyName of
               Just kind -> printType kind
               _ -> printDataDeclKind args
-            P.TypeSynonymDeclaration ann name args ty -> case getMatchingKind P.TypeSynonymSig name of
+            P.TypeSynonymDeclaration _ann name args _ty -> case getMatchingKind P.TypeSynonymSig name of
               Just kind -> printType kind
-              _ ->
-                let addForall ty' = foldl' (\acc v -> P.ForAll P.nullSourceAnn P.TypeVarInvisible v Nothing acc Nothing) ty' vars
-                      where
-                        vars = P.usedTypeVariables ty'
-
-                    inferSynRes =
-                      runExcept $ evalStateT (P.inferKind . addForall =<< P.inferTypeSynonym moduleName' (ann, name, args, ty)) (emptyCheckState endEnv) {P.checkCurrentModule = Just moduleName'}
-                 in case inferSynRes of
-                      Left err -> "Inference error: " <> T.pack (P.prettyPrintMultipleErrors P.noColorPPEOptions err)
-                      Right (_, tyKind) ->
-                        printType $ foldr addDataDeclArgKind (void tyKind) args
+              _ -> printDataDeclKind args 
+                    -- case inferSynRes of
+                    --   Left err -> "Inference error: " <> T.pack (P.prettyPrintMultipleErrors P.noColorPPEOptions err)
+                    --   Right (_, tyKind) ->
+                    --     printType $ foldr addDataDeclArgKind (void tyKind) args
             P.TypeClassDeclaration _ name args _ _ _ -> case getMatchingKind P.ClassSig (P.coerceProperName name) of
               Just kind -> printType kind
               _ -> printTypeClassKind args
@@ -500,9 +493,12 @@ insertNamedDict :: Connection -> NamedDict -> IO ()
 insertNamedDict conn dict = do
   SQL.execute
     conn
-    "INSERT OR REPLACE INTO env_type_class_instances (module_name, instance_name, class_module, class_name, types, kinds, dict) VALUES (?, ?, ?, ?, ?, ?, ?)"
-    (toDbQualifer (tcdValue dict) :. (clasMod, className, A.encode (tcdInstanceTypes dict), A.encode (tcdInstanceKinds dict), serialise dict))
+    "INSERT OR REPLACE INTO env_type_class_instances (module_name, instance_name, class_module, class_name, types, kinds, dict, debug) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+    (toDbQualifer (tcdValue dict) :. (clasMod, className, A.encode (void <$> tcdInstanceTypes dict), A.encode (tcdInstanceKinds dict), serialise dict, debug))
   where
+    debug :: Text 
+    debug = show (void <$> tcdInstanceTypes dict)
+
     (clasMod, className) = toDbQualifer (tcdClassName dict)
 
 initEnvTables :: Connection -> IO ()
@@ -525,6 +521,7 @@ addEnvIndexes conn = do
   SQL.execute_ conn "CREATE UNIQUE INDEX IF NOT EXISTS env_type_class_instances_idx ON env_type_class_instances(module_name, instance_name)"
   SQL.execute_ conn "CREATE INDEX IF NOT EXISTS env_type_class_instances_idents_idx ON env_type_class_instances(idents)"
   SQL.execute_ conn "CREATE INDEX IF NOT EXISTS env_type_class_instances_class_name_idx ON env_type_class_instances(class_name)"
+  SQL.execute_ conn "CREATE INDEX IF NOT EXISTS env_type_class_instances_class_module_idx ON env_type_class_instances(class_module)"
 
 dropEnvTables :: Connection -> IO ()
 dropEnvTables conn = do
