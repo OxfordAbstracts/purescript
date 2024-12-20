@@ -54,7 +54,7 @@ checkSubsume
 checkSubsume unsolved env st userT envT = checkInEnvironment env st $ do
   let initializeSkolems =
         Skolem.introduceSkolemScope
-        <=< P.replaceAllTypeSynonyms
+        <=< (runWoGetEnv . P.replaceAllTypeSynonyms)
         <=< P.replaceTypeWildcards
 
   userT' <- initializeSkolems userT
@@ -89,7 +89,7 @@ accessorSearch
 accessorSearch unsolved env st userT = maybe ([], []) fst $ checkInEnvironment env st $ do
   let initializeSkolems =
         Skolem.introduceSkolemScope
-        <=< P.replaceAllTypeSynonyms
+        <=< (runWoGetEnv . P.replaceAllTypeSynonyms)
         <=< P.replaceTypeWildcards
 
   userT' <- initializeSkolems userT

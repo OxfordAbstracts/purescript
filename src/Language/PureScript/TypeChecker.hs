@@ -51,7 +51,7 @@ import Language.PureScript.Types qualified as P
 import Language.PureScript.Make.Index.Select (GetEnv (deleteModuleEnv, getTypeClass))
 
 addDataType
-  :: (MonadState CheckState m, MonadError MultipleErrors m, MonadWriter MultipleErrors m)
+  :: (MonadState CheckState m, GetEnv m, MonadError MultipleErrors m, MonadWriter MultipleErrors m)
   => ModuleName
   -> DataDeclType
   -> ProperName 'TypeName
@@ -72,7 +72,7 @@ addDataType moduleName dtype name args dctors ctorKind = do
       addDataConstructor moduleName dtype name dctor fields polyType
 
 addDataConstructor
-  :: (MonadState CheckState m, MonadError MultipleErrors m)
+  :: (MonadState CheckState m, MonadError MultipleErrors m, GetEnv m)
   => ModuleName
   -> DataDeclType
   -> ProperName 'TypeName
@@ -107,7 +107,7 @@ checkRoleDeclaration moduleName (RoleDeclarationData (ss, _) name declaredRoles)
       _ -> internalError "Unsupported role declaration"
 
 addTypeSynonym
-  :: (MonadState CheckState m, MonadError MultipleErrors m, MonadWriter MultipleErrors m)
+  :: (MonadState CheckState m, GetEnv m, MonadError MultipleErrors m, MonadWriter MultipleErrors m)
   => ModuleName
   -> ProperName 'TypeName
   -> [(Text, Maybe SourceType)]
@@ -239,7 +239,7 @@ checkTypeClassInstance cls i = check where
 -- Check that type synonyms are fully-applied in a type
 --
 checkTypeSynonyms
-  :: (MonadState CheckState m, MonadError MultipleErrors m)
+  :: (MonadState CheckState m, GetEnv m, MonadError MultipleErrors m)
   => SourceType
   -> m ()
 checkTypeSynonyms = void . replaceAllTypeSynonyms

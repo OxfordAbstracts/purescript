@@ -211,7 +211,7 @@ lookupTypeInfo UnwrappedTypeConstructor{..} = do
 
 deriveEq
   :: forall m
-   . MonadError MultipleErrors m
+   . (MonadError MultipleErrors m, GetEnv m)
   => MonadState CheckState m
   => MonadSupply m
   => UnwrappedTypeConstructor
@@ -273,6 +273,7 @@ deriveEq1 = pure [(Libs.S_eq1, mkRef Libs.I_eq)]
 deriveOrd
   :: forall m
    . MonadError MultipleErrors m
+  => GetEnv m
   => MonadState CheckState m
   => MonadSupply m
   => UnwrappedTypeConstructor

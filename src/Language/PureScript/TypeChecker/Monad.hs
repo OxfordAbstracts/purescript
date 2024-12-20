@@ -361,6 +361,18 @@ lookupTypeUnsafe qual = lookupTypeMb qual >>= \case
   Nothing -> internalError $ "lookupTypeUnsafe: Encountered unknown type in: " <> show qual
   Just ty -> return ty
 
+
+lookupSynonymMb 
+  :: (MonadState CheckState m, GetEnv m)
+  => Qualified (ProperName 'TypeName) 
+  -> m (Maybe ([(Text, Maybe SourceType)], SourceType))
+lookupSynonymMb qual = do
+  env <- getEnv
+  case M.lookup qual (typeSynonyms env) of
+    Nothing -> do 
+      Select.getTypeSynonym qual
+    syn -> return syn
+
 -- | Lookup the kind of a type by name in the @Environment@
 lookupTypeVariable
   :: (e ~ MultipleErrors, MonadState CheckState m, MonadError e m, GetEnv m)
