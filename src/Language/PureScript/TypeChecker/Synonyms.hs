@@ -27,34 +27,6 @@ type SynonymMap = M.Map (Qualified (ProperName 'TypeName)) ([(Text, Maybe Source
 
 type KindMap = M.Map (Qualified (ProperName 'TypeName)) (SourceType, TypeKind)
 
--- replaceAllTypeSynonyms'
---   :: SynonymMap
---   -> KindMap
---   -> SourceType
---   -> Either MultipleErrors SourceType
--- replaceAllTypeSynonyms' syns kinds = everywhereOnTypesTopDownM try
---   where
---   try :: SourceType -> Either MultipleErrors SourceType
---   try t = fromMaybe t <$> go (fst $ getAnnForType t) 0 [] [] t
-
---   go :: SourceSpan -> Int -> [SourceType] -> [SourceType] -> SourceType -> Either MultipleErrors (Maybe SourceType)
---   go ss c kargs args (TypeConstructor _ ctor)
---     | Just (synArgs, body) <- M.lookup ctor syns
---     , c == length synArgs
---     , kindArgs <- lookupKindArgs ctor
---     , length kargs == length kindArgs
---     = let repl = replaceAllTypeVars (zip (map fst synArgs) args <> zip kindArgs kargs) body
---       in Just <$> try repl
---     | Just (synArgs, _) <- M.lookup ctor syns
---     , length synArgs > c
---     = throwError . errorMessage' ss $ PartiallyAppliedSynonym ctor
---   go ss c kargs args (TypeApp _ f arg) = go ss (c + 1) kargs (arg : args) f
---   go ss c kargs args (KindApp _ f arg) = go ss c (arg : kargs) args f
---   go _ _ _ _ _ = return Nothing
-
---   lookupKindArgs :: Qualified (ProperName 'TypeName) -> [Text]
---   lookupKindArgs ctor = fromMaybe [] $ fmap (fmap (fst . snd) . fst) . completeBinderList . fst =<< M.lookup ctor kinds
-
 -- | Replace fully applied type synonyms
 replaceAllTypeSynonyms :: forall e m. (e ~ MultipleErrors, MonadState CheckState m, GetEnv m, MonadError e m) => SourceType -> m SourceType
 replaceAllTypeSynonyms = everywhereOnTypesTopDownM try
@@ -63,12 +35,12 @@ replaceAllTypeSynonyms = everywhereOnTypesTopDownM try
     try t = fromMaybe t <$> go (fst $ getAnnForType t) 0 [] [] t
 
     go :: SourceSpan -> Int -> [SourceType] -> [SourceType] -> SourceType -> m (Maybe SourceType)
-    go ss c kargs args (TypeConstructor _ ctor) =
+    go ss c kargs args (TypeConstructor _ ctor) = do
       lookupSynonymMb ctor >>= \case
         Just (synArgs, body)
           | c == length synArgs -> do
              kindArgs <- lookupKindArgs ctor
-             if length kargs == length kindArgs  then 
+             if length kargs == length kindArgs  then
               let repl = replaceAllTypeVars (zip (map fst synArgs) args <> zip kindArgs kargs) body
                in Just <$> try repl
              else pure Nothing
