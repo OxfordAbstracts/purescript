@@ -38,7 +38,7 @@ import Data.List.NonEmpty qualified as NEL
 import Language.PureScript.AST (Binder(..), ErrorMessageHint(..), Expr(..), Literal(..), pattern NullSourceSpan, everywhereOnValuesTopDownM, nullSourceSpan, everythingOnValues)
 import Language.PureScript.AST.Declarations (UnknownsHint(..))
 import Language.PureScript.Crash (internalError)
-import Language.PureScript.Environment (Environment(..), FunctionalDependency(..), TypeClassData(..), dictTypeName, kindRow, tyBoolean, tyInt, tyString)
+import Language.PureScript.Environment (FunctionalDependency(..), TypeClassData(..), dictTypeName, kindRow, tyBoolean, tyInt, tyString)
 import Language.PureScript.Errors (MultipleErrors, SimpleErrorMessage(..), addHint, addHints, errorMessage, rethrow)
 import Language.PureScript.Names (pattern ByNullSourcePos, Ident(..), ModuleName, ProperName(..), ProperNameType(..), Qualified(..), QualifiedBy(..), byMaybeModuleName, coerceProperName, disqualify, freshIdent, getQual)
 import Language.PureScript.TypeChecker.Entailment.Coercible (GivenSolverState(..), WantedSolverState(..), initialGivenSolverState, initialWantedSolverState, insoluble, solveGivens, solveWanteds)
@@ -195,11 +195,11 @@ entails
 entails SolverOptions{..} constraint context hints =
   overConstraintArgsAll (lift . lift . traverse replaceAllTypeSynonyms) constraint >>= solve
   where
-    forClassNameM :: Environment -> InstanceContext -> Qualified (ProperName 'ClassName) -> [SourceType] -> [SourceType] -> m [TypeClassDict]
-    forClassNameM env ctx cn@C.Coercible kinds args =
+    forClassNameM ::  InstanceContext -> Qualified (ProperName 'ClassName) -> [SourceType] -> [SourceType] -> m [TypeClassDict]
+    forClassNameM  ctx cn@C.Coercible kinds args =
       fromMaybe (forClassName  ctx cn kinds args) <$>
-        solveCoercible env ctx kinds args
-    forClassNameM _env ctx cn kinds args =
+        solveCoercible ctx kinds args
+    forClassNameM  ctx cn kinds args =
       pure $ forClassName ctx cn kinds args
 
     forClassName :: InstanceContext -> Qualified (ProperName 'ClassName) -> [SourceType] -> [SourceType] -> [TypeClassDict]
@@ -252,7 +252,6 @@ entails SolverOptions{..} constraint context hints =
             -- We need information about functional dependencies, so we have to look up the class
             -- name in the environment:
             typeClass <- lift . lift $ lookupTypeClassMb className'
-            env <- lift . lift $ gets checkEnv
             TypeClassData
               { typeClassArguments
               , typeClassDependencies
@@ -263,7 +262,7 @@ entails SolverOptions{..} constraint context hints =
                 Nothing -> throwError . errorMessage $ UnknownClass className'
                 Just tcd -> pure tcd
 
-            dicts <- lift . lift $ forClassNameM env (combineContexts context inferred) className' kinds'' tys''
+            dicts <- lift . lift $ forClassNameM (combineContexts context inferred) className' kinds'' tys''
 
             let (catMaybes -> ambiguous, instances) = partitionEithers $ do
                   chain :: NonEmpty TypeClassDict <-
@@ -471,15 +470,15 @@ entails SolverOptions{..} constraint context hints =
         subclassDictionaryValue dict className index =
           App (Accessor (mkString (superclassName className index)) dict) valUndefined
 
-    solveCoercible :: Environment -> InstanceContext -> [SourceType] -> [SourceType] -> m (Maybe [TypeClassDict])
-    solveCoercible env ctx kinds [a, b] = do
+    solveCoercible :: InstanceContext -> [SourceType] -> [SourceType] -> m (Maybe [TypeClassDict])
+    solveCoercible ctx kinds [a, b] = do
       let coercibleDictsInScope = findDicts ctx C.Coercible ByNullSourcePos
           givens = flip mapMaybe coercibleDictsInScope $ \case
             dict | [a', b'] <- tcdInstanceTypes dict -> Just (a', b')
                  | otherwise -> Nothing
-      GivenSolverState{ inertGivens } <- execStateT (solveGivens env) $
+      GivenSolverState{ inertGivens } <- execStateT solveGivens $
         initialGivenSolverState givens
-      (WantedSolverState{ inertWanteds }, hints') <- runWriterT . execStateT (solveWanteds env) $
+      (WantedSolverState{ inertWanteds }, hints') <- runWriterT . execStateT solveWanteds $
         initialWantedSolverState inertGivens a b
       -- Solving fails when there's irreducible wanteds left.
       --
@@ -492,7 +491,7 @@ entails SolverOptions{..} constraint context hints =
         [] -> pure $ Just [TypeClassDictionaryInScope Nothing 0 EmptyClassInstance [] C.Coercible [] kinds [a, b] Nothing Nothing]
         (k, a', b') : _ | a' == b && b' == a -> throwError $ insoluble k b' a'
         (k, a', b') : _ -> throwError $ insoluble k a' b'
-    solveCoercible _ _ _ _ = pure Nothing
+    solveCoercible _ _ _ = pure Nothing
 
     solveIsSymbol :: [SourceType] -> Maybe [TypeClassDict]
     solveIsSymbol [TypeLevelString ann sym] = Just [TypeClassDictionaryInScope Nothing 0 (IsSymbolInstance sym) [] C.IsSymbol [] [] [TypeLevelString ann sym] Nothing Nothing]

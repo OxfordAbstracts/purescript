@@ -356,6 +356,11 @@ lookupType span' v =
     Nothing -> throwError . errorMessage' span' $ UnknownName $ fmap TyName v
     Just ty -> return ty
 
+lookupTypeUnsafe :: (MonadState CheckState m, GetEnv m) => Qualified (ProperName 'TypeName) -> m (SourceType, TypeKind)
+lookupTypeUnsafe qual = lookupTypeMb qual >>= \case 
+  Nothing -> internalError $ "lookupTypeUnsafe: Encountered unknown type in: " <> show qual
+  Just ty -> return ty
+
 -- | Lookup the kind of a type by name in the @Environment@
 lookupTypeVariable
   :: (e ~ MultipleErrors, MonadState CheckState m, MonadError e m, GetEnv m)

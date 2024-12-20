@@ -60,12 +60,11 @@ getConstructors :: forall m. (MonadState CheckState m, GetEnv m) => ModuleName -
 getConstructors defmn n = do
   qpn <- getConsDataName n
   lnte <- lookupTypeMb qpn
-
   pure $ extractConstructors lnte
   where
     extractConstructors :: Maybe (SourceType, TypeKind) -> [(ProperName 'ConstructorName, [SourceType])]
     extractConstructors (Just (_, DataType _ _ pt)) = pt
-    extractConstructors _ = internalError "Data name not in the scope of the current environment in extractConstructors"
+    extractConstructors other = internalError $ "Data name not in the scope of the current environment in extractConstructors: " ++ show other 
 
     getConsDataName :: Qualified (ProperName 'ConstructorName) -> m (Qualified (ProperName 'TypeName))
     getConsDataName con =

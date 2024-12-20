@@ -1153,6 +1153,15 @@ instance (Monad m, GetEnv m) => GetEnv (MaybeT m ) where
   getTypeClassDictionaries = lift getTypeClassDictionaries
   getTypeClassDictionary = lift . getTypeClassDictionary
   deleteModuleEnv = lift . deleteModuleEnv
+instance (Monad m, GetEnv m) => GetEnv (ExceptT e m ) where 
+  getName = lift . getName
+  getType = lift . getType
+  getDataConstructor = lift . getDataConstructor
+  getTypeSynonym = lift . getTypeSynonym
+  getTypeClass = lift . getTypeClass
+  getTypeClassDictionaries = lift getTypeClassDictionaries
+  getTypeClassDictionary = lift . getTypeClassDictionary
+  deleteModuleEnv = lift . deleteModuleEnv
 
 instance (Monad m, Monoid w, GetEnv m) => GetEnv (WriterT w m ) where 
   getName = lift . getName
