@@ -340,9 +340,9 @@ instance FromField Ident where
   fromField a = (decodeAlphaNumIdent =<< fromField a) <|> (decodeJsonIdent =<< fromField a)
     where 
       decodeAlphaNumIdent :: Text -> Ok Ident
-      decodeAlphaNumIdent txt = if all isAlphaNum $ T.unpack txt then
+      decodeAlphaNumIdent txt = if all (\c -> isAlphaNum c || c == '\'') $ T.unpack txt then
         pure $ Ident txt
       else
-        fail "Failed to decode ident"
+        fail $ "Failed to decode alphanum ident: " <> show txt
 
-      decodeJsonIdent str = maybe (fail "Failed to decode ident") pure $ A.decode str
+      decodeJsonIdent str = maybe (fail $ "Failed to decode json ident: " <> show str) pure $ A.decode str
