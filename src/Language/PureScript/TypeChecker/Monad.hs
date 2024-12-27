@@ -1,4 +1,7 @@
 {-# LANGUAGE GADTs #-}
+{-# OPTIONS_GHC -Wno-unused-matches #-}
+{-# LANGUAGE BlockArguments #-}
+{-# OPTIONS_GHC -Wno-redundant-constraints #-}
 
 -- |
 -- Monads for type checking and type inference and associated data types
@@ -235,8 +238,9 @@ getTypeClassDictionaries
   => m (M.Map QualifiedBy (M.Map (Qualified (ProperName 'ClassName)) (M.Map (Qualified Ident) (NEL.NonEmpty NamedDict))))
 getTypeClassDictionaries = do 
   envDicts <- gets $ typeClassDictionaries . checkEnv
-  dbDicts <- Select.getTypeClassDictionaries 
-  pure $ addDictsToEnvMap dbDicts envDicts
+  -- dbDicts <- Select.getTypeClassDictionaries 
+  pure envDicts
+   --   $ addDictsToEnvMap dbDicts envDicts
 
 -- | Lookup type class dictionaries in a module.
 lookupTypeClassDictionaries
@@ -252,11 +256,12 @@ lookupTypeClassDictionariesForClass
   -> Qualified (ProperName 'ClassName)
   -> m (M.Map (Qualified Ident) (NEL.NonEmpty NamedDict))
 lookupTypeClassDictionariesForClass mn cn = do
-  inDb <- getTypeClassDictionary cn
+  inDb <- key <$> getTypeClassDictionary cn
   inEnv <- getInEnv
   pure $ inDb <> inEnv
   where 
     getInEnv = fromMaybe M.empty . M.lookup cn <$> lookupTypeClassDictionaries mn
+    key = M.fromList . fmap \a -> (tcdValue a, pure a)
 
 -- | Temporarily bind a collection of names to local variables
 bindLocalVariables

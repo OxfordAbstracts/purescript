@@ -28,11 +28,11 @@ import Language.PureScript.Names (pattern ByNullSourcePos, Ident(..), ModuleName
 import Language.PureScript.PSString (PSString, mkString)
 import Language.PureScript.Sugar.TypeClasses (superClassDictionaryNames)
 import Language.PureScript.TypeChecker.Entailment (InstanceContext, findDicts)
-import Language.PureScript.TypeChecker.Monad (CheckState, getEnv, getTypeClassDictionaries, unsafeCheckCurrentModule, lookupTypeClassOrThrow, lookupTypeClassMb, lookupTypeClassDictionariesForClass)
+import Language.PureScript.TypeChecker.Monad (CheckState, getEnv, getTypeClassDictionaries, unsafeCheckCurrentModule, lookupTypeClassOrThrow, lookupTypeClassMb, lookupTypeClassDictionariesForClass, addDictsToEnvMap)
 import Language.PureScript.TypeChecker.Synonyms (replaceAllTypeSynonyms)
 import Language.PureScript.TypeClassDictionaries (TypeClassDictionaryInScope(..))
 import Language.PureScript.Types (Constraint(..), pattern REmptyKinded, SourceType, Type(..), completeBinderList, eqType, everythingOnTypes, replaceAllTypeVars, srcTypeVar, usedTypeVariables)
-import Language.PureScript.Make.Index.Select (GetEnv)
+import Language.PureScript.Make.Index.Select (GetEnv (getTypeClassDictionary))
 
 -- | Extract the name of the newtype appearing in the last type argument of
 -- a derived newtype instance.
@@ -462,7 +462,8 @@ validateParamsInTypeConstructors derivingClass utc isBi CovariantClasses{..} con
       (True, _)         -> Left $ kindType -:> kindType
   ctors <- traverse (traverse $ traverse replaceAllTypeSynonyms) tiCtors
   tcds <- getTypeClassDictionaries
-  let (ctorUsages, problemSpans) = runWriter $ traverse (traverse . traverse $ typeToUsageOf tcds tiArgSubst (maybe That These mbLParam param) False) ctors
+  classTcds <- getTypeClassDictionary derivingClass
+  let (ctorUsages, problemSpans) = runWriter $ traverse (traverse . traverse $ typeToUsageOf (addDictsToEnvMap classTcds tcds) tiArgSubst (maybe That These mbLParam param) False) ctors
   let relatedClasses = [monoClass, biClass] ++ ([contraClass, proClass] <*> (contravariantClasses <$> toList contravarianceSupport))
   for_ (nonEmpty $ ordNub problemSpans) $ \sss ->
     throwError . addHint (RelatedPositions sss) . errorMessage $ CannotDeriveInvalidConstructorArg derivingClass relatedClasses (isJust contravarianceSupport)

@@ -44,7 +44,7 @@ import Language.PureScript.Names (pattern ByNullSourcePos, Ident(..), ModuleName
 import Language.PureScript.TypeChecker.Entailment.Coercible (GivenSolverState(..), WantedSolverState(..), initialGivenSolverState, initialWantedSolverState, insoluble, solveGivens, solveWanteds)
 import Language.PureScript.TypeChecker.Entailment.IntCompare (mkFacts, mkRelation, solveRelation)
 import Language.PureScript.TypeChecker.Kinds (elaborateKind, unifyKinds')
-import Language.PureScript.TypeChecker.Monad (CheckState(..), withErrorMessageHint, lookupTypeClassMb, lookupTypeClassUnsafe)
+import Language.PureScript.TypeChecker.Monad (CheckState(..), withErrorMessageHint, lookupTypeClassMb, lookupTypeClassUnsafe, addDictsToEnvMap)
 import Language.PureScript.TypeChecker.Synonyms (replaceAllTypeSynonyms)
 import Language.PureScript.TypeChecker.Unify (freshTypeWithKind, substituteType, unifyTypes)
 import Language.PureScript.TypeClassDictionaries (NamedDict, TypeClassDictionaryInScope(..), superclassName)
@@ -53,7 +53,7 @@ import Language.PureScript.Label (Label(..))
 import Language.PureScript.PSString (PSString, mkString, decodeString)
 import Language.PureScript.Constants.Libs qualified as C
 import Language.PureScript.Constants.Prim qualified as C
-import Language.PureScript.Make.Index.Select (GetEnv)
+import Language.PureScript.Make.Index.Select (GetEnv (getTypeClassDictionary))
 
 -- | Describes what sort of dictionary to generate for type class instances
 data Evidence
@@ -246,7 +246,8 @@ entails SolverOptions{..} constraint context hints =
             latestSubst <- lift . lift $ gets checkSubstitution
             let kinds'' = map (substituteType latestSubst) kinds'
                 tys'' = map (substituteType latestSubst) tys'
-
+            
+            fromDb <- lift . lift $ getTypeClassDictionary className'
             -- Get the inferred constraint context so far, and merge it with the global context
             inferred <- lift get
             -- We need information about functional dependencies, so we have to look up the class
@@ -262,7 +263,7 @@ entails SolverOptions{..} constraint context hints =
                 Nothing -> throwError . errorMessage $ UnknownClass className'
                 Just tcd -> pure tcd
 
-            dicts <- lift . lift $ forClassNameM (combineContexts context inferred) className' kinds'' tys''
+            dicts <- lift . lift $ forClassNameM (addDictsToEnvMap fromDb $ combineContexts context inferred) className' kinds'' tys''
 
             let (catMaybes -> ambiguous, instances) = partitionEithers $ do
                   chain :: NonEmpty TypeClassDict <-

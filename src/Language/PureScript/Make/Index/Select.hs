@@ -4,6 +4,7 @@
 {-# OPTIONS_GHC -Wno-unused-local-binds #-}
 
 {-# HLINT ignore "Redundant bracket" #-}
+{-# LANGUAGE InstanceSigs #-}
 
 module Language.PureScript.Make.Index.Select where
 
@@ -590,7 +591,7 @@ class GetEnv m where
   getTypeSynonym :: P.Qualified (P.ProperName 'P.TypeName) -> m (Maybe ([(Text, Maybe P.SourceType)], P.SourceType))
   getTypeClass :: P.Qualified (P.ProperName 'P.ClassName) -> m (Maybe P.TypeClassData)
   getTypeClassDictionaries :: m [NamedDict]
-  getTypeClassDictionary :: P.Qualified (P.ProperName 'P.ClassName) -> m (Map.Map (P.Qualified P.Ident) (NEL.NonEmpty P.NamedDict))
+  getTypeClassDictionary :: P.Qualified (P.ProperName 'P.ClassName) -> m [NamedDict]
   deleteModuleEnv :: P.ModuleName -> m ()
 
 
@@ -667,9 +668,8 @@ instance (MonadIO m) => GetEnv (DbEnv m) where
 
   getTypeClassDictionary cls = DbEnv $ do
     conn <- ask
-    liftIO $ key <$> selectClassInstancesByClassName conn cls
-    where 
-      key = Map.fromListWith (<>) . fmap (\d -> (P.tcdValue d, pure d))
+    liftIO $ selectClassInstancesByClassName conn cls
+
 
 newtype WoGetEnv m a = WoGetEnv (m a)
   deriving (Functor, Applicative, Monad, MonadIO, MonadState s, MonadError e, MonadWriter w)
@@ -688,5 +688,5 @@ instance Monad m => GetEnv (WoGetEnv m) where
   getTypeSynonym _ = pure Nothing
   getTypeClass _ = pure Nothing
   getTypeClassDictionaries = pure []
-  getTypeClassDictionary _ = pure Map.empty
+  getTypeClassDictionary _ = pure []
   deleteModuleEnv _ = pure ()
