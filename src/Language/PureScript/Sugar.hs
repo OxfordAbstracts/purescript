@@ -80,7 +80,7 @@ desugarUsingDb ::
   Env ->
   Module ->
   m Module
-desugarUsingDb conn  env =
+desugarUsingDb conn env = do 
   desugarSignedLiterals
     >>> desugarObjectConstructors
     >=> desugarDoModule

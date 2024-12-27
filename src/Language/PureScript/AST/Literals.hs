@@ -39,4 +39,4 @@ data Literal a
   -- An object literal
   --
   | ObjectLiteral [(PSString, a)]
-  deriving (Eq, Ord, Show, Functor, Generic,  S.Serialise, NFData)
+  deriving (Eq, Ord, Show, Functor, Foldable, Traversable, Generic,  S.Serialise, NFData)

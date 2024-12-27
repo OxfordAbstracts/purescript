@@ -78,6 +78,8 @@ getModuleFixities (P.Module _ _ _ decls _) = (externsFixitiesInModule, externsTy
 selectFixitiesFromModuleImports :: Connection -> P.Env -> P.Module -> IO ([(P.ModuleName, [ExternsFixity])], [(P.ModuleName, [ExternsTypeFixity])])
 selectFixitiesFromModuleImports conn env (P.Module _ _ _modName decls _refs) = do
   valueOps <- onImports selectImportValueFixities
+  when (_modName == P.ModuleName "Data.NonEmpty") do 
+    putErrText $ "valueOps: " <> show valueOps
   typeOps <- onImports selectImportTypeFixities
   pure (valueOps, typeOps)
   where

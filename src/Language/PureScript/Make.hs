@@ -49,7 +49,7 @@ import Language.PureScript.Make.Actions as Actions
 import Language.PureScript.Make.BuildPlan (BuildJobResult (..), BuildPlan (..), getResult)
 import Language.PureScript.Make.BuildPlan qualified as BuildPlan
 import Language.PureScript.Make.Cache qualified as Cache
-import Language.PureScript.Make.Index.Select (getModuleFixities, selectFixitiesFromModuleImportsAndDecls, selectFixitiesFromModuleImports, GetEnv, runDbEnv, runWoGetEnv)
+import Language.PureScript.Make.Index.Select (getModuleFixities, selectFixitiesFromModuleImportsAndDecls, selectFixitiesFromModuleImports, GetEnv (deleteModuleEnv), runDbEnv, runWoGetEnv)
 import Language.PureScript.Make.Monad as Monad
 import Language.PureScript.ModuleDependencies (DependencyDepth (..), moduleSignature, sortModules)
 import Language.PureScript.Names (ModuleName(..), isBuiltinModuleName, runModuleName)
@@ -140,7 +140,8 @@ rebuildModuleWithProvidedEnv initialCheckState MakeActions {..} exEnv env extern
   regrouped <- createBindingGroups moduleName . collapseBindingGroups $ deguarded
   let mod' = Module ss coms moduleName regrouped exps
 
-      corefn = CF.moduleToCoreFn env' mod'
+  corefn <- runWoGetEnv $ CF.moduleToCoreFn env' mod'
+  let 
       (optimized, nextVar'') = runSupply nextVar' $ CF.optimizeCoreFn corefn
       (renamedIdents, renamed) = renameInModule optimized
       exts = moduleToExternsFile mod' env' renamedIdents
@@ -196,7 +197,8 @@ rebuildModuleWithProvidedEnvDb initialCheckState MakeActions {..} conn exEnv m@(
   regrouped <- createBindingGroups moduleName . collapseBindingGroups $ deguarded
   let mod' = Module ss coms moduleName regrouped exps
 
-      corefn = CF.moduleToCoreFn env' mod'
+  corefn <- runDbEnv conn $ CF.moduleToCoreFn env' mod'
+  let 
       (optimized, nextVar'') = runSupply nextVar' $ CF.optimizeCoreFn corefn
       (renamedIdents, renamed) = renameInModule optimized
       exts = moduleToExternsFile mod' env' renamedIdents
@@ -268,6 +270,7 @@ desugarAndTypeCheckDb ::
   Env ->
   m ((Module, CheckState), Integer)
 desugarAndTypeCheckDb initialCheckState conn withCheckStateOnError withCheckState moduleName withPrim exEnv = runSupplyT 0 $ do
+  runDbEnv conn $ deleteModuleEnv moduleName
   (desugared, (exEnv', usedImports)) <- runStateT (desugarUsingDb conn exEnv withPrim) (exEnv, mempty)
   let modulesExports = (\(_, _, exports) -> exports) <$> exEnv'
   -- env <- selectEnvFromDefinitions conn exEnv' desugared
@@ -431,9 +434,7 @@ make ma@MakeActions {..} ms = do
             (exts, warnings) <- bracket_ (C.waitQSem lock) (C.signalQSem lock) $ do
               -- Eventlog markers for profiling; see debug/eventlog.js
               liftBase $ traceMarkerIO $ T.unpack (runModuleName moduleName) <> " start"
-              -- Force the externs and warnings to avoid retaining excess module
-              -- data after the module is finished compiling.
-              extsAndWarnings <- evaluate . force <=< listen $ do
+              extsAndWarnings <- listen $ do
                 rebuildModuleWithIndexDb ma conn env m (Just (idx, cnt))
               liftBase $ traceMarkerIO $ T.unpack (runModuleName moduleName) <> " end"
               return extsAndWarnings
