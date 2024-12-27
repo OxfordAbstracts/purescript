@@ -615,15 +615,6 @@ typeCheckModule modulesExports (Module ss coms mn decls (Just exps)) =
   warnAndRethrow (addHint (ErrorInModule mn)) $ do
     deleteModuleEnv mn
     let (decls', imports) = partitionEithers $ fromImportDecl <$> decls
-    for_ imports $ \((modSS,_), mName, idType, _, _) -> do 
-      addIdeModule modSS mName
-      let 
-        refs = 
-          case idType of 
-            Explicit refs' -> refs'
-            Hiding refs' -> refs'
-            _ -> []
-      for_ refs (addIdeImport mName)
     modify (\s -> s { checkCurrentModule = Just mn, checkCurrentModuleImports = imports })
     decls'' <- typeCheckAll mn $ ignoreWildcardsUnderCompleteTypeSignatures <$> decls'
     checkSuperClassesAreExported <- getSuperClassExportCheck

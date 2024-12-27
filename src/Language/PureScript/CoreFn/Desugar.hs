@@ -85,12 +85,7 @@ moduleToCoreFn env (A.Module modSS coms mn decls (Just exps)) = do
   declToCoreFn (A.BindingGroupDeclaration ds) = do 
     exprs <- traverse (\(((ss, com), name), _, e) -> ((ssA ss, name),) <$>  exprToCoreFn ss com Nothing e) ds
     pure  [Rec . NEL.toList $ exprs]
-  --       concatMap declToCoreFn ds
-  -- declToCoreFn (A.ValueDecl (ss, com) name _ _ [A.MkUnguarded e]) =
-  --   [NonRec (ssA ss) name (exprToCoreFn ss com Nothing e)]
-  -- declToCoreFn (A.BindingGroupDeclaration ds) =
-  --   [Rec . NEL.toList $ fmap (\(((ss, com), name), _, e) -> ((ssA ss, name), exprToCoreFn ss com Nothing e)) ds]
-
+  
   declToCoreFn _ = return []
 
   -- Desugars expressions from AST to CoreFn representation.
@@ -104,6 +99,9 @@ moduleToCoreFn env (A.Module modSS coms mn decls (Just exps)) = do
   exprToCoreFn ss com ty (A.ObjectUpdate obj vs) = do
     cfn <- exprToCoreFn ss [] Nothing obj
     cfns <- traverse (\(ps, expr) -> (ps,) <$> exprToCoreFn ss [] Nothing expr) vs
+
+    -- ObjectUpdate (ss, com, Nothing) (exprToCoreFn ss [] Nothing obj) (ty >>= unchangedRecordFields (fmap fst vs)) $ fmap (second (exprToCoreFn ss [] Nothing)) vs
+
     pure $ ObjectUpdate (ss, com, Nothing) cfn (ty >>= unchangedRecordFields (fmap fst vs)) cfns
     where
     -- Return the unchanged labels of a closed record, or Nothing for other types or open records.
@@ -155,7 +153,7 @@ moduleToCoreFn env (A.Module modSS coms mn decls (Just exps)) = do
   exprToCoreFn ss com _ (A.TypedValue _ v ty) =
     exprToCoreFn ss com (Just ty) v
   exprToCoreFn ss com _ (A.Let w ds v) = do 
-    ds' <- join <$> traverse declToCoreFn ds
+    ds' <- concat <$> traverse declToCoreFn ds
     Let (ss, com, getLetMeta w) ds' <$> exprToCoreFn ss [] Nothing v
   exprToCoreFn _ com ty (A.PositionedValue ss com1 v) =
     exprToCoreFn ss (com ++ com1) ty v

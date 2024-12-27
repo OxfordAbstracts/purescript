@@ -78,23 +78,26 @@ getModuleFixities (P.Module _ _ _ decls _) = (externsFixitiesInModule, externsTy
 selectFixitiesFromModuleImports :: Connection -> P.Env -> P.Module -> IO ([(P.ModuleName, [ExternsFixity])], [(P.ModuleName, [ExternsTypeFixity])])
 selectFixitiesFromModuleImports conn env (P.Module _ _ _modName decls _refs) = do
   valueOps <- onImports selectImportValueFixities
-  when (_modName == P.ModuleName "Data.NonEmpty") do 
-    putErrText $ "valueOps: " <> show valueOps
+  -- when (_modName == P.ModuleName "Data.NonEmpty") do 
+  -- putErrText $ show _modName
+  -- putErrText $ "valueOps: " <> show valueOps
   typeOps <- onImports selectImportTypeFixities
   pure (valueOps, typeOps)
   where
-    onImports ::
+    onImports :: Ord a =>
       (Connection -> P.Env -> P.ModuleName -> ImportDeclarationType -> IO [(P.ModuleName, a)]) ->
       IO [(P.ModuleName, [a])]
     onImports fn = groupByModule . join . catMaybes <$> forConcurrently decls (whenImportDecl (fn conn env))
 
-    whenImportDecl :: (P.ModuleName -> ImportDeclarationType -> IO a) -> P.Declaration -> IO (Maybe a)
+    whenImportDecl :: (P.ModuleName -> ImportDeclarationType -> IO [(P.ModuleName, a)]) -> P.Declaration -> IO (Maybe [(P.ModuleName, a)])
     whenImportDecl f = \case
-      P.ImportDeclaration _ mn' idt _ -> Just <$> f mn' idt
+      P.ImportDeclaration _ mn' idt importedAs -> Just  <$> f mn' idt
+        where 
+          addImportedAs (mn'', a) = (fromMaybe mn'' importedAs, a)
       _ -> pure Nothing
 
-    groupByModule :: [(P.ModuleName, a)] -> [(P.ModuleName, [a])]
-    groupByModule = Map.toList . Map.fromListWith (<>) . fmap (fmap pure)
+    groupByModule :: Ord a => [(P.ModuleName, a)] -> [(P.ModuleName, [a])]
+    groupByModule = Map.toList . fmap ordNub . Map.fromListWith (<>) . fmap (fmap pure)
 
 selectImportValueFixities :: Connection -> P.Env -> P.ModuleName -> ImportDeclarationType -> IO [(P.ModuleName, ExternsFixity)]
 selectImportValueFixities conn env modName = \case
