@@ -565,6 +565,7 @@ deleteModuleEnvImpl moduleName conn = do
   SQL.execute conn "DELETE FROM env_data_constructors WHERE module_name = ?" (SQL.Only moduleName)
   SQL.execute conn "DELETE FROM env_type_synonyms WHERE module_name = ?" (SQL.Only moduleName)
   SQL.execute conn "DELETE FROM env_type_classes WHERE module_name = ?" (SQL.Only moduleName)
+  SQL.execute conn "DELETE FROM env_type_class_instances WHERE module_name = ?" (SQL.Only moduleName)
 
 getEnvConstraints :: E.Environment -> [P.SourceConstraint]
 getEnvConstraints env =
@@ -590,7 +591,6 @@ class GetEnv m where
   getDataConstructor :: P.Qualified (P.ProperName 'P.ConstructorName) -> m (Maybe (P.DataDeclType, P.ProperName 'P.TypeName, P.SourceType, [P.Ident]))
   getTypeSynonym :: P.Qualified (P.ProperName 'P.TypeName) -> m (Maybe ([(Text, Maybe P.SourceType)], P.SourceType))
   getTypeClass :: P.Qualified (P.ProperName 'P.ClassName) -> m (Maybe P.TypeClassData)
-  getTypeClassDictionaries :: m [NamedDict]
   getTypeClassDictionary :: P.Qualified (P.ProperName 'P.ClassName) -> m [NamedDict]
   deleteModuleEnv :: P.ModuleName -> m ()
 
@@ -601,7 +601,6 @@ instance (Monad m, GetEnv m) => GetEnv (MaybeT m ) where
   getDataConstructor = lift . getDataConstructor
   getTypeSynonym = lift . getTypeSynonym
   getTypeClass = lift . getTypeClass
-  getTypeClassDictionaries = lift getTypeClassDictionaries
   getTypeClassDictionary = lift . getTypeClassDictionary
   deleteModuleEnv = lift . deleteModuleEnv
 instance (Monad m, GetEnv m) => GetEnv (ExceptT e m ) where 
@@ -610,7 +609,6 @@ instance (Monad m, GetEnv m) => GetEnv (ExceptT e m ) where
   getDataConstructor = lift . getDataConstructor
   getTypeSynonym = lift . getTypeSynonym
   getTypeClass = lift . getTypeClass
-  getTypeClassDictionaries = lift getTypeClassDictionaries
   getTypeClassDictionary = lift . getTypeClassDictionary
   deleteModuleEnv = lift . deleteModuleEnv
 
@@ -620,7 +618,6 @@ instance (Monad m, Monoid w, GetEnv m) => GetEnv (WriterT w m ) where
   getDataConstructor = lift . getDataConstructor
   getTypeSynonym = lift . getTypeSynonym
   getTypeClass = lift . getTypeClass
-  getTypeClassDictionaries = lift getTypeClassDictionaries
   getTypeClassDictionary = lift . getTypeClassDictionary
   deleteModuleEnv = lift . deleteModuleEnv
 instance (Monad m, Monoid w, GetEnv m) => GetEnv (Strict.WriterT w m ) where 
@@ -629,7 +626,6 @@ instance (Monad m, Monoid w, GetEnv m) => GetEnv (Strict.WriterT w m ) where
   getDataConstructor = lift . getDataConstructor
   getTypeSynonym = lift . getTypeSynonym
   getTypeClass = lift . getTypeClass
-  getTypeClassDictionaries = lift getTypeClassDictionaries
   getTypeClassDictionary = lift . getTypeClassDictionary
   deleteModuleEnv = lift . deleteModuleEnv
 
@@ -658,9 +654,6 @@ instance (MonadIO m) => GetEnv (DbEnv m) where
   getTypeClass cls = DbEnv $ do
     conn <- ask
     liftIO $ selectTypeClass' conn cls
-  getTypeClassDictionaries = DbEnv $ do
-    conn <- ask
-    liftIO $ selectAllClassInstances conn
   deleteModuleEnv modName = DbEnv $ do
     conn <- ask
     liftIO $ deleteModuleEnvImpl modName conn
@@ -687,6 +680,5 @@ instance Monad m => GetEnv (WoGetEnv m) where
   getDataConstructor _ = pure Nothing
   getTypeSynonym _ = pure Nothing
   getTypeClass _ = pure Nothing
-  getTypeClassDictionaries = pure []
   getTypeClassDictionary _ = pure []
   deleteModuleEnv _ = pure ()

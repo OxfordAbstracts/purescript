@@ -419,6 +419,7 @@ indexExportedEnv moduleName env refs conn = liftIO do
       SQL.execute conn "DELETE FROM env_data_constructors WHERE module_name = ?" (SQL.Only moduleName)
       SQL.execute conn "DELETE FROM env_type_synonyms WHERE module_name = ?" (SQL.Only moduleName)
       SQL.execute conn "DELETE FROM env_type_classes WHERE module_name = ?" (SQL.Only moduleName)
+      SQL.execute conn "DELETE FROM env_type_class_instances WHERE module_name = ?" (SQL.Only moduleName)
 
     refMatch :: (Qualified a -> DeclarationRef -> Bool) -> (Qualified a, b) -> Bool
     refMatch f (k, _) = maybe True (any (f k)) refs
@@ -487,7 +488,13 @@ insertTypeClass conn ident tcd = do
   SQL.execute
     conn
     "INSERT OR REPLACE INTO env_type_classes (module_name, class_name, class) VALUES (?, ?, ?)"
-    (toDbQualifer ident :. SQL.Only tcd)
+    ((clasMod, className) :. SQL.Only tcd)
+  -- SQL.execute
+  --   conn
+  --   "DELETE FROM env_type_class_instances WHERE class_name = ?"
+  --   (SQL.Only clasMod)
+  where 
+    (clasMod, className) = toDbQualifer ident
 
 insertNamedDict :: Connection -> NamedDict -> IO ()
 insertNamedDict conn dict = do
