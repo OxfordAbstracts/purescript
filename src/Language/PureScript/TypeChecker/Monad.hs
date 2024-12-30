@@ -32,7 +32,7 @@ import Language.PureScript.TypeClassDictionaries (NamedDict, TypeClassDictionary
 import Language.PureScript.Types (Constraint(..), SourceType, Type(..), srcKindedType, srcTypeVar)
 import Text.PrettyPrint.Boxes (render)
 import Language.PureScript.TypeChecker.IdeArtifacts (IdeArtifacts, emptyIdeArtifacts, insertIaExpr, insertIaBinder, insertIaIdent, insertIaDecl, insertIaType, insertIaTypeName, insertIaClassName, moduleNameFromQual, substituteArtifactTypes, insertTypeSynonym, insertModule, insertImport)
-import Protolude (whenM, isJust)
+import Protolude (whenM, isJust, (&))
 import Language.PureScript.AST.Binders (Binder)
 import Language.PureScript.AST.Declarations (Declaration, Expr (..))
 import Language.PureScript.Make.Index.Select (GetEnv (getName, getType, getTypeClass, getDataConstructor, getTypeClassDictionary))
@@ -306,7 +306,10 @@ lookupName qual = do
   env <- getEnv
   case M.lookup qual (names env) of
     Nothing -> do 
-      getName qual
+      nameMb <- getName qual
+      nameMb & maybe (return ()) \name -> 
+        modifyEnv (\env' -> env' { names = M.insert qual name (names env') })
+      return nameMb
     n -> return n
 
 -- | Lookup the type of a value by name in the @Environment@
@@ -352,7 +355,9 @@ lookupTypeMb qual = do
   env <- getEnv
   case M.lookup qual (types env) of
     Nothing -> do 
-      getType qual
+      tyMb <- getType qual
+      tyMb & maybe (return ()) \ty -> modifyEnv (\env' -> env' { types = M.insert qual ty (types env') })
+      return tyMb
     ty -> return ty
 
 lookupType :: (MonadState CheckState m, GetEnv m, MonadError MultipleErrors m) => SourceSpan -> Qualified (ProperName 'TypeName) -> m (SourceType, TypeKind)
@@ -375,7 +380,9 @@ lookupSynonymMb qual = do
   env <- getEnv
   case M.lookup qual (typeSynonyms env) of
     Nothing -> do 
-      Select.getTypeSynonym qual
+      sybMb <- Select.getTypeSynonym qual
+      sybMb & maybe (return ()) \syb -> modifyEnv (\env' -> env' { typeSynonyms = M.insert qual syb (typeSynonyms env') })
+      return sybMb
     syn -> return syn
 
 -- | Lookup the kind of a type by name in the @Environment@
@@ -391,7 +398,9 @@ lookupTypeVariable currentModule (Qualified qb name) = do
       ty <- getType (Qualified qb' name)
       case ty of 
         Nothing -> throwError . errorMessage $ UndefinedTypeVariable name
-        Just (k, _) -> return k
+        Just kind@(k, _) -> do 
+          modifyEnv (\env' -> env' { types = M.insert (Qualified qb' name) kind (types env') })
+          return k
     Just (k, _) -> return k
   where
   qb' = ByModuleName $ case qb of

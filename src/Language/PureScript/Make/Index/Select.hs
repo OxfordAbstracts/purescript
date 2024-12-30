@@ -472,29 +472,6 @@ selectClassInstances conn classNameQual types = do
   where
     (modName, className) = toDbQualifer classNameQual
 
-selectModuleClassInstances :: Connection -> P.ModuleName -> IO [NamedDict]
-selectModuleClassInstances conn moduleName' = do
-  SQL.query
-    conn
-    "SELECT dict FROM env_type_class_instances WHERE module_name = ?"
-    (SQL.Only moduleName')
-    <&> fmap (SQL.fromOnly >>> deserialise)
-
-selectClassInstanceByIdents ::
-  Connection ->
-  P.Qualified (P.ProperName 'P.ClassName) ->
-  [P.Ident] ->
-  IO (Maybe NamedDict)
-selectClassInstanceByIdents conn classNameQual idents = do
-  SQL.query
-    conn
-    "SELECT dict FROM env_type_class_instances WHERE class_module = ? AND class_name = ? AND idents = ?"
-    (modName, className, A.encode idents)
-    <&> (head >>> fmap (SQL.fromOnly >>> deserialise))
-  where
-    (modName, className) = toDbQualifer classNameQual
-
--- TODO: Select specific instances instead of all
 selectClassInstancesByClassName ::
   Connection ->
   P.Qualified (P.ProperName 'P.ClassName) ->
@@ -507,6 +484,18 @@ selectClassInstancesByClassName conn classNameQual = do
     <&> fmap (SQL.fromOnly >>> deserialise)
   where
     (modName, className) = toDbQualifer classNameQual
+
+selectDoesClassInstanceExist ::
+  Connection ->
+  P.Qualified P.Ident ->
+  IO Bool
+selectDoesClassInstanceExist conn ident  = do
+  SQL.query
+    conn
+    "SELECT EXISTS (SELECT 1 FROM env_type_class_instances WHERE module_name = ? AND ident = ?)"
+    (toDbQualifer ident)
+    <&> head
+    <&> maybe False SQL.fromOnly
 
 selectValueOperatorAlias :: Connection -> P.ModuleName -> P.OpName 'P.ValueOpName -> IO (Maybe (P.ModuleName, Text))
 selectValueOperatorAlias conn modName opName = do
@@ -592,7 +581,10 @@ class GetEnv m where
   getTypeSynonym :: P.Qualified (P.ProperName 'P.TypeName) -> m (Maybe ([(Text, Maybe P.SourceType)], P.SourceType))
   getTypeClass :: P.Qualified (P.ProperName 'P.ClassName) -> m (Maybe P.TypeClassData)
   getTypeClassDictionary :: P.Qualified (P.ProperName 'P.ClassName) -> m [NamedDict]
+  hasTypeClassInEnv :: P.Qualified P.Ident -> m Bool
+  hasEnv :: m Bool
   deleteModuleEnv :: P.ModuleName -> m ()
+  logGetEnv :: Text -> m ()
 
 
 instance (Monad m, GetEnv m) => GetEnv (MaybeT m ) where 
@@ -602,7 +594,10 @@ instance (Monad m, GetEnv m) => GetEnv (MaybeT m ) where
   getTypeSynonym = lift . getTypeSynonym
   getTypeClass = lift . getTypeClass
   getTypeClassDictionary = lift . getTypeClassDictionary
+  hasTypeClassInEnv = lift . hasTypeClassInEnv
   deleteModuleEnv = lift . deleteModuleEnv
+  logGetEnv = lift . logGetEnv
+  hasEnv = lift hasEnv
 instance (Monad m, GetEnv m) => GetEnv (ExceptT e m ) where 
   getName = lift . getName
   getType = lift . getType
@@ -610,7 +605,10 @@ instance (Monad m, GetEnv m) => GetEnv (ExceptT e m ) where
   getTypeSynonym = lift . getTypeSynonym
   getTypeClass = lift . getTypeClass
   getTypeClassDictionary = lift . getTypeClassDictionary
+  hasTypeClassInEnv = lift . hasTypeClassInEnv
   deleteModuleEnv = lift . deleteModuleEnv
+  logGetEnv = lift . logGetEnv
+  hasEnv = lift hasEnv
 
 instance (Monad m, Monoid w, GetEnv m) => GetEnv (WriterT w m ) where 
   getName = lift . getName
@@ -619,7 +617,10 @@ instance (Monad m, Monoid w, GetEnv m) => GetEnv (WriterT w m ) where
   getTypeSynonym = lift . getTypeSynonym
   getTypeClass = lift . getTypeClass
   getTypeClassDictionary = lift . getTypeClassDictionary
+  hasTypeClassInEnv = lift . hasTypeClassInEnv
   deleteModuleEnv = lift . deleteModuleEnv
+  logGetEnv = lift . logGetEnv
+  hasEnv = lift hasEnv
 instance (Monad m, Monoid w, GetEnv m) => GetEnv (Strict.WriterT w m ) where 
   getName = lift . getName
   getType = lift . getType
@@ -627,7 +628,10 @@ instance (Monad m, Monoid w, GetEnv m) => GetEnv (Strict.WriterT w m ) where
   getTypeSynonym = lift . getTypeSynonym
   getTypeClass = lift . getTypeClass
   getTypeClassDictionary = lift . getTypeClassDictionary
+  hasTypeClassInEnv = lift . hasTypeClassInEnv
   deleteModuleEnv = lift . deleteModuleEnv
+  logGetEnv = lift . logGetEnv
+  hasEnv = lift hasEnv
 
 newtype DbEnv m a = DbEnv (ReaderT Connection m a)
   deriving (Functor, Applicative, Monad, MonadIO, MonadState s, MonadError e, MonadWriter w, MonadTrans)
@@ -657,6 +661,13 @@ instance (MonadIO m) => GetEnv (DbEnv m) where
   deleteModuleEnv modName = DbEnv $ do
     conn <- ask
     liftIO $ deleteModuleEnvImpl modName conn
+  hasTypeClassInEnv ident = DbEnv $ do
+    conn <- ask
+    liftIO $ selectDoesClassInstanceExist conn ident
+  logGetEnv msg = DbEnv $ do
+    liftIO $ putErrText msg
+
+  hasEnv = pure True
 
 
   getTypeClassDictionary cls = DbEnv $ do
@@ -681,4 +692,8 @@ instance Monad m => GetEnv (WoGetEnv m) where
   getTypeSynonym _ = pure Nothing
   getTypeClass _ = pure Nothing
   getTypeClassDictionary _ = pure []
+  hasTypeClassInEnv _ = pure False
   deleteModuleEnv _ = pure ()
+  logGetEnv _ = pure ()
+  
+  hasEnv = pure False

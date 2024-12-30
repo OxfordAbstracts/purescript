@@ -9,10 +9,10 @@ module Language.PureScript.TypeChecker
   ) where
 
 import Prelude
-import Protolude (headMay, maybeToLeft, ordNub)
+import Protolude (headMay, maybeToLeft, ordNub, ifM, whenM)
 
 import Control.Lens ((^..), _2)
-import Control.Monad (when, unless, void, forM, zipWithM_)
+import Control.Monad (when, unless, void, forM, zipWithM_, (>=>))
 import Control.Monad.Error.Class (MonadError(..))
 import Control.Monad.State.Class (MonadState(..), modify, gets)
 import Control.Monad.Supply.Class (MonadSupply)
@@ -48,7 +48,7 @@ import Language.PureScript.TypeChecker.Unify (varIfUnknown)
 import Language.PureScript.TypeClassDictionaries (NamedDict, TypeClassDictionaryInScope(..))
 import Language.PureScript.Types (Constraint(..), SourceConstraint, SourceType, Type(..), containsForAll, eqType, everythingOnTypes, overConstraintArgs, srcInstanceType, unapplyTypes)
 import Language.PureScript.Types qualified as P
-import Language.PureScript.Make.Index.Select (GetEnv (deleteModuleEnv, getTypeClass))
+import Language.PureScript.Make.Index.Select (GetEnv (deleteModuleEnv, getTypeClass, logGetEnv, hasEnv, hasTypeClassInEnv, getType))
 
 addDataType
   :: (MonadState CheckState m, GetEnv m, MonadError MultipleErrors m, MonadWriter MultipleErrors m)
@@ -265,8 +265,17 @@ typeCheckAll
   => ModuleName
   -> [Declaration]
   -> m [Declaration]
-typeCheckAll moduleName = traverse go
+typeCheckAll moduleName = traverse (logDecl >=> go >=> logDone)
   where
+  logDecl :: Declaration -> m Declaration
+  logDecl d = do 
+    logGetEnv ("TypeChecking: " <> T.pack (show moduleName) <> ": " <> T.pack ( show $ declName d))
+    return d
+
+  logDone :: Declaration -> m Declaration
+  logDone d = do 
+    logGetEnv ("TypeChecked: " <> T.pack (show moduleName) <> ": " <> T.pack ( show $ declName d))
+    return d
   go :: Declaration -> m Declaration
   go d@(DataDeclaration sa@(ss, _) dtype name args dctors) = do
     warnAndRethrow (addHint (ErrorInTypeConstructor name) . addHint (positionedError ss)) $ do
@@ -407,11 +416,16 @@ typeCheckAll moduleName = traverse go
   go (TypeInstanceDeclaration _ _ _ _ (Left _) _ _ _ _) = internalError "typeCheckAll: type class instance generated name should have been desugared"
   go d@(TypeInstanceDeclaration sa@(ss, _) _ ch idx (Right dictName) deps className tys body) =
     rethrow (addHint (ErrorInInstance className tys) . addHint (positionedError ss)) $ do
-      env <- getEnv
       let qualifiedDictName = Qualified (ByModuleName moduleName) dictName
-      flip (traverse_ . traverse_) (typeClassDictionaries env) $ \dictionaries ->
-        guardWith (errorMessage (DuplicateInstance dictName ss)) $
-          not (M.member qualifiedDictName dictionaries)
+      ifM hasEnv 
+        (do 
+          whenM (hasTypeClassInEnv qualifiedDictName) $ throwError . errorMessage $ DuplicateInstance dictName ss
+        )
+        (do 
+            env <- getEnv
+            flip (traverse_ . traverse_) (typeClassDictionaries env) $ \dictionaries ->
+              guardWith (errorMessage (DuplicateInstance dictName ss)) $
+                  not (M.member qualifiedDictName dictionaries))
       typeClass <- lookupTypeClassUnsafe className
       checkInstanceArity dictName className typeClass tys
       (deps', kinds', tys', vars) <- withFreshSubstitution $ checkInstanceDeclaration moduleName (sa, deps, className, tys)
@@ -430,8 +444,8 @@ typeCheckAll moduleName = traverse go
               if isPlainIdent dictName then Nothing else Just srcType
               
       addTypeClassDictionaries (ByModuleName moduleName) . M.singleton className $ M.singleton (tcdValue dict) (pure dict)
-      let 
-        kind = M.lookup (coerceProperName <$> className) (types env)
+      
+      kind <- lookupTypeMb (coerceProperName <$> className)
 
       addIdeClassName (Just $ fromMaybe moduleName $ getQual className) ss
         ( ProperName $ (("typeCheckAll: " <> T.pack (show tys'') <> " : ") <>) $ runProperName $ disqualify className) 
