@@ -236,10 +236,7 @@ typeClassDictionariesEnvMap entries =
 getTypeClassDictionaries
   :: (MonadState CheckState m, GetEnv m)
   => m (M.Map QualifiedBy (M.Map (Qualified (ProperName 'ClassName)) (M.Map (Qualified Ident) (NEL.NonEmpty NamedDict))))
-getTypeClassDictionaries = do 
-  envDicts <- gets $ typeClassDictionaries . checkEnv
-  -- dbDicts <- Select.getTypeClassDictionaries 
-  pure envDicts
+getTypeClassDictionaries = gets $ typeClassDictionaries . checkEnv
    --   $ addDictsToEnvMap dbDicts envDicts
 
 -- | Lookup type class dictionaries in a module.
@@ -256,11 +253,14 @@ lookupTypeClassDictionariesForClass
   -> Qualified (ProperName 'ClassName)
   -> m (M.Map (Qualified Ident) (NEL.NonEmpty NamedDict))
 lookupTypeClassDictionariesForClass mn cn = do
-  inDb <- key <$> getTypeClassDictionary cn
-  inEnv <- getInEnv
-  pure $ inDb <> inEnv
+  dicts <- lookupTypeClassDictionaries mn
+  case M.lookup cn dicts of 
+    Just d -> pure  d
+    Nothing -> do 
+      inDb <- getTypeClassDictionary cn
+      modifyEnv $ \env -> env { typeClassDictionaries =  addDictsToEnvMap inDb (typeClassDictionaries env) }
+      pure $ key inDb 
   where 
-    getInEnv = fromMaybe M.empty . M.lookup cn <$> lookupTypeClassDictionaries mn
     key = M.fromList . fmap \a -> (tcdValue a, pure a)
 
 -- | Temporarily bind a collection of names to local variables
