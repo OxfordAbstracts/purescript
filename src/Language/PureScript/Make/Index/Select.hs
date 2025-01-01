@@ -405,11 +405,11 @@ selectModuleDataConstructors conn moduleName' = do
     <&> fmap (\(ctr, ddt, ty, st, idents) -> (P.Qualified (P.ByModuleName moduleName') ctr, (ddt, ty, st, deserialise idents)))
 
 selectTypeSynonym :: Connection -> P.Qualified (P.ProperName 'P.TypeName) -> IO (Maybe ([(Text, Maybe P.SourceType)], P.SourceType))
-selectTypeSynonym conn ident = do
+selectTypeSynonym conn tyName = do
   SQL.query
     conn
     "SELECT idents, source_type FROM env_type_synonyms WHERE module_name = ? AND type_name = ?"
-    (toDbQualifer ident)
+    (toDbQualifer tyName)
     <&> (head >>> fmap deserialiseIdents)
   where
     deserialiseIdents (idents, st) = (deserialise idents, st)
@@ -492,7 +492,7 @@ selectDoesClassInstanceExist ::
 selectDoesClassInstanceExist conn ident  = do
   SQL.query
     conn
-    "SELECT EXISTS (SELECT 1 FROM env_type_class_instances WHERE module_name = ? AND ident = ?)"
+    "SELECT EXISTS (SELECT 1 FROM env_type_class_instances WHERE module_name = ? AND instance_name = ?)"
     (toDbQualifer ident)
     <&> head
     <&> maybe False SQL.fromOnly

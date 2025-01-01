@@ -20,7 +20,6 @@ where
 
 import Codec.Serialise (serialise)
 import Control.Concurrent.Async.Lifted (mapConcurrently_)
-import Data.Aeson qualified as A
 import Data.List (partition)
 import Data.Map qualified as Map
 import Data.Set qualified as Set
@@ -40,7 +39,7 @@ import Language.PureScript.Lsp.ServerConfig (ServerConfig)
 import Language.PureScript.Lsp.Util (efDeclSourceSpan, getOperatorValueName)
 import Language.PureScript.Make.Index.Select (toDbQualifer)
 import Language.PureScript.Names (Qualified ())
-import Language.PureScript.TypeClassDictionaries (NamedDict, TypeClassDictionaryInScope (tcdClassName, tcdInstanceKinds, tcdInstanceTypes, tcdValue))
+import Language.PureScript.TypeClassDictionaries (NamedDict, TypeClassDictionaryInScope (tcdClassName, tcdValue))
 import Protolude hiding (moduleName)
 
 addDbConnection :: Monad m => Connection -> P.MakeActions m -> P.MakeActions m
@@ -480,8 +479,11 @@ insertTypeSynonym :: Connection -> P.Qualified (P.ProperName 'P.TypeName) -> ([(
 insertTypeSynonym conn ident (idents, st) = do
   SQL.execute
     conn
-    "INSERT OR REPLACE INTO env_type_synonyms (module_name, type_name, idents, source_type) VALUES (?, ?, ?, ?)"
-    (toDbQualifer ident :. (serialise idents, st))
+    "INSERT OR REPLACE INTO env_type_synonyms (module_name, type_name, idents, source_type, debug) VALUES (?, ?, ?, ?, ?)"
+    (toDbQualifer ident :. (serialise idents, st, debug))
+  where
+    debug :: Text
+    debug = show (idents, st)
 
 insertTypeClass :: Connection -> P.Qualified (P.ProperName 'P.ClassName) -> P.TypeClassData -> IO ()
 insertTypeClass conn ident tcd = do
@@ -500,12 +502,9 @@ insertNamedDict :: Connection -> NamedDict -> IO ()
 insertNamedDict conn dict = do
   SQL.execute
     conn
-    "INSERT OR REPLACE INTO env_type_class_instances (module_name, instance_name, class_module, class_name, types, kinds, dict, debug) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
-    (toDbQualifer (tcdValue dict) :. (clasMod, className, A.encode (void <$> tcdInstanceTypes dict), A.encode (tcdInstanceKinds dict), serialise dict, debug))
+    "INSERT OR REPLACE INTO env_type_class_instances (module_name, instance_name, class_module, class_name, dict) VALUES (?, ?, ?, ?, ?)"
+    (toDbQualifer (tcdValue dict) :. (clasMod, className, serialise dict))
   where
-    debug :: Text 
-    debug = show (void <$> tcdInstanceTypes dict)
-
     (clasMod, className) = toDbQualifer (tcdClassName dict)
 
 initEnvTables :: Connection -> IO ()
@@ -526,7 +525,6 @@ addEnvIndexes conn = do
   SQL.execute_ conn "CREATE UNIQUE INDEX IF NOT EXISTS env_type_synonyms_idx ON env_type_synonyms(module_name, type_name)"
   SQL.execute_ conn "CREATE UNIQUE INDEX IF NOT EXISTS env_type_classes_idx ON env_type_classes(module_name, class_name)"
   SQL.execute_ conn "CREATE UNIQUE INDEX IF NOT EXISTS env_type_class_instances_idx ON env_type_class_instances(module_name, instance_name)"
-  SQL.execute_ conn "CREATE INDEX IF NOT EXISTS env_type_class_instances_idents_idx ON env_type_class_instances(idents)"
   SQL.execute_ conn "CREATE INDEX IF NOT EXISTS env_type_class_instances_class_name_idx ON env_type_class_instances(class_name)"
   SQL.execute_ conn "CREATE INDEX IF NOT EXISTS env_type_class_instances_class_module_idx ON env_type_class_instances(class_module)"
 

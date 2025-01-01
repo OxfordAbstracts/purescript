@@ -39,11 +39,12 @@ replaceAllTypeSynonyms = everywhereOnTypesTopDownM try
       lookupSynonymMb ctor >>= \case
         Just (synArgs, body)
           | c == length synArgs -> do
-             kindArgs <- lookupKindArgs ctor
-             if length kargs == length kindArgs  then
-              let repl = replaceAllTypeVars (zip (map fst synArgs) args <> zip kindArgs kargs) body
-               in Just <$> try repl
-             else pure Nothing
+              kindArgs <- lookupKindArgs ctor
+              if length kargs == length kindArgs
+                then
+                  let repl = replaceAllTypeVars (zip (map fst synArgs) args <> zip kindArgs kargs) body
+                   in Just <$> try repl
+                else pure Nothing
           | length synArgs > c ->
               throwError . errorMessage' ss $ PartiallyAppliedSynonym ctor
         _ -> return Nothing
