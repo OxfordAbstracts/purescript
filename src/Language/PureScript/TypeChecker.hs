@@ -87,7 +87,7 @@ addDataConstructor moduleName dtype name dctor dctorArgs polyType = do
   putEnv $ env { dataConstructors = M.insert (Qualified (ByModuleName moduleName) dctor) (dtype, name, polyType, fields) (dataConstructors env) }
 
 checkRoleDeclaration
-  :: (MonadState CheckState m, MonadError MultipleErrors m, MonadWriter MultipleErrors m)
+  :: (MonadState CheckState m, GetEnv m, MonadError MultipleErrors m, MonadWriter MultipleErrors m)
   => ModuleName
   -> RoleDeclarationData
   -> m ()
@@ -95,7 +95,8 @@ checkRoleDeclaration moduleName (RoleDeclarationData (ss, _) name declaredRoles)
   warnAndRethrow (addHint (ErrorInRoleDeclaration name) . addHint (positionedError ss)) $ do
     env <- getEnv
     let qualName = Qualified (ByModuleName moduleName) name
-    case M.lookup qualName (types env) of
+    kindAndData <- lookupTypeMb qualName
+    case kindAndData of
       Just (kind, DataType dtype args dctors) -> do
         checkRoleDeclarationArity name declaredRoles (length args)
         checkRoles args declaredRoles

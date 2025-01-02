@@ -1,10 +1,9 @@
 {-# LANGUAGE BlockArguments #-}
+{-# OPTIONS_GHC -Wno-unused-top-binds #-}
 
 module Language.PureScript.Make.Index
   ( initDb,
     addAllIndexing,
-    addAstModuleIndexing,
-    addExternIndexing,
     indexAstModuleFromExtern,
     indexAstDeclFromExternDecl,
     dropTables,
@@ -19,7 +18,7 @@ module Language.PureScript.Make.Index
 where
 
 import Codec.Serialise (serialise)
-import Control.Concurrent.Async.Lifted (mapConcurrently_, forConcurrently_)
+import Control.Concurrent.Async.Lifted (forConcurrently_, mapConcurrently_)
 import Data.List (partition)
 import Data.Map qualified as Map
 import Data.Set qualified as Set
@@ -42,7 +41,7 @@ import Language.PureScript.Names (Qualified ())
 import Language.PureScript.TypeClassDictionaries (NamedDict, TypeClassDictionaryInScope (tcdClassName, tcdValue))
 import Protolude hiding (moduleName)
 
-addDbConnection :: Monad m => Connection -> P.MakeActions m -> P.MakeActions m
+addDbConnection :: (Monad m) => Connection -> P.MakeActions m -> P.MakeActions m
 addDbConnection conn ma =
   ma
     { P.getDbConnection = pure conn
@@ -51,8 +50,9 @@ addDbConnection conn ma =
 addAllIndexing :: (MonadIO m) => Connection -> P.MakeActions m -> P.MakeActions m
 addAllIndexing conn ma =
   -- addAstModuleIndexing conn $
-    addEnvIndexing conn ma 
-      -- addExternIndexing conn ma
+  addEnvIndexing conn ma
+
+-- addExternIndexing conn ma
 
 addAstModuleIndexing :: (MonadIO m) => Connection -> P.MakeActions m -> P.MakeActions m
 addAstModuleIndexing conn ma =
@@ -103,11 +103,11 @@ indexAstModule conn _endEnv (P.Module _ss _comments moduleName' decls _exportRef
               _ -> printDataDeclKind args
             P.TypeSynonymDeclaration _ann name args _ty -> case getMatchingKind P.TypeSynonymSig name of
               Just kind -> printType kind
-              _ -> printDataDeclKind args 
-                    -- case inferSynRes of
-                    --   Left err -> "Inference error: " <> T.pack (P.prettyPrintMultipleErrors P.noColorPPEOptions err)
-                    --   Right (_, tyKind) ->
-                    --     printType $ foldr addDataDeclArgKind (void tyKind) args
+              _ -> printDataDeclKind args
+            -- case inferSynRes of
+            --   Left err -> "Inference error: " <> T.pack (P.prettyPrintMultipleErrors P.noColorPPEOptions err)
+            --   Right (_, tyKind) ->
+            --     printType $ foldr addDataDeclArgKind (void tyKind) args
             P.TypeClassDeclaration _ name args _ _ _ -> case getMatchingKind P.ClassSig (P.coerceProperName name) of
               Just kind -> printType kind
               _ -> printTypeClassKind args
@@ -190,9 +190,9 @@ indexFixity conn moduleName' = \case
           "INSERT INTO value_operators (module_name, op_name, alias_module_name, alias, associativity, precedence) \
           \ VALUES (:module_name, :op_name, :alias_module_name, :alias, :associativity, :precedence)"
       )
-      [ ":module_name" := P.runModuleName moduleName',
+      [ ":module_name" := moduleName',
         ":op_name" := P.runOpName op,
-        ":alias_module_name" := P.runModuleName val_mod,
+        ":alias_module_name" := val_mod,
         ":alias" := either P.runIdent P.runProperName name,
         ":associativity" := P.showAssoc assoc,
         ":precedence" := prec
@@ -204,9 +204,9 @@ indexFixity conn moduleName' = \case
           "INSERT INTO type_operators (module_name, op_name, alias_module_name, alias, associativity, precedence) \
           \ VALUES (:module_name, :op_name, :alias_module_name, :alias, :associativity, :precedence)"
       )
-      [ ":module_name" := P.runModuleName moduleName',
+      [ ":module_name" := moduleName',
         ":op_name" := P.runOpName op,
-        ":alias_module_name" := P.runModuleName ty_mod,
+        ":alias_module_name" := ty_mod,
         ":alias" := name,
         ":associativity" := P.showAssoc assoc,
         ":precedence" := prec
@@ -421,7 +421,6 @@ indexExportedEnv module' env refs conn = liftIO do
       SQL.execute conn "DELETE FROM env_type_class_instances WHERE module_name = ?" (SQL.Only moduleName)
       SQL.execute conn "DELETE FROM type_operators WHERE module_name = ?" (SQL.Only moduleName)
       SQL.execute conn "DELETE FROM value_operators WHERE module_name = ?" (SQL.Only moduleName)
-      
 
     refMatch :: (Qualified a -> DeclarationRef -> Bool) -> (Qualified a, b) -> Bool
     refMatch f (k, _) = maybe True (any (f k)) refs
@@ -486,7 +485,7 @@ insertTypeSynonym conn ident (idents, st) = do
     (toDbQualifer ident :. (serialise idents, st, debug))
   where
     debug :: Text
-    debug = show (idents, st)
+    debug = "show (idents, st)"
 
 insertTypeClass :: Connection -> P.Qualified (P.ProperName 'P.ClassName) -> P.TypeClassData -> IO ()
 insertTypeClass conn ident tcd = do
@@ -494,11 +493,7 @@ insertTypeClass conn ident tcd = do
     conn
     "INSERT OR REPLACE INTO env_type_classes (module_name, class_name, class) VALUES (?, ?, ?)"
     ((clasMod, className) :. SQL.Only tcd)
-  -- SQL.execute
-  --   conn
-  --   "DELETE FROM env_type_class_instances WHERE class_name = ?"
-  --   (SQL.Only clasMod)
-  where 
+  where
     (clasMod, className) = toDbQualifer ident
 
 insertNamedDict :: Connection -> NamedDict -> IO ()
@@ -512,7 +507,6 @@ insertNamedDict conn dict = do
 
 initEnvTables :: Connection -> IO ()
 initEnvTables conn = do
-  
   SQL.execute_ conn "CREATE TABLE IF NOT EXISTS env_values (module_name TEXT, ident TEXT, source_type BLOB, name_kind TEXT, name_visibility TEXT, debug TEXT)"
   SQL.execute_ conn "CREATE TABLE IF NOT EXISTS env_types (module_name TEXT, type_name TEXT, source_type BLOB, type_kind TEXT, debug TEXT)"
   SQL.execute_ conn "CREATE TABLE IF NOT EXISTS env_data_constructors (module_name TEXT, constructor_name TEXT, data_decl_type TEXT, type_name TEXT, source_type BLOB, idents BLOB, debug TEXT)"

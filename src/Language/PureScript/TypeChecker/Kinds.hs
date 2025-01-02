@@ -43,7 +43,7 @@ import Data.Functor (($>))
 import Data.IntSet qualified as IS
 import Data.List (nubBy, sortOn, (\\))
 import Data.Map qualified as M
-import Data.Maybe (fromJust, fromMaybe)
+import Data.Maybe (fromJust, fromMaybe, isJust)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Traversable (for)
@@ -52,7 +52,7 @@ import Language.PureScript.Crash (HasCallStack, internalError)
 import Language.PureScript.Environment qualified as E
 import Language.PureScript.Errors
 import Language.PureScript.Names (pattern ByNullSourcePos, ModuleName, Name(..), ProperName(..), ProperNameType(..), Qualified(..), QualifiedBy(..), coerceProperName, mkQualified)
-import Language.PureScript.TypeChecker.Monad (CheckState(..), Substitution(..), UnkLevel(..), Unknown, bindLocalTypeVariables, debugType, getEnv, lookupTypeVariable, unsafeCheckCurrentModule, withErrorMessageHint, withFreshSubstitution, addIdeType, addIdeTypeNameQual, lookupType, lookupTypeMb)
+import Language.PureScript.TypeChecker.Monad (CheckState(..), Substitution(..), UnkLevel(..), Unknown, bindLocalTypeVariables, debugType, lookupTypeVariable, unsafeCheckCurrentModule, withErrorMessageHint, withFreshSubstitution, lookupType, lookupTypeMb, lookupSynonymMb)
 import Language.PureScript.TypeChecker.Skolems (newSkolemConstant, newSkolemScope, skolemize)
 import Language.PureScript.TypeChecker.Synonyms (replaceAllTypeSynonyms)
 import Language.PureScript.Types
@@ -162,19 +162,14 @@ inferKind
 inferKind = \tyToInfer ->
   withErrorMessageHint (ErrorInferringKind tyToInfer)
     . rethrowWithPosition (fst $ getAnnForType tyToInfer)
-    $ addTypeKindToIde
-    =<< go tyToInfer
+    $ go tyToInfer
   where
-  addTypeKindToIde (ty, kind)  = do 
-    addIdeType ty kind 
-    pure (ty, kind)
   go = \case
     ty@(TypeConstructor ann v) -> do
       k <- lookupType (fst ann) v
       case k of
         (kind, E.LocalTypeVariable) -> do
           kind' <- apply kind
-          addIdeTypeNameQual (fst ann) v (kind' $> ann)
           pure (ty, kind' $> ann)
         (kind, _) -> do
           -- let className = coerceProperName <$> v
@@ -279,7 +274,7 @@ inferAppKind ann (fn, fnKind) arg = case fnKind of
     cannotApplyTypeToType fn arg
   where
   requiresSynonymsToExpand = \case
-    TypeConstructor _ v -> M.notMember v . E.typeSynonyms <$> getEnv
+    TypeConstructor _ v -> isJust <$> lookupSynonymMb v
     TypeApp _ l _ -> requiresSynonymsToExpand l
     KindApp _ l _ -> requiresSynonymsToExpand l
     _ -> pure True

@@ -61,7 +61,6 @@ import System.Directory (doesFileExist)
 import System.FilePath (replaceExtension)
 import Prelude
 import Language.PureScript.Docs.Types qualified as Docs
-import Protolude (Print(putErrLn))
 
 -- | Rebuild a single module.
 --
@@ -179,11 +178,7 @@ rebuildModuleWithProvidedEnvDb initialCheckState MakeActions {..} conn exEnv m@(
   progress $ CompilingModule moduleName moduleIndex
   let withPrim = importPrim m
   lint withPrim
-  -- when (moduleName == ModuleName "Data.NaturalTransformation") $ do 
-  --   putErrLn ( "ops:" :: T.Text)
-  --   putErrLn $ intercalate "\n" $ fmap show ops
-  --   putErrLn ( "type ops:" :: T.Text)
-  --   putErrLn $ intercalate "\n" $ fmap show typeOps
+
   ((Module ss coms _ elaborated exps, checkSt), nextVar) <-
     desugarAndTypeCheckDb initialCheckState conn withCheckStateOnError withCheckState moduleName withPrim exEnv 
   let env' = P.checkEnv checkSt
@@ -196,6 +191,7 @@ rebuildModuleWithProvidedEnvDb initialCheckState MakeActions {..} conn exEnv m@(
 
   regrouped <- createBindingGroups moduleName . collapseBindingGroups $ deguarded
   let mod' = Module ss coms moduleName regrouped exps
+
 
   corefn <- runDbEnv conn $ CF.moduleToCoreFn env' mod'
   let 
@@ -219,7 +215,6 @@ rebuildModuleWithProvidedEnvDb initialCheckState MakeActions {..} conn exEnv m@(
     --           ++ "; details:\n"
     --           ++ prettyPrintMultipleErrors defaultPPEOptions errs
     --     Right d -> d
-
   evalSupplyT nextVar'' $ codegen env' checkSt mod' renamed docs exts
   return exts
 
@@ -269,14 +264,13 @@ desugarAndTypeCheckDb ::
   Module ->
   Env ->
   m ((Module, CheckState), Integer)
-desugarAndTypeCheckDb initialCheckState conn withCheckStateOnError withCheckState moduleName withPrim exEnv = runSupplyT 0 $ do
+desugarAndTypeCheckDb initialCheckState conn withCheckStateOnError _withCheckState moduleName withPrim exEnv = runSupplyT 0 $ do
   runDbEnv conn $ deleteModuleEnv moduleName
   (desugared, (exEnv', usedImports)) <- runStateT (desugarUsingDb conn exEnv withPrim) (exEnv, mempty)
   let modulesExports = (\(_, _, exports) -> exports) <$> exEnv'
   -- env <- selectEnvFromDefinitions conn exEnv' desugared
   let env = initEnvironment
   (checked, checkSt@(CheckState {..})) <- runStateT (catchError (runDbEnv conn $ typeCheckModule modulesExports desugared) mergeCheckState) (initialCheckState env)
-  lift $ withCheckState checkSt
   let usedImports' =
         foldl'
           ( flip $ \(fromModuleName, newtypeCtorName) ->
@@ -319,8 +313,8 @@ make ma@MakeActions {..} ms = do
   -- This is to ensure that modules complete fully before moving on, to avoid
   -- holding excess memory during compilation from modules that were paused
   -- by the Haskell runtime.
-  capabilities <- getNumCapabilities
-  let concurrency = max 1 capabilities
+  -- capabilities <- getNumCapabilities
+  let concurrency = 1 --  max 1 capabilities
   lock <- C.newQSem concurrency
 
   let toBeRebuilt = filter (BuildPlan.needsRebuild buildPlan . getModuleName . CST.resPartial) sorted

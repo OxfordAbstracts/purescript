@@ -2,9 +2,7 @@
 {-# OPTIONS_GHC -Wno-unrecognised-pragmas #-}
 {-# OPTIONS_GHC -Wno-unused-imports #-}
 {-# OPTIONS_GHC -Wno-unused-local-binds #-}
-
 {-# HLINT ignore "Redundant bracket" #-}
-{-# LANGUAGE InstanceSigs #-}
 
 module Language.PureScript.Make.Index.Select where
 
@@ -494,7 +492,6 @@ selectDoesClassInstanceExist conn ident  = do
     conn
     "SELECT EXISTS (SELECT 1 FROM env_type_class_instances WHERE module_name = ? AND instance_name = ?)"
     (toDbQualifer ident)
-  putErrText $ "selectDoesClassInstanceExist: " <> show ((toDbQualifer ident), res)
   res 
     & head
     & maybe False SQL.fromOnly
