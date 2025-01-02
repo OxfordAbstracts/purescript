@@ -490,12 +490,16 @@ selectDoesClassInstanceExist ::
   P.Qualified P.Ident ->
   IO Bool
 selectDoesClassInstanceExist conn ident  = do
-  SQL.query
+  res <- SQL.query
     conn
     "SELECT EXISTS (SELECT 1 FROM env_type_class_instances WHERE module_name = ? AND instance_name = ?)"
     (toDbQualifer ident)
-    <&> head
-    <&> maybe False SQL.fromOnly
+  putErrText $ "selectDoesClassInstanceExist: " <> show ((toDbQualifer ident), res)
+  res 
+    & head
+    & maybe False SQL.fromOnly
+    & return
+
 
 selectValueOperatorAlias :: Connection -> P.ModuleName -> P.OpName 'P.ValueOpName -> IO (Maybe (P.ModuleName, Text))
 selectValueOperatorAlias conn modName opName = do

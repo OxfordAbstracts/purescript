@@ -19,7 +19,7 @@ module Language.PureScript.Make.Index
 where
 
 import Codec.Serialise (serialise)
-import Control.Concurrent.Async.Lifted (mapConcurrently_)
+import Control.Concurrent.Async.Lifted (mapConcurrently_, forConcurrently_)
 import Data.List (partition)
 import Data.Map qualified as Map
 import Data.Set qualified as Set
@@ -50,9 +50,9 @@ addDbConnection conn ma =
 
 addAllIndexing :: (MonadIO m) => Connection -> P.MakeActions m -> P.MakeActions m
 addAllIndexing conn ma =
-  addAstModuleIndexing conn $
-    addEnvIndexing conn $
-      addExternIndexing conn ma
+  -- addAstModuleIndexing conn $
+    addEnvIndexing conn ma 
+      -- addExternIndexing conn ma
 
 addAstModuleIndexing :: (MonadIO m) => Connection -> P.MakeActions m -> P.MakeActions m
 addAstModuleIndexing conn ma =
@@ -65,7 +65,7 @@ addEnvIndexing :: (MonadIO m) => Connection -> P.MakeActions m -> P.MakeActions 
 addEnvIndexing conn ma =
   ma
     { P.codegen = \prevEnv checkSt astM@(P.Module _ _ _ _ refs) m docs ext -> do
-        lift (indexExportedEnv (P.getModuleName astM) (P.checkEnv checkSt) refs conn)
+        lift (indexExportedEnv astM (P.checkEnv checkSt) refs conn)
         P.codegen ma prevEnv checkSt astM m docs ext
     }
 
@@ -352,8 +352,6 @@ initDb conn = do
   SQL.execute_ conn "CREATE TABLE IF NOT EXISTS available_srcs (path TEXT PRIMARY KEY NOT NULL, UNIQUE(path) on conflict replace)"
   SQL.execute_ conn "CREATE TABLE IF NOT EXISTS export_environments (path TEXT PRIMARY KEY NOT NULL, hash INT NOT NULL, value BLOB NOT NULL, UNIQUE(path) on conflict replace)"
   SQL.execute_ conn "CREATE TABLE IF NOT EXISTS environments (path TEXT PRIMARY KEY NOT NULL, hash INT NOT NULL, value BLOB NOT NULL, UNIQUE(path) on conflict replace)"
-  SQL.execute_ conn "CREATE TABLE IF NOT EXISTS value_operators (module_name TEXT references ast_modules(module_name) ON DELETE CASCADE, op_name TEXT, alias_module_name TEXT, alias TEXT, associativity TEXT, precedence INTEGER, UNIQUE(module_name, op_name) on conflict replace)"
-  SQL.execute_ conn "CREATE TABLE IF NOT EXISTS type_operators (module_name TEXT references ast_modules(module_name) ON DELETE CASCADE, op_name TEXT, alias_module_name TEXT, alias TEXT, associativity TEXT, precedence INTEGER, UNIQUE(module_name, op_name) on conflict replace)"
   SQL.execute_ conn "CREATE TABLE IF NOT EXISTS imports (module_name TEXT, imported_module TEXT, imported_as TEXT)"
   SQL.execute_ conn "CREATE TABLE IF NOT EXISTS exports (module_name TEXT, ident TEXT, value BLOB)"
   initEnvTables conn
@@ -382,9 +380,10 @@ dropTables conn = do
   SQL.execute_ conn "DROP TABLE IF EXISTS ef_imports"
   dropEnvTables conn
 
-indexExportedEnv :: (MonadIO m) => P.ModuleName -> E.Environment -> Maybe [DeclarationRef] -> Connection -> m ()
-indexExportedEnv moduleName env refs conn = liftIO do
+indexExportedEnv :: (MonadIO m) => P.Module -> E.Environment -> Maybe [DeclarationRef] -> Connection -> m ()
+indexExportedEnv module' env refs conn = liftIO do
   deleteModuleEnv
+  forConcurrently_ (P.getModuleDeclarations module') (indexFixity conn moduleName)
   envFromModule E.names & filter nameExported & mapConcurrently_ (uncurry $ insertEnvValue conn)
   envFromModule E.types & filter typeOrClassExported & mapConcurrently_ (uncurry $ insertType conn)
   envFromModule E.dataConstructors & filter dataConstructorExportedOrDict & mapConcurrently_ (uncurry $ insertDataConstructor conn)
@@ -394,6 +393,7 @@ indexExportedEnv moduleName env refs conn = liftIO do
     -- & filter ((== Just moduleName) . P.getQual . tcdValue)
     & mapConcurrently_ (insertNamedDict conn)
   where
+    moduleName = P.getModuleName module'
     envFromModule :: (E.Environment -> Map.Map (Qualified k) v) -> [(Qualified k, v)]
     envFromModule f = f env & Map.toList & filter ((== Just moduleName) . P.getQual . fst)
 
@@ -419,6 +419,9 @@ indexExportedEnv moduleName env refs conn = liftIO do
       SQL.execute conn "DELETE FROM env_type_synonyms WHERE module_name = ?" (SQL.Only moduleName)
       SQL.execute conn "DELETE FROM env_type_classes WHERE module_name = ?" (SQL.Only moduleName)
       SQL.execute conn "DELETE FROM env_type_class_instances WHERE module_name = ?" (SQL.Only moduleName)
+      SQL.execute conn "DELETE FROM type_operators WHERE module_name = ?" (SQL.Only moduleName)
+      SQL.execute conn "DELETE FROM value_operators WHERE module_name = ?" (SQL.Only moduleName)
+      
 
     refMatch :: (Qualified a -> DeclarationRef -> Bool) -> (Qualified a, b) -> Bool
     refMatch f (k, _) = maybe True (any (f k)) refs
@@ -509,12 +512,15 @@ insertNamedDict conn dict = do
 
 initEnvTables :: Connection -> IO ()
 initEnvTables conn = do
+  
   SQL.execute_ conn "CREATE TABLE IF NOT EXISTS env_values (module_name TEXT, ident TEXT, source_type BLOB, name_kind TEXT, name_visibility TEXT, debug TEXT)"
   SQL.execute_ conn "CREATE TABLE IF NOT EXISTS env_types (module_name TEXT, type_name TEXT, source_type BLOB, type_kind TEXT, debug TEXT)"
   SQL.execute_ conn "CREATE TABLE IF NOT EXISTS env_data_constructors (module_name TEXT, constructor_name TEXT, data_decl_type TEXT, type_name TEXT, source_type BLOB, idents BLOB, debug TEXT)"
   SQL.execute_ conn "CREATE TABLE IF NOT EXISTS env_type_synonyms (module_name TEXT, type_name TEXT, idents BLOB, source_type BLOB, debug TEXT)"
   SQL.execute_ conn "CREATE TABLE IF NOT EXISTS env_type_classes (module_name TEXT, class_name TEXT, class BLOB, debug TEXT)"
   SQL.execute_ conn "CREATE TABLE IF NOT EXISTS env_type_class_instances (module_name TEXT, instance_name TEXT, class_module TEXT, class_name TEXT, idents TEXT, types TEXT, kinds TEXT, dict BLOB, debug TEXT)"
+  SQL.execute_ conn "CREATE TABLE IF NOT EXISTS value_operators (module_name TEXT, op_name TEXT, alias_module_name TEXT, alias TEXT, associativity TEXT, precedence INTEGER, UNIQUE(module_name, op_name) on conflict replace)"
+  SQL.execute_ conn "CREATE TABLE IF NOT EXISTS type_operators (module_name TEXT, op_name TEXT, alias_module_name TEXT, alias TEXT, associativity TEXT, precedence INTEGER, UNIQUE(module_name, op_name) on conflict replace)"
   addEnvIndexes conn
 
 addEnvIndexes :: Connection -> IO ()

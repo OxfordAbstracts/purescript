@@ -265,17 +265,17 @@ typeCheckAll
   => ModuleName
   -> [Declaration]
   -> m [Declaration]
-typeCheckAll moduleName = traverse (logDecl >=> go >=> logDone)
+typeCheckAll moduleName = traverse go -- (logDecl >=> go >=> logDone)
   where
-  logDecl :: Declaration -> m Declaration
-  logDecl d = do 
-    logGetEnv ("TypeChecking: " <> T.pack (show moduleName) <> ": " <> T.pack ( show $ declName d))
-    return d
+  -- logDecl :: Declaration -> m Declaration
+  -- logDecl d = do 
+  --   logGetEnv ("TypeChecking: " <> T.pack (show moduleName) <> ": " <> T.pack ( show $ declName d))
+  --   return d
 
-  logDone :: Declaration -> m Declaration
-  logDone d = do 
-    logGetEnv ("TypeChecked: " <> T.pack (show moduleName) <> ": " <> T.pack ( show $ declName d))
-    return d
+  -- logDone :: Declaration -> m Declaration
+  -- logDone d = do 
+  --   logGetEnv ("TypeChecked: " <> T.pack (show moduleName) <> ": " <> T.pack ( show $ declName d))
+  --   return d
   go :: Declaration -> m Declaration
   go d@(DataDeclaration sa@(ss, _) dtype name args dctors) = do
     warnAndRethrow (addHint (ErrorInTypeConstructor name) . addHint (positionedError ss)) $ do
