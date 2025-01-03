@@ -550,12 +550,8 @@ insertImport conn mn = \case
 
 deleteModuleEnvImpl :: P.ModuleName -> Connection -> IO ()
 deleteModuleEnvImpl moduleName conn = do
-  SQL.execute conn "DELETE FROM env_values WHERE module_name = ?" (SQL.Only moduleName)
-  SQL.execute conn "DELETE FROM env_types WHERE module_name = ?" (SQL.Only moduleName)
-  SQL.execute conn "DELETE FROM env_data_constructors WHERE module_name = ?" (SQL.Only moduleName)
-  SQL.execute conn "DELETE FROM env_type_synonyms WHERE module_name = ?" (SQL.Only moduleName)
-  SQL.execute conn "DELETE FROM env_type_classes WHERE module_name = ?" (SQL.Only moduleName)
-  SQL.execute conn "DELETE FROM env_type_class_instances WHERE module_name = ?" (SQL.Only moduleName)
+  SQL.execute conn "DELETE FROM modules WHERE module_name = ?" (SQL.Only moduleName)
+
 
 getEnvConstraints :: E.Environment -> [P.SourceConstraint]
 getEnvConstraints env =

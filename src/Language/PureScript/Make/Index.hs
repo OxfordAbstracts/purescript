@@ -383,7 +383,8 @@ dropTables conn = do
 indexExportedEnv :: (MonadIO m) => P.Module -> E.Environment -> Maybe [DeclarationRef] -> Connection -> m ()
 indexExportedEnv module' env refs conn = liftIO do
   deleteModuleEnv
-  forConcurrently_ (P.getModuleDeclarations module') (indexFixity conn moduleName)
+  insertModule conn moduleName path
+  forConcurrently_ (P.exportedDeclarations module') (indexFixity conn moduleName)
   envFromModule E.names & filter nameExported & mapConcurrently_ (uncurry $ insertEnvValue conn)
   envFromModule E.types & filter typeOrClassExported & mapConcurrently_ (uncurry $ insertType conn)
   envFromModule E.dataConstructors & filter dataConstructorExportedOrDict & mapConcurrently_ (uncurry $ insertDataConstructor conn)
@@ -393,6 +394,8 @@ indexExportedEnv module' env refs conn = liftIO do
     -- & filter ((== Just moduleName) . P.getQual . tcdValue)
     & mapConcurrently_ (insertNamedDict conn)
   where
+    path = P.spanName (P.getModuleSourceSpan module')
+
     moduleName = P.getModuleName module'
     envFromModule :: (E.Environment -> Map.Map (Qualified k) v) -> [(Qualified k, v)]
     envFromModule f = f env & Map.toList & filter ((== Just moduleName) . P.getQual . fst)
@@ -413,14 +416,7 @@ indexExportedEnv module' env refs conn = liftIO do
         else dict {tcdValue = P.Qualified (P.ByModuleName moduleName) (P.disqualify $ tcdValue dict)}
 
     deleteModuleEnv = do
-      SQL.execute conn "DELETE FROM env_values WHERE module_name = ?" (SQL.Only moduleName)
-      SQL.execute conn "DELETE FROM env_types WHERE module_name = ?" (SQL.Only moduleName)
-      SQL.execute conn "DELETE FROM env_data_constructors WHERE module_name = ?" (SQL.Only moduleName)
-      SQL.execute conn "DELETE FROM env_type_synonyms WHERE module_name = ?" (SQL.Only moduleName)
-      SQL.execute conn "DELETE FROM env_type_classes WHERE module_name = ?" (SQL.Only moduleName)
-      SQL.execute conn "DELETE FROM env_type_class_instances WHERE module_name = ?" (SQL.Only moduleName)
-      SQL.execute conn "DELETE FROM type_operators WHERE module_name = ?" (SQL.Only moduleName)
-      SQL.execute conn "DELETE FROM value_operators WHERE module_name = ?" (SQL.Only moduleName)
+      SQL.execute conn "DELETE FROM modules WHERE module_name = ?" (SQL.Only moduleName)
 
     refMatch :: (Qualified a -> DeclarationRef -> Bool) -> (Qualified a, b) -> Bool
     refMatch f (k, _) = maybe True (any (f k)) refs
@@ -453,6 +449,15 @@ indexExportedEnv module' env refs conn = liftIO do
       _ -> False
 
 type EnvValue = (P.SourceType, P.NameKind, P.NameVisibility)
+
+insertModule :: Connection -> P.ModuleName -> FilePath -> IO ()
+insertModule conn moduleName' path = do
+  SQL.executeNamed
+    conn
+    (SQL.Query "INSERT OR REPLACE INTO modules (module_name, path) VALUES (:module_name, :path)")
+    [ ":module_name" := P.runModuleName moduleName',
+      ":path" := path
+    ]
 
 insertEnvValue :: Connection -> P.Qualified P.Ident -> EnvValue -> IO ()
 insertEnvValue conn ident val = do
@@ -507,18 +512,22 @@ insertNamedDict conn dict = do
 
 initEnvTables :: Connection -> IO ()
 initEnvTables conn = do
-  SQL.execute_ conn "CREATE TABLE IF NOT EXISTS env_values (module_name TEXT, ident TEXT, source_type BLOB, name_kind TEXT, name_visibility TEXT, debug TEXT)"
-  SQL.execute_ conn "CREATE TABLE IF NOT EXISTS env_types (module_name TEXT, type_name TEXT, source_type BLOB, type_kind TEXT, debug TEXT)"
-  SQL.execute_ conn "CREATE TABLE IF NOT EXISTS env_data_constructors (module_name TEXT, constructor_name TEXT, data_decl_type TEXT, type_name TEXT, source_type BLOB, idents BLOB, debug TEXT)"
-  SQL.execute_ conn "CREATE TABLE IF NOT EXISTS env_type_synonyms (module_name TEXT, type_name TEXT, idents BLOB, source_type BLOB, debug TEXT)"
-  SQL.execute_ conn "CREATE TABLE IF NOT EXISTS env_type_classes (module_name TEXT, class_name TEXT, class BLOB, debug TEXT)"
-  SQL.execute_ conn "CREATE TABLE IF NOT EXISTS env_type_class_instances (module_name TEXT, instance_name TEXT, class_module TEXT, class_name TEXT, idents TEXT, types TEXT, kinds TEXT, dict BLOB, debug TEXT)"
-  SQL.execute_ conn "CREATE TABLE IF NOT EXISTS value_operators (module_name TEXT, op_name TEXT, alias_module_name TEXT, alias TEXT, associativity TEXT, precedence INTEGER, UNIQUE(module_name, op_name) on conflict replace)"
-  SQL.execute_ conn "CREATE TABLE IF NOT EXISTS type_operators (module_name TEXT, op_name TEXT, alias_module_name TEXT, alias TEXT, associativity TEXT, precedence INTEGER, UNIQUE(module_name, op_name) on conflict replace)"
+  SQL.execute_ conn "CREATE TABLE IF NOT EXISTS modules (module_name TEXT NOT NULL PRIMARY KEY, path TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, hash INT)"
+  SQL.execute_ conn "CREATE TABLE IF NOT EXISTS env_values (module_name TEXT references modules(module_name) ON DELETE CASCADE, ident TEXT, source_type BLOB, name_kind TEXT, name_visibility TEXT, debug TEXT)"
+  SQL.execute_ conn "CREATE TABLE IF NOT EXISTS env_types (module_name TEXT references modules(module_name) ON DELETE CASCADE, type_name TEXT, source_type BLOB, type_kind TEXT, debug TEXT)"
+  SQL.execute_ conn "CREATE TABLE IF NOT EXISTS env_data_constructors (module_name TEXT references modules(module_name) ON DELETE CASCADE, constructor_name TEXT, data_decl_type TEXT, type_name TEXT, source_type BLOB, idents BLOB, debug TEXT)"
+  SQL.execute_ conn "CREATE TABLE IF NOT EXISTS env_type_synonyms (module_name TEXT references modules(module_name) ON DELETE CASCADE, type_name TEXT, idents BLOB, source_type BLOB, debug TEXT)"
+  SQL.execute_ conn "CREATE TABLE IF NOT EXISTS env_type_classes (module_name TEXT references modules(module_name) ON DELETE CASCADE, class_name TEXT, class BLOB, debug TEXT)"
+  SQL.execute_ conn "CREATE TABLE IF NOT EXISTS env_type_class_instances (module_name TEXT references modules(module_name) ON DELETE CASCADE, instance_name TEXT, class_module TEXT, class_name TEXT, idents TEXT, types TEXT, kinds TEXT, dict BLOB, debug TEXT)"
+  SQL.execute_ conn "CREATE TABLE IF NOT EXISTS value_operators (module_name TEXT references modules(module_name) ON DELETE CASCADE, op_name TEXT, alias_module_name TEXT, alias TEXT, associativity TEXT, precedence INTEGER, UNIQUE(module_name, op_name) on conflict replace)"
+  SQL.execute_ conn "CREATE TABLE IF NOT EXISTS type_operators (module_name TEXT references modules(module_name) ON DELETE CASCADE, op_name TEXT, alias_module_name TEXT, alias TEXT, associativity TEXT, precedence INTEGER, UNIQUE(module_name, op_name) on conflict replace)"
   addEnvIndexes conn
 
 addEnvIndexes :: Connection -> IO ()
 addEnvIndexes conn = do
+  SQL.execute_ conn "CREATE UNIQUE INDEX IF NOT EXISTS modules_module_name_idx ON modules(module_name)"
+  SQL.execute_ conn "CREATE UNIQUE INDEX IF NOT EXISTS modules_path_idx ON modules(path)"
+  SQL.execute_ conn "CREATE INDEX IF NOT EXISTS modules_created_at_idx ON modules(created_at)"
   SQL.execute_ conn "CREATE UNIQUE INDEX IF NOT EXISTS env_values_idx ON env_values(module_name, ident)"
   SQL.execute_ conn "CREATE UNIQUE INDEX IF NOT EXISTS env_types_idx ON env_types(module_name, type_name)"
   SQL.execute_ conn "CREATE UNIQUE INDEX IF NOT EXISTS env_data_constructors_idx ON env_data_constructors(module_name, constructor_name)"

@@ -313,8 +313,8 @@ make ma@MakeActions {..} ms = do
   -- This is to ensure that modules complete fully before moving on, to avoid
   -- holding excess memory during compilation from modules that were paused
   -- by the Haskell runtime.
-  -- capabilities <- getNumCapabilities
-  let concurrency = 1 --  max 1 capabilities
+  capabilities <- getNumCapabilities
+  let concurrency = max 1 capabilities
   lock <- C.newQSem concurrency
 
   let toBeRebuilt = filter (BuildPlan.needsRebuild buildPlan . getModuleName . CST.resPartial) sorted
