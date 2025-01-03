@@ -9,8 +9,9 @@ import Language.PureScript.Make (buildMakeActions, inferForeignModules, runMake)
 import Language.PureScript.Make.Index (addAllIndexing, addDbConnection)
 import System.Directory (createDirectoryIfMissing)
 import Prelude
+import Language.PureScript.Names (ModuleName)
 
-compile :: P.Options -> [(FilePath, P.Text)] -> Connection -> FilePath -> Bool -> IO (Either P.MultipleErrors [P.ExternsFile], P.MultipleErrors)
+compile :: P.Options -> [(FilePath, P.Text)] -> Connection -> FilePath -> Bool -> IO (Either P.MultipleErrors [ModuleName], P.MultipleErrors)
 compile opts moduleFiles conn outputDir usePrefx = do
   runMake opts $ do
     ms <- CST.parseModulesFromFiles id moduleFiles
@@ -21,4 +22,4 @@ compile opts moduleFiles conn outputDir usePrefx = do
           addDbConnection conn $
             addAllIndexing conn $
               buildMakeActions outputDir filePathMap foreigns usePrefx
-    P.make makeActions (map snd ms)
+    P.makeDb makeActions (map snd ms)

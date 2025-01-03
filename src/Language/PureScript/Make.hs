@@ -7,6 +7,7 @@ module Language.PureScript.Make
     rebuildModule',
     rebuildModuleWithProvidedEnv,
     make,
+    makeDb,
     inferForeignModules,
     module Monad,
     module Actions,
@@ -366,6 +367,147 @@ make ma@MakeActions {..} ms = do
         fromMaybe (internalError "make: module not found in results") $
           M.lookup mn successes
   return (map (lookupResult . getModuleName . CST.resPartial) sorted)
+  where
+    checkModuleNames :: m ()
+    checkModuleNames = checkNoPrim *> checkModuleNamesAreUnique
+
+    checkNoPrim :: m ()
+    checkNoPrim =
+      for_ ms $ \m ->
+        let mn = getModuleName $ CST.resPartial m
+         in when (isBuiltinModuleName mn)
+              $ throwError
+                . errorMessage' (getModuleSourceSpan $ CST.resPartial m)
+              $ CannotDefinePrimModules mn
+
+    checkModuleNamesAreUnique :: m ()
+    checkModuleNamesAreUnique =
+      for_ (findDuplicates (getModuleName . CST.resPartial) ms) $ \mss ->
+        throwError . flip foldMap mss $ \ms' ->
+          let mn = getModuleName . CST.resPartial . NEL.head $ ms'
+           in errorMessage'' (fmap (getModuleSourceSpan . CST.resPartial) ms') $ DuplicateModule mn
+
+    -- Find all groups of duplicate values in a list based on a projection.
+    findDuplicates :: (Ord b) => (a -> b) -> [a] -> Maybe [NEL.NonEmpty a]
+    findDuplicates f xs =
+      case filter ((> 1) . length) . NEL.groupBy ((==) `on` f) . sortOn f $ xs of
+        [] -> Nothing
+        xss -> Just xss
+
+    -- Sort a list so its elements appear in the same order as in another list.
+    inOrderOf :: (Ord a) => [a] -> [a] -> [a]
+    inOrderOf xs ys = let s = S.fromList xs in filter (`S.member` s) ys
+
+    buildModule :: Connection -> QSem -> BuildPlan -> ModuleName -> Int -> FilePath -> [CST.ParserWarning] -> Either (NEL.NonEmpty CST.ParserError) Module -> [ModuleName] -> m ()
+    buildModule conn lock buildPlan moduleName cnt fp pwarnings mres deps = do
+      result <- flip catchError (return . BuildJobFailed) $ do
+        let pwarnings' = CST.toMultipleWarnings fp pwarnings
+        tell pwarnings'
+        m <- CST.unwrapParserError fp mres
+        -- We need to wait for dependencies to be built, before checking if the current
+        -- module should be rebuilt, so the first thing to do is to wait on the
+        -- MVars for the module's dependencies.
+        mexterns <- fmap unzip . sequence <$> traverse (getResult buildPlan) deps
+
+        case mexterns of
+          Just (_, externs) -> do
+            -- We need to ensure that all dependencies have been included in Env
+            C.modifyMVar_ (bpEnv buildPlan) $ \env -> do
+              let go :: Env -> ModuleName -> m Env
+                  go e dep = case lookup dep (zip deps externs) of
+                    Just exts
+                      | not (M.member dep e) -> externsEnv e exts
+                    _ -> return e
+              foldM go env deps
+            env <- C.readMVar (bpEnv buildPlan)
+            idx <- C.takeMVar (bpIndex buildPlan)
+            C.putMVar (bpIndex buildPlan) (idx + 1)
+
+            -- Bracket all of the per-module work behind the semaphore, including
+            -- forcing the result. This is done to limit concurrency and keep
+            -- memory usage down; see comments above.
+            (exts, warnings) <- bracket_ (C.waitQSem lock) (C.signalQSem lock) $ do
+              -- Eventlog markers for profiling; see debug/eventlog.js
+              liftBase $ traceMarkerIO $ T.unpack (runModuleName moduleName) <> " start"
+              -- Force the externs and warnings to avoid retaining excess module
+              -- data after the module is finished compiling.
+              extsAndWarnings <- evaluate . force <=< listen $ do
+                rebuildModuleWithIndexDb ma conn env m (Just (idx, cnt))
+              liftBase $ traceMarkerIO $ T.unpack (runModuleName moduleName) <> " end"
+              return extsAndWarnings
+            return $ BuildJobSucceeded (pwarnings' <> warnings) exts
+          Nothing -> return BuildJobSkipped
+
+      BuildPlan.markComplete buildPlan moduleName result
+
+
+makeDb ::
+  forall m.
+  (MonadBaseControl IO m, MonadIO m, MonadError MultipleErrors m, MonadWriter MultipleErrors m) =>
+  MakeActions m ->
+  [CST.PartialResult Module] ->
+  m [ModuleName]
+makeDb ma@MakeActions {..} ms = do
+  checkModuleNames
+  cacheDb <- readCacheDb
+  conn <- getDbConnection
+
+  (sorted, graph) <- sortModules Transitive (moduleSignature . CST.resPartial) ms
+
+  (buildPlan, newCacheDb) <- BuildPlan.construct ma cacheDb (sorted, graph)
+
+  -- Limit concurrent module builds to the number of capabilities as
+  -- (by default) inferred from `+RTS -N -RTS` or set explicitly like `-N4`.
+  -- This is to ensure that modules complete fully before moving on, to avoid
+  -- holding excess memory during compilation from modules that were paused
+  -- by the Haskell runtime.
+  capabilities <- getNumCapabilities
+  let concurrency = max 1 capabilities
+  lock <- C.newQSem concurrency
+
+  let toBeRebuilt = filter (BuildPlan.needsRebuild buildPlan . getModuleName . CST.resPartial) sorted
+  let totalModuleCount = length toBeRebuilt
+  for_ toBeRebuilt $ \m -> fork $ do
+    let moduleName = getModuleName . CST.resPartial $ m
+    let deps = fromMaybe (internalError "make: module not found in dependency graph.") (lookup moduleName graph)
+    buildModule
+      conn
+      lock
+      buildPlan
+      moduleName
+      totalModuleCount
+      (spanName . getModuleSourceSpan . CST.resPartial $ m)
+      (fst $ CST.resFull m)
+      (fmap importPrim . snd $ CST.resFull m)
+      (deps `inOrderOf` map (getModuleName . CST.resPartial) sorted)
+      -- Prevent hanging on other modules when there is an internal error
+      -- (the exception is thrown, but other threads waiting on MVars are released)
+      `onException` BuildPlan.markComplete buildPlan moduleName (BuildJobFailed mempty)
+
+  -- Wait for all threads to complete, and collect results (and errors).
+  (failures, _successes) <-
+    let splitResults = \case
+          BuildJobSucceeded _ exts ->
+            Right exts
+          BuildJobFailed errs ->
+            Left errs
+          BuildJobSkipped ->
+            Left mempty
+     in M.mapEither splitResults <$> BuildPlan.collectResults buildPlan
+
+  -- Write the updated build cache database to disk
+  writeCacheDb $ Cache.removeModules (M.keysSet failures) newCacheDb
+
+  writePackageJson
+
+  -- If generating docs, also generate them for the Prim modules
+  outputPrimDocs
+
+  -- All threads have completed, rethrow any caught errors.
+  let errors = M.elems failures
+  unless (null errors) $ throwError (mconcat errors)
+
+  return (map (getModuleName . CST.resPartial) sorted)
   where
     checkModuleNames :: m ()
     checkModuleNames = checkNoPrim *> checkModuleNamesAreUnique

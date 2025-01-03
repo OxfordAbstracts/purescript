@@ -97,6 +97,6 @@ desugarUsingDb conn env = do
 
   where
     rebracketUsingDb m = do 
-      (fixities, typeFixities) <- liftIO $ selectFixitiesFromModuleImports conn  env m 
+      (fixities, typeFixities) <- liftIO $ selectFixitiesFromModuleImports conn env m 
       rebracketFixitiesOnly (const True) fixities typeFixities m
       
