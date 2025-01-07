@@ -78,6 +78,9 @@ data ExternsImport = ExternsImport
   , eiImportedAs :: Maybe ModuleName
   } deriving (Show, Generic, NFData)
 
+instance FromRow ExternsImport where
+  fromRow = ExternsImport <$> field <*> field <*> field
+
 instance Serialise ExternsImport
 
 -- | A fixity declaration in an externs file

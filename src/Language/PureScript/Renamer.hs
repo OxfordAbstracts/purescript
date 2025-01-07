@@ -87,14 +87,14 @@ updateScope ident =
 -- |
 -- Finds the new name to use for an ident.
 --
-lookupIdent :: a -> Ident -> Rename Ident
+lookupIdent :: Show a => a -> Ident -> Rename Ident
 lookupIdent _ UnusedIdent = return UnusedIdent
-lookupIdent _modName name = do
+lookupIdent modName name = do
   name' <- gets $ M.lookup name . rsBoundNames
   case name' of
     Just name'' -> return name''
-    Nothing -> pure name
-      --  error $ "In " ++ show modName ++ " rename scope is missing ident '" ++ T.unpack (showIdent name) ++ "'"
+    Nothing ->
+       error $ "In " ++ (show modName :: [Char]) ++ " rename scope is missing ident '" ++ show name ++ "'"
 
 
 -- |

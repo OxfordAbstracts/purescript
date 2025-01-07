@@ -376,6 +376,7 @@ library
     Language.PureScript.Make
     Language.PureScript.Make.Actions
     Language.PureScript.Make.BuildPlan
+    Language.PureScript.Make.BuildPlanDB
     Language.PureScript.Make.Cache
     Language.PureScript.Make.Index
     Language.PureScript.Make.Index.Select

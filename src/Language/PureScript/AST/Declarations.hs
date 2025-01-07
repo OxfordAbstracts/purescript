@@ -319,6 +319,12 @@ data ImportDeclarationType
   | Hiding [DeclarationRef]
   deriving (Eq, Ord, Show, Generic, Serialise, NFData)
 
+instance ToField ImportDeclarationType where
+  toField = toField . S.serialise
+
+instance FromField ImportDeclarationType where
+  fromField a = S.deserialise <$> fromField a
+
 isExplicit :: ImportDeclarationType -> Bool
 isExplicit (Explicit _) = True
 isExplicit _ = False

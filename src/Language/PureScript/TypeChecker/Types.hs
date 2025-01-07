@@ -821,7 +821,7 @@ check'
   -> SourceType
   -> m TypedValue'
 check' val (ForAll ann vis ident mbK ty _) = do
-  env <- getEnv
+  -- env <- getEnv
   mn <- gets checkCurrentModule
   scope <- newSkolemScope
   sko <- newSkolemConstant
@@ -833,8 +833,11 @@ check' val (ForAll ann vis ident mbK ty _) = do
       -- was actually brought into scope. Otherwise we can end up skolemizing
       -- an undefined type variable that happens to clash with the variable we
       -- want to skolemize. This can happen due to synonym expansion (see 2542).
+  k <- lookupTypeMb (Qualified (byMaybeModuleName mn) (ProperName ident)) 
+
+  let  
       skVal
-        | Just _ <- M.lookup (Qualified (byMaybeModuleName mn) (ProperName ident)) $ types env =
+        | Just _ <- k =
             skolemizeTypesInValue ss ident mbK sko scope val
         | otherwise = val
   val' <- tvToExpr <$> check skVal sk

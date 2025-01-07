@@ -2,7 +2,7 @@
 module Language.PureScript.CoreFn.Desugar (moduleToCoreFn) where
 
 import Prelude
-import Protolude (ordNub, orEmpty, (<&>), join, for)
+import Protolude (ordNub, orEmpty, (<&>), join, for, when)
 
 
 import Data.Function (on)
@@ -23,26 +23,38 @@ import Language.PureScript.CoreFn.Module (Module(..))
 import Language.PureScript.Crash (internalError)
 import Language.PureScript.Environment (DataDeclType(..), Environment(..), NameKind(..), isDictTypeName, lookupValue)
 import Language.PureScript.Label (Label(..))
-import Language.PureScript.Names (pattern ByNullSourcePos, Ident(..), ModuleName, ProperName(..), ProperNameType(..), Qualified(..), QualifiedBy(..), getQual)
+import Language.PureScript.Names (pattern ByNullSourcePos, Ident(..), ModuleName (ModuleName), ProperName(..), ProperNameType(..), Qualified(..), QualifiedBy(..), getQual)
 import Language.PureScript.PSString (PSString)
 import Language.PureScript.Types (pattern REmptyKinded, SourceType, Type(..))
 import Language.PureScript.AST qualified as A
 import Language.PureScript.Constants.Prim qualified as C
-import Language.PureScript.Make.Index.Select (GetEnv (getDataConstructor))
+import Language.PureScript.Make.Index.Select (GetEnv (getDataConstructor, logGetEnv))
+import Control.DeepSeq (force)
+import Data.Text (Text)
 
 -- | Desugars a module from AST to CoreFn representation.
 moduleToCoreFn :: forall m. (Monad m, GetEnv m) => Environment -> A.Module -> m (Module Ann)
 moduleToCoreFn _ (A.Module _ _ _ _ Nothing) =
   internalError "Module exports were not elaborated before moduleToCoreFn"
 moduleToCoreFn env (A.Module modSS coms mn decls (Just exps)) = do
-  let imports = mapMaybe importToCoreFn decls ++ fmap (ssAnn modSS,) (findQualModules decls)
-      imports' = dedupeImports imports
-      exps' = ordNub $ concatMap exportToCoreFn exps
-      reExps = M.map ordNub $ M.unionsWith (++) (mapMaybe (fmap reExportsToCoreFn . toReExportRef) exps)
-      externs = ordNub $ mapMaybe externToCoreFn decls
-  decls' <- join <$> traverse declToCoreFn decls
+  log' "moduleToCoreFn start"
+  let !imports = force $ mapMaybe importToCoreFn decls ++ fmap (ssAnn modSS,) (findQualModules decls)
+  log' "moduleToCoreFn imports"
+  let !imports' = force $ dedupeImports imports
+  log' "moduleToCoreFn dedupeImports"
+  let !exps' = force $ ordNub $ concatMap exportToCoreFn exps
+  log' "moduleToCoreFn exportToCoreFn"
+  let !reExps = M.map ordNub $ M.unionsWith (++) (mapMaybe (fmap reExportsToCoreFn . toReExportRef) exps)
+  let !externs = ordNub $ mapMaybe externToCoreFn decls
+  log' "moduleToCoreFn externToCoreFn"
+  !decls' <- force . join <$> traverse declToCoreFn decls
+  log' "moduleToCoreFn declToCoreFn"
   pure $ Module modSS coms mn (spanName modSS) imports' exps' reExps externs decls'
   where
+  log' :: Text -> m ()
+  log' t = do 
+    when (mn == ModuleName "OaHasuraFetch.Client") do 
+      logGetEnv t
   -- Creates a map from a module name to the re-export references defined in
   -- that module.
   reExportsToCoreFn :: (ModuleName, A.DeclarationRef) -> M.Map ModuleName [Ident]
@@ -239,7 +251,7 @@ moduleToCoreFn env (A.Module modSS coms mn decls (Just exps)) = do
     typeConstructor _ = internalError "Invalid argument to typeConstructor"
 
   lookupConstructor' :: Qualified (ProperName 'ConstructorName) -> m (DataDeclType, ProperName 'TypeName, SourceType, [Ident])
-  lookupConstructor' name =   case M.lookup name (dataConstructors env) of
+  lookupConstructor' name = case M.lookup name (dataConstructors env) of
     Nothing -> do 
       ctrMb <- getDataConstructor name 
       case ctrMb of 

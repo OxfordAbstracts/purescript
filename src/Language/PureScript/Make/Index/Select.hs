@@ -19,7 +19,7 @@ import Data.Set qualified as Set
 import Data.Text qualified as T
 import Database.SQLite.Simple (Connection)
 import Database.SQLite.Simple qualified as SQL
-import Language.PureScript.AST.Declarations (ImportDeclarationType)
+import Language.PureScript.AST.Declarations (ImportDeclarationType, ExportSource (..))
 import Language.PureScript.AST.Declarations qualified as P
 import Language.PureScript.AST.Operators qualified as P
 import Language.PureScript.AST.Traversals (accumTypes)
@@ -28,7 +28,7 @@ import Language.PureScript.Crash (internalError)
 import Language.PureScript.Environment (TypeClassData (typeClassSuperclasses))
 import Language.PureScript.Environment qualified as E
 import Language.PureScript.Environment qualified as P
-import Language.PureScript.Externs (ExternsFixity (..), ExternsTypeFixity (..))
+import Language.PureScript.Externs (ExternsFixity (..), ExternsTypeFixity (..), ExternsImport (..), ExternsDeclaration (..))
 import Language.PureScript.Linter.Imports qualified as P
 import Language.PureScript.Names (coerceProperName)
 import Language.PureScript.Names qualified as P
@@ -47,6 +47,12 @@ import Control.Monad.Supply.Class (MonadSupply (fresh, peek))
 import Control.Monad.Trans.Class (MonadTrans)
 import Control.Monad.Identity (IdentityT)
 import Control.Monad.Trans.Maybe (MaybeT)
+import Data.Map qualified as M
+import Language.PureScript.Errors (MultipleErrors, SourceSpan)
+import Language.PureScript.Sugar.Names.Exports (resolveExports)
+import Language.PureScript.Sugar.Names.Env (nullImports)
+import Language.PureScript.Sugar.Names.Imports (resolveModuleImport)
+import Language.PureScript.Externs qualified as P
 
 
 selectFixitiesFromModuleImportsAndDecls :: Connection -> P.Env -> P.Module -> IO ([(P.ModuleName, [ExternsFixity])], [(P.ModuleName, [ExternsTypeFixity])])
@@ -323,6 +329,13 @@ selectModuleExports conn modName = do
     (SQL.Only modName)
     <&> fmap SQL.fromOnly
 
+selectModuleExternImports :: Connection -> P.ModuleName -> IO [P.ExternsImport]
+selectModuleExternImports conn modName = do
+  SQL.query
+    conn
+    "SELECT imported_module, value, imported_as FROM imports WHERE module_name = ?"
+    (SQL.Only modName)
+    
 insertExports :: Connection -> P.ModuleName -> Maybe [P.DeclarationRef] -> IO ()
 insertExports conn modName = \case
   Nothing -> internalError "selectEnvFromImports called before desguaring module"
@@ -456,20 +469,6 @@ selectAllClassInstances conn  = do
     "SELECT dict FROM env_type_class_instances"
     <&> (fmap (SQL.fromOnly >>> deserialise))
 
-selectClassInstances ::
-  Connection ->
-  P.Qualified (P.ProperName 'P.ClassName) ->
-  [P.Type ()] ->
-  IO [NamedDict]
-selectClassInstances conn classNameQual types = do
-  SQL.query
-    conn
-    "SELECT dict FROM env_type_class_instances WHERE module_name = ? AND class_name = ? AND types = ?"
-    (modName, className, A.encode types)
-    <&> (fmap (SQL.fromOnly >>> deserialise))
-  where
-    (modName, className) = toDbQualifer classNameQual
-
 selectClassInstancesByClassName ::
   Connection ->
   P.Qualified (P.ProperName 'P.ClassName) ->
@@ -521,7 +520,7 @@ selectImportedAs :: Connection -> P.ModuleName -> P.ModuleName -> IO (Maybe P.Mo
 selectImportedAs conn modName importedModName = do
   SQL.query
     conn
-    "SELECT imported_as FROM imports WHERE module_name = ? AND imported_module_name = ?"
+    "SELECT imported_as FROM imports WHERE module_name = ? AND imported_module = ?"
     (modName, importedModName)
     <&> (head >>> fmap SQL.fromOnly >>> join)
 
@@ -550,8 +549,15 @@ insertImport conn mn = \case
 
 deleteModuleEnvImpl :: P.ModuleName -> Connection -> IO ()
 deleteModuleEnvImpl moduleName conn = do
+  SQL.execute conn "DELETE FROM env_values WHERE module_name = ?" (SQL.Only moduleName)
+  SQL.execute conn "DELETE FROM env_types WHERE module_name = ?" (SQL.Only moduleName)
+  SQL.execute conn "DELETE FROM env_data_constructors WHERE module_name = ?" (SQL.Only moduleName)
+  SQL.execute conn "DELETE FROM env_type_synonyms WHERE module_name = ?" (SQL.Only moduleName)
+  SQL.execute conn "DELETE FROM env_type_classes WHERE module_name = ?" (SQL.Only moduleName)
+  SQL.execute conn "DELETE FROM env_type_class_instances WHERE module_name = ?" (SQL.Only moduleName)
+  SQL.execute conn "DELETE FROM type_operators WHERE module_name = ?" (SQL.Only moduleName)
+  SQL.execute conn "DELETE FROM value_operators WHERE module_name = ?" (SQL.Only moduleName)
   SQL.execute conn "DELETE FROM modules WHERE module_name = ?" (SQL.Only moduleName)
-
 
 getEnvConstraints :: E.Environment -> [P.SourceConstraint]
 getEnvConstraints env =
@@ -694,3 +700,77 @@ instance Monad m => GetEnv (WoGetEnv m) where
   logGetEnv _ = pure ()
   
   hasEnv = pure False
+
+
+
+-- | Create an environment from a collection of externs files
+dbEnv
+  :: forall m
+   . (MonadIO m, MonadError MultipleErrors m, MonadWriter MultipleErrors m)
+  => Connection
+  -> P.Env
+  -> SourceSpan 
+  -> P.ModuleName
+  -> m P.Env
+dbEnv conn env ss modName = do
+  exports <- liftIO $ selectModuleExports conn modName
+  imports <- liftIO $ selectModuleExternImports conn modName
+  ctrs <- liftIO $ selectModuleTypesAndCtrs conn modName
+  types <- liftIO $ selectModuleTypes conn modName
+
+  let members = P.Exports{..}
+      env' = M.insert modName (ss, nullImports, members) env
+      fromEFImport (ExternsImport mn mt qmn) = (mn, [(ss, Just mt, qmn)])
+
+      exportedCtrs =  ctrs <&> \(ty, cs) -> (ty, ([cs], localExportSource))
+
+      exportedTypes' = types <&>  (, ([], localExportSource))
+
+      exportedTypes :: M.Map (P.ProperName 'P.TypeName) ([P.ProperName 'P.ConstructorName], ExportSource)
+      exportedTypes = M.fromListWith combineCtrs $ exportedCtrs <> exportedTypes'
+        where 
+          combineCtrs (cs1, e) (cs2, _) = (cs1 <> cs2, e)
+
+      exportedTypeOps :: M.Map (P.OpName 'P.TypeOpName) ExportSource
+      exportedTypeOps = exportedRefs P.getTypeOpRef
+
+      exportedTypeClasses :: M.Map (P.ProperName 'P.ClassName) ExportSource
+      exportedTypeClasses = exportedRefs P.getTypeClassRef
+
+      exportedValues :: M.Map P.Ident ExportSource
+      exportedValues = exportedRefs P.getValueRef
+
+      exportedValueOps :: M.Map (P.OpName 'P.ValueOpName) ExportSource
+      exportedValueOps = exportedRefs P.getValueOpRef
+
+      exportedRefs :: Ord a => (P.DeclarationRef -> Maybe a) -> M.Map a ExportSource
+      exportedRefs f =
+        M.fromList $ (, localExportSource) <$> mapMaybe f exports
+
+  imps <- foldM (resolveModuleImport env') nullImports (map fromEFImport imports)
+  exps <- resolveExports env' ss modName imps members exports
+  return $ M.insert modName (ss, imps, exps) env
+  where
+
+  -- An ExportSource for declarations local to the module which the given
+  -- ExternsFile corresponds to.
+  localExportSource =
+    ExportSource { exportSourceDefinedIn = modName
+                  , exportSourceImportedFrom = Nothing
+                  }
+
+
+
+selectModuleTypesAndCtrs :: Connection -> P.ModuleName -> IO [(P.ProperName 'P.TypeName, P.ProperName 'P.ConstructorName)]
+selectModuleTypesAndCtrs conn modName = do
+  SQL.query
+    conn
+    "SELECT type_name, constructor_name FROM env_data_constructors WHERE module_name = ?"
+    (SQL.Only modName)
+
+selectModuleTypes :: Connection -> P.ModuleName -> IO [P.ProperName 'P.TypeName]
+selectModuleTypes conn modName = do
+ fmap SQL.fromOnly <$>  SQL.query
+    conn
+    "SELECT type_name FROM env_types WHERE module_name = ?"
+    (SQL.Only modName)

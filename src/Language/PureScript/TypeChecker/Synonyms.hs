@@ -1,4 +1,6 @@
 {-# LANGUAGE GADTs #-}
+{-# OPTIONS_GHC -Wno-redundant-constraints #-}
+{-# OPTIONS_GHC -Wno-unused-imports #-}
 
 -- |
 -- Functions for replacing fully applied type synonyms
@@ -14,6 +16,8 @@ import Control.Monad.State (MonadState)
 import Data.Map qualified as M
 import Data.Maybe (fromMaybe)
 import Data.Text (Text)
+import GHC.Stack (HasCallStack)
+import Language.PureScript.Crash (internalError)
 import Language.PureScript.Environment (TypeKind)
 import Language.PureScript.Errors (MultipleErrors, SimpleErrorMessage (..), SourceSpan, errorMessage')
 import Language.PureScript.Make.Index.Select (GetEnv)
@@ -28,7 +32,7 @@ type SynonymMap = M.Map (Qualified (ProperName 'TypeName)) ([(Text, Maybe Source
 type KindMap = M.Map (Qualified (ProperName 'TypeName)) (SourceType, TypeKind)
 
 -- | Replace fully applied type synonyms
-replaceAllTypeSynonyms :: forall e m. (e ~ MultipleErrors, MonadState CheckState m, GetEnv m, MonadError e m) => SourceType -> m SourceType
+replaceAllTypeSynonyms :: forall e m. (HasCallStack) => (e ~ MultipleErrors, MonadState CheckState m, GetEnv m, MonadError e m) => SourceType -> m SourceType
 replaceAllTypeSynonyms = everywhereOnTypesTopDownM try
   where
     try :: SourceType -> m SourceType
@@ -46,7 +50,8 @@ replaceAllTypeSynonyms = everywhereOnTypesTopDownM try
                    in Just <$> try repl
                 else pure Nothing
           | length synArgs > c ->
-              throwError . errorMessage' ss $ PartiallyAppliedSynonym ctor
+              internalError $ "PartiallyAppliedSynonym: " <> show (ctor, ss, c, synArgs)
+        -- throwError . errorMessage' ss $ PartiallyAppliedSynonym ctor
         _ -> return Nothing
     go ss c kargs args (TypeApp _ f arg) = go ss (c + 1) kargs (arg : args) f
     go ss c kargs args (KindApp _ f arg) = go ss c (arg : kargs) args f

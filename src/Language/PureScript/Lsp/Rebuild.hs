@@ -22,7 +22,7 @@ import Language.PureScript.Lsp.Cache (selectDependencies, selectDependencyHashFr
 import Language.PureScript.Lsp.Log (debugLsp, errorLsp, logPerfStandard, warnLsp)
 import Language.PureScript.Lsp.ReadFile (lspReadFileText)
 import Language.PureScript.Lsp.ServerConfig (ServerConfig (outputPath), getInferExpressions, getMaxFilesInCache)
-import Language.PureScript.Lsp.State (addExternsToExportEnv, cacheEnvironment, cacheRebuild', cachedEnvironment, cachedOpenFileFromSrc, getDbConn, hashDeps, updateCachedRebuildResult, mergePartialArtifacts)
+import Language.PureScript.Lsp.State (addExternsToExportEnv, cacheEnvironment, cachedEnvironment, cachedOpenFileFromSrc, getDbConn, hashDeps, updateCachedRebuildResult, mergePartialArtifacts)
 import Language.PureScript.Lsp.Types (ExternDependency (edExtern), LspEnvironment (lspStateVar), LspState)
 import Language.PureScript.Lsp.Types qualified as Types
 import Language.PureScript.Make qualified as P
@@ -150,10 +150,13 @@ codegenTargets :: Set P.CodegenTarget
 codegenTargets = Set.fromList [P.JS, P.CoreFn, P.Docs]
 
 addRebuildCaching :: P.ModuleName  -> TVar LspState -> Int -> Text -> Int -> P.MakeActions P.Make -> P.MakeActions P.Make
-addRebuildCaching modName stVar maxCache src depHash ma =
+addRebuildCaching modName stVar _maxCache _src _depHash ma =
   ma
-    { P.codegen = \prevEnv checkSt astM m docs ext -> lift (P.makeIO "Cache rebuild" $ cacheRebuild' stVar maxCache src ext (P.checkIdeArtifacts checkSt) astM depHash) <* P.codegen ma prevEnv checkSt astM m docs ext
-    , P.withCheckStateOnError = \checkSt -> P.makeIO "replace artifacts" $ mergePartialArtifacts stVar (P.checkIdeArtifacts checkSt) modName
+    { 
+    --   P.codegen = \prevEnv checkSt astM m docs ext -> lift (P.makeIO "Cache rebuild" $ cacheRebuild' stVar maxCache src ext (P.checkIdeArtifacts checkSt) astM depHash) <* P.codegen ma prevEnv checkSt astM m docs ext
+    -- , 
+    
+    P.withCheckStateOnError = \checkSt -> P.makeIO "replace artifacts" $ mergePartialArtifacts stVar (P.checkIdeArtifacts checkSt) modName
     }
 
 getIdeCheckState :: (MonadLsp ServerConfig m) => m (P.Environment -> P.CheckState)

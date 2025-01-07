@@ -1,5 +1,7 @@
-{-# OPTIONS_GHC -Wno-unused-top-binds #-}
+{-# LANGUAGE BlockArguments #-}
+{-# LANGUAGE NumDecimals #-}
 {-# OPTIONS_GHC -Wno-unused-imports #-}
+{-# OPTIONS_GHC -Wno-unused-top-binds #-}
 
 module Language.PureScript.Make
   ( -- * Make API
@@ -29,7 +31,7 @@ import Control.Monad.Writer.Class (MonadWriter (..), censor)
 import Control.Monad.Writer.Strict (MonadTrans (lift), runWriterT)
 import Data.Foldable (fold, for_)
 import Data.Function (on)
-import Data.List (foldl', sortOn, intercalate)
+import Data.List (foldl', intercalate, sortOn)
 import Data.List.NonEmpty qualified as NEL
 import Data.Map qualified as M
 import Data.Maybe (fromMaybe)
@@ -37,31 +39,34 @@ import Data.Set qualified as S
 import Data.Text qualified as T
 import Database.SQLite.Simple (Connection)
 import Debug.Trace (traceMarkerIO)
-import Language.PureScript.AST (ErrorMessageHint (..), Module (..), SourceSpan (..), getModuleName, getModuleSourceSpan, importPrim)
+import GHC.Conc (enableAllocationLimit, setAllocationCounter)
+import Language.PureScript.AST (ErrorMessageHint (..), Module (..), SourceSpan (..), getModuleName, getModuleSourceSpan, importPrim, internalModuleSourceSpan)
 import Language.PureScript.CST qualified as CST
 import Language.PureScript.CoreFn qualified as CF
 import Language.PureScript.Crash (internalError)
 import Language.PureScript.Docs.Convert qualified as Docs
+import Language.PureScript.Docs.Types qualified as Docs
 import Language.PureScript.Environment (Environment, initEnvironment)
 import Language.PureScript.Errors (MultipleErrors, SimpleErrorMessage (..), addHint, defaultPPEOptions, errorMessage', errorMessage'', prettyPrintMultipleErrors)
-import Language.PureScript.Externs (ExternsFile, ExternsFixity, ExternsTypeFixity, applyExternsFileToEnvironment, moduleToExternsFile)
+import Language.PureScript.Externs (ExternsFile (..), ExternsFixity, ExternsTypeFixity, applyExternsFileToEnvironment, moduleToExternsFile)
 import Language.PureScript.Linter (Name (..), lint, lintImports)
 import Language.PureScript.Make.Actions as Actions
 import Language.PureScript.Make.BuildPlan (BuildJobResult (..), BuildPlan (..), getResult)
 import Language.PureScript.Make.BuildPlan qualified as BuildPlan
+import Language.PureScript.Make.BuildPlanDB qualified as BuildPlanDB
 import Language.PureScript.Make.Cache qualified as Cache
-import Language.PureScript.Make.Index.Select (getModuleFixities, selectFixitiesFromModuleImportsAndDecls, selectFixitiesFromModuleImports, GetEnv (deleteModuleEnv), runDbEnv, runWoGetEnv)
+import Language.PureScript.Make.Index.Select (GetEnv (deleteModuleEnv), dbEnv, getModuleFixities, runDbEnv, runWoGetEnv, selectFixitiesFromModuleImports)
 import Language.PureScript.Make.Monad as Monad
 import Language.PureScript.ModuleDependencies (DependencyDepth (..), moduleSignature, sortModules)
-import Language.PureScript.Names (ModuleName(..), isBuiltinModuleName, runModuleName)
+import Language.PureScript.Names (ModuleName (..), isBuiltinModuleName, runModuleName)
 import Language.PureScript.Renamer (renameInModule)
 import Language.PureScript.Sugar (Env, collapseBindingGroups, createBindingGroups, desugar, desugarCaseGuards, desugarUsingDb, externsEnv, primEnv)
 import Language.PureScript.TypeChecker (CheckState (..), emptyCheckState, typeCheckModule)
 import Language.PureScript.TypeChecker.Monad qualified as P
+import Protolude (putErrText)
 import System.Directory (doesFileExist)
 import System.FilePath (replaceExtension)
 import Prelude
-import Language.PureScript.Docs.Types qualified as Docs
 
 -- | Rebuild a single module.
 --
@@ -141,10 +146,9 @@ rebuildModuleWithProvidedEnv initialCheckState MakeActions {..} exEnv env extern
   let mod' = Module ss coms moduleName regrouped exps
 
   corefn <- runWoGetEnv $ CF.moduleToCoreFn env' mod'
-  let 
-      (optimized, nextVar'') = runSupply nextVar' $ CF.optimizeCoreFn corefn
-      (renamedIdents, renamed) = renameInModule optimized
-      exts = moduleToExternsFile mod' env' renamedIdents
+  let (optimized, nextVar'') = runSupply nextVar' $ CF.optimizeCoreFn corefn
+      (_renamedIdents, renamed) = renameInModule optimized
+  -- exts = moduleToExternsFile mod' env' renamedIdents
   ffiCodegen renamed
   -- It may seem more obvious to write `docs <- Docs.convertModule m env' here,
   -- but I have not done so for two reasons:
@@ -162,8 +166,21 @@ rebuildModuleWithProvidedEnv initialCheckState MakeActions {..} exEnv env extern
               ++ prettyPrintMultipleErrors defaultPPEOptions errs
         Right d -> d
 
-  evalSupplyT nextVar'' $ codegen env checkSt mod' renamed docs exts
-  return exts
+  evalSupplyT nextVar'' $ codegen env checkSt mod' renamed docs
+  return dummyExternsFile
+
+dummyExternsFile :: ExternsFile
+dummyExternsFile =
+  ExternsFile
+    { efVersion = "0",
+      efSourceSpan = internalModuleSourceSpan "<dummy>",
+      efModuleName = ModuleName "dummy",
+      efExports = [],
+      efImports = [],
+      efFixities = [],
+      efTypeFixities = [],
+      efDeclarations = []
+    }
 
 rebuildModuleWithProvidedEnvDb ::
   forall m.
@@ -179,9 +196,13 @@ rebuildModuleWithProvidedEnvDb initialCheckState MakeActions {..} conn exEnv m@(
   progress $ CompilingModule moduleName moduleIndex
   let withPrim = importPrim m
   lint withPrim
+  putErrText $ "linted: " <> T.pack (show moduleName)
 
   ((Module ss coms _ elaborated exps, checkSt), nextVar) <-
-    desugarAndTypeCheckDb initialCheckState conn withCheckStateOnError withCheckState moduleName withPrim exEnv 
+    desugarAndTypeCheckDb initialCheckState conn withCheckStateOnError withCheckState moduleName withPrim exEnv
+
+  putErrText $ "type checked: " <> T.pack (show moduleName)
+
   let env' = P.checkEnv checkSt
 
   -- desugar case declarations *after* type- and exhaustiveness checking
@@ -191,15 +212,22 @@ rebuildModuleWithProvidedEnvDb initialCheckState MakeActions {..} conn exEnv m@(
     desugarCaseGuards elaborated
 
   regrouped <- createBindingGroups moduleName . collapseBindingGroups $ deguarded
+  putErrText $ "regrouped: " <> T.pack (show moduleName)
   let mod' = Module ss coms moduleName regrouped exps
 
+  !corefn <- fmap force $ runDbEnv conn $ CF.moduleToCoreFn env' mod'
+  putErrText $ "corefn: " <> T.pack (show moduleName)
+  let -- !(optimized, nextVar'') = force $ runSupply nextVar' $ CF.optimizeCoreFn corefn
+      optimized = corefn
+      nextVar'' = nextVar'
+  putErrText $ "optimized: " <> T.pack (show moduleName)
 
-  corefn <- runDbEnv conn $ CF.moduleToCoreFn env' mod'
-  let 
-      (optimized, nextVar'') = runSupply nextVar' $ CF.optimizeCoreFn corefn
-      (renamedIdents, renamed) = renameInModule optimized
-      exts = moduleToExternsFile mod' env' renamedIdents
+  let !(_renamedIdents, renamed) = force (renameInModule optimized)
+  putErrText $ "renamed: " <> T.pack (show moduleName)
+
+  -- exts = moduleToExternsFile mod' env' renamedIdents
   ffiCodegen renamed
+  putErrText $ "ffi codegen: " <> T.pack (show moduleName)
   -- It may seem more obvious to write `docs <- Docs.convertModule m env' here,
   -- but I have not done so for two reasons:
   -- 1. This should never fail; any genuine errors in the code should have been
@@ -208,16 +236,17 @@ rebuildModuleWithProvidedEnvDb initialCheckState MakeActions {..} conn exEnv m@(
   -- 2. We do not want to perform any extra work generating docs unless the
   -- user has asked for docs to be generated.
   let docs = Docs.Module moduleName (Just "TODO") [] []
-    -- case Docs.convertModuleWithoutExterns ops typeOps exEnv env' withPrim of
-    --     Left errs ->
-    --       internalError $
-    --         "Failed to produce docs for "
-    --           ++ T.unpack (runModuleName moduleName)
-    --           ++ "; details:\n"
-    --           ++ prettyPrintMultipleErrors defaultPPEOptions errs
-    --     Right d -> d
-  evalSupplyT nextVar'' $ codegen env' checkSt mod' renamed docs exts
-  return exts
+  -- case Docs.convertModuleWithoutExterns ops typeOps exEnv env' withPrim of
+  --     Left errs ->
+  --       internalError $
+  --         "Failed to produce docs for "
+  --           ++ T.unpack (runModuleName moduleName)
+  --           ++ "; details:\n"
+  --           ++ prettyPrintMultipleErrors defaultPPEOptions errs
+  --     Right d -> d
+  evalSupplyT nextVar'' $ codegen env' checkSt mod' renamed docs
+  putErrText $ "codegen done: " <> T.pack (show moduleName)
+  return dummyExternsFile
 
 desugarAndTypeCheck ::
   forall m.
@@ -440,7 +469,6 @@ make ma@MakeActions {..} ms = do
 
       BuildPlan.markComplete buildPlan moduleName result
 
-
 makeDb ::
   forall m.
   (MonadBaseControl IO m, MonadIO m, MonadError MultipleErrors m, MonadWriter MultipleErrors m) =>
@@ -454,7 +482,7 @@ makeDb ma@MakeActions {..} ms = do
 
   (sorted, graph) <- sortModules Transitive (moduleSignature . CST.resPartial) ms
 
-  (buildPlan, newCacheDb) <- BuildPlan.construct ma cacheDb (sorted, graph)
+  (buildPlan, _newCacheDb) <- BuildPlanDB.construct ma cacheDb (sorted, graph)
 
   -- Limit concurrent module builds to the number of capabilities as
   -- (by default) inferred from `+RTS -N -RTS` or set explicitly like `-N4`.
@@ -463,40 +491,60 @@ makeDb ma@MakeActions {..} ms = do
   -- by the Haskell runtime.
   capabilities <- getNumCapabilities
   let concurrency = max 1 capabilities
+  putErrText $ "concurrency: " <> T.pack (show concurrency)
   lock <- C.newQSem concurrency
 
-  let toBeRebuilt = filter (BuildPlan.needsRebuild buildPlan . getModuleName . CST.resPartial) sorted
+  let toBeRebuilt = filter (BuildPlanDB.needsRebuild buildPlan . getModuleName . CST.resPartial) sorted
   let totalModuleCount = length toBeRebuilt
+
+      -- importedModules :: S.Set ModuleName
+      -- importedModules = S.fromList $ graph >>= snd
+
+      -- orphan :: ModuleName -> Bool
+      -- orphan mn = S.notMember mn importedModules
+
+      graphMap :: M.Map ModuleName [ModuleName]
+      graphMap = M.fromList graph
+
   for_ toBeRebuilt $ \m -> fork $ do
+    liftIO do
+      setAllocationCounter 8.0e9
+      enableAllocationLimit
     let moduleName = getModuleName . CST.resPartial $ m
-    let deps = fromMaybe (internalError "make: module not found in dependency graph.") (lookup moduleName graph)
-    buildModule
-      conn
-      lock
-      buildPlan
-      moduleName
-      totalModuleCount
-      (spanName . getModuleSourceSpan . CST.resPartial $ m)
-      (fst $ CST.resFull m)
-      (fmap importPrim . snd $ CST.resFull m)
-      (deps `inOrderOf` map (getModuleName . CST.resPartial) sorted)
-      -- Prevent hanging on other modules when there is an internal error
-      -- (the exception is thrown, but other threads waiting on MVars are released)
-      `onException` BuildPlan.markComplete buildPlan moduleName (BuildJobFailed mempty)
+    let deps = fromMaybe (internalError "make: module not found in dependency graph.") (M.lookup moduleName graphMap)
+
+    let buildModule' =
+          buildModule
+            conn
+            lock
+            buildPlan
+            moduleName
+            totalModuleCount
+            (getModuleSourceSpan . CST.resPartial $ m)
+            (fst $ CST.resFull m)
+            (fmap importPrim . snd $ CST.resFull m)
+            (deps `inOrderOf` map (getModuleName . CST.resPartial) sorted)
+            -- Prevent hanging on other modules when there is an internal error
+            -- (the exception is thrown, but other threads waiting on MVars are released)
+            `onException` do
+              putErrText $ "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! Exception building: " <> runModuleName moduleName
+              BuildPlanDB.markComplete buildPlan moduleName (BuildPlanDB.BuildJobFailed mempty)
+
+    -- if orphan moduleName
+    --   then BuildPlanDB.markComplete buildPlan moduleName (BuildPlanDB.BuildJobSucceeded mempty)
+    --   else
+    buildModule'
 
   -- Wait for all threads to complete, and collect results (and errors).
   (failures, _successes) <-
     let splitResults = \case
-          BuildJobSucceeded _ exts ->
-            Right exts
-          BuildJobFailed errs ->
+          BuildPlanDB.BuildJobSucceeded _ ->
+            Right ()
+          BuildPlanDB.BuildJobFailed errs ->
             Left errs
-          BuildJobSkipped ->
+          BuildPlanDB.BuildJobSkipped ->
             Left mempty
-     in M.mapEither splitResults <$> BuildPlan.collectResults buildPlan
-
-  -- Write the updated build cache database to disk
-  writeCacheDb $ Cache.removeModules (M.keysSet failures) newCacheDb
+     in M.mapEither splitResults <$> BuildPlanDB.collectResults buildPlan
 
   writePackageJson
 
@@ -539,35 +587,39 @@ makeDb ma@MakeActions {..} ms = do
     inOrderOf :: (Ord a) => [a] -> [a] -> [a]
     inOrderOf xs ys = let s = S.fromList xs in filter (`S.member` s) ys
 
-    buildModule :: Connection -> QSem -> BuildPlan -> ModuleName -> Int -> FilePath -> [CST.ParserWarning] -> Either (NEL.NonEmpty CST.ParserError) Module -> [ModuleName] -> m ()
-    buildModule conn lock buildPlan moduleName cnt fp pwarnings mres deps = do
-      result <- flip catchError (return . BuildJobFailed) $ do
+    buildModule :: Connection -> QSem -> BuildPlanDB.BuildPlan -> ModuleName -> Int -> SourceSpan -> [CST.ParserWarning] -> Either (NEL.NonEmpty CST.ParserError) Module -> [ModuleName] -> m ()
+    buildModule conn lock buildPlan moduleName cnt ss pwarnings mres deps = do
+      let fp = spanName ss
+      result <- flip catchError (return . BuildPlanDB.BuildJobFailed) $ do
         let pwarnings' = CST.toMultipleWarnings fp pwarnings
         tell pwarnings'
         m <- CST.unwrapParserError fp mres
         -- We need to wait for dependencies to be built, before checking if the current
         -- module should be rebuilt, so the first thing to do is to wait on the
         -- MVars for the module's dependencies.
-        mexterns <- fmap unzip . sequence <$> traverse (getResult buildPlan) deps
+        mexterns <- sequence <$> traverse (BuildPlanDB.getResult buildPlan) deps
+        -- let lookupResult mn =
+        --       fromMaybe (internalError "make: module not found in results") $
+        --         M.lookup mn _
 
         case mexterns of
-          Just (_, externs) -> do
+          Just externs -> do
             -- We need to ensure that all dependencies have been included in Env
-            C.modifyMVar_ (bpEnv buildPlan) $ \env -> do
+            C.modifyMVar_ (BuildPlanDB.bpEnv buildPlan) $ \env -> do
               let go :: Env -> ModuleName -> m Env
                   go e dep = case lookup dep (zip deps externs) of
-                    Just exts
-                      | not (M.member dep e) -> externsEnv e exts
+                    Just _exts
+                      | not (M.member dep e) -> dbEnv conn e ss dep
                     _ -> return e
               foldM go env deps
-            env <- C.readMVar (bpEnv buildPlan)
-            idx <- C.takeMVar (bpIndex buildPlan)
-            C.putMVar (bpIndex buildPlan) (idx + 1)
+            env <- C.readMVar (BuildPlanDB.bpEnv buildPlan)
+            idx <- C.takeMVar (BuildPlanDB.bpIndex buildPlan)
+            C.putMVar (BuildPlanDB.bpIndex buildPlan) (idx + 1)
 
             -- Bracket all of the per-module work behind the semaphore, including
             -- forcing the result. This is done to limit concurrency and keep
             -- memory usage down; see comments above.
-            (exts, warnings) <- bracket_ (C.waitQSem lock) (C.signalQSem lock) $ do
+            (_e, warnings) <- bracket_ (C.waitQSem lock) (C.signalQSem lock) $ do
               -- Eventlog markers for profiling; see debug/eventlog.js
               liftBase $ traceMarkerIO $ T.unpack (runModuleName moduleName) <> " start"
               -- Force the externs and warnings to avoid retaining excess module
@@ -576,10 +628,10 @@ makeDb ma@MakeActions {..} ms = do
                 rebuildModuleWithIndexDb ma conn env m (Just (idx, cnt))
               liftBase $ traceMarkerIO $ T.unpack (runModuleName moduleName) <> " end"
               return extsAndWarnings
-            return $ BuildJobSucceeded (pwarnings' <> warnings) exts
-          Nothing -> return BuildJobSkipped
+            return $ BuildPlanDB.BuildJobSucceeded (pwarnings' <> warnings)
+          Nothing -> return BuildPlanDB.BuildJobSkipped
 
-      BuildPlan.markComplete buildPlan moduleName result
+      BuildPlanDB.markComplete buildPlan moduleName result
 
 -- | Infer the module name for a module by looking for the same filename with
 -- a .js extension.

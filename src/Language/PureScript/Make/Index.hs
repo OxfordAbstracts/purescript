@@ -54,19 +54,19 @@ addAllIndexing conn ma =
 
 -- addExternIndexing conn ma
 
-addAstModuleIndexing :: (MonadIO m) => Connection -> P.MakeActions m -> P.MakeActions m
-addAstModuleIndexing conn ma =
-  ma
-    { P.codegen = \prevEnv checkSt astM m docs ext ->
-        lift (indexAstModule conn (P.checkEnv checkSt) astM ext (getExportedNames ext)) <* P.codegen ma prevEnv checkSt astM m docs ext
-    }
+-- addAstModuleIndexing :: (MonadIO m) => Connection -> P.MakeActions m -> P.MakeActions m
+-- addAstModuleIndexing conn ma =
+--   ma
+--     { P.codegen = \prevEnv checkSt astM m docs ext ->
+--         lift (indexAstModule conn (P.checkEnv checkSt) astM ext (getExportedNames ext)) <* P.codegen ma prevEnv checkSt astM m docs ext
+--     }
 
 addEnvIndexing :: (MonadIO m) => Connection -> P.MakeActions m -> P.MakeActions m
 addEnvIndexing conn ma =
   ma
-    { P.codegen = \prevEnv checkSt astM@(P.Module _ _ _ _ refs) m docs ext -> do
-        lift (indexExportedEnv astM (P.checkEnv checkSt) refs conn)
-        P.codegen ma prevEnv checkSt astM m docs ext
+    { P.codegen = \prevEnv checkSt astM m docs -> do
+        lift (indexExportedEnv astM (P.checkEnv checkSt) conn)
+        P.codegen ma prevEnv checkSt astM m docs
     }
 
 indexAstModule :: (MonadIO m) => Connection -> Environment -> P.Module -> ExternsFile -> Set P.Name -> m ()
@@ -89,7 +89,7 @@ indexAstModule conn _endEnv (P.Module _ss _comments moduleName' decls _exportRef
         _ -> False
 
   forM_ declsSorted \decl -> do
-    indexFixity conn moduleName' decl
+    indexDeclaration conn moduleName' decl
     let (ss, _) = P.declSourceAnn decl
         start = P.spanStart ss
         end = P.spanEnd ss
@@ -181,8 +181,8 @@ indexAstModule conn _endEnv (P.Module _ss _comments moduleName' decls _exportRef
     disqualifyIfInModule (P.Qualified (P.BySourcePos _) name) = Just name
     disqualifyIfInModule _ = Nothing
 
-indexFixity :: Connection -> P.ModuleName -> P.Declaration -> IO ()
-indexFixity conn moduleName' = \case
+indexDeclaration :: Connection -> P.ModuleName -> P.Declaration -> IO ()
+indexDeclaration conn moduleName' = \case
   P.FixityDeclaration _ (Left (P.ValueFixity (P.Fixity assoc prec) (P.Qualified (P.ByModuleName val_mod) name) op)) ->
     SQL.executeNamed
       conn
@@ -211,6 +211,8 @@ indexFixity conn moduleName' = \case
         ":associativity" := P.showAssoc assoc,
         ":precedence" := prec
       ]
+  P.ImportDeclaration _ importedModule importType importedAs ->
+    insertImport conn moduleName' importedModule importedAs importType
   _ -> pure ()
 
 findMap :: (a -> Maybe b) -> [a] -> Maybe b
@@ -296,11 +298,11 @@ getExportedNames extern =
       P.ModuleRef _ name -> [P.ModName name]
       P.ReExportRef _ _ _ -> []
 
-addExternIndexing :: (MonadIO m) => Connection -> P.MakeActions m -> P.MakeActions m
-addExternIndexing conn ma =
-  ma
-    { P.codegen = \prevEnv endEnv astM m docs ext -> lift (indexExtern conn ext) <* P.codegen ma prevEnv endEnv astM m docs ext
-    }
+-- addExternIndexing :: (MonadIO m) => Connection -> P.MakeActions m -> P.MakeActions m
+-- addExternIndexing conn ma =
+--   ma
+--     { P.codegen = \prevEnv endEnv astM m docs ext -> lift (indexExtern conn ext) <* P.codegen ma prevEnv endEnv astM m docs ext
+--     }
 
 indexExtern :: (MonadIO m) => Connection -> ExternsFile -> m ()
 indexExtern conn extern = liftIO do
@@ -339,8 +341,7 @@ insertEfImport conn moduleName' ei = do
 initDb :: Connection -> IO ()
 initDb conn = do
   SQL.execute_ conn "pragma journal_mode=wal;"
-  SQL.execute_ conn "pragma foreign_keys=ON;"
-  SQL.execute_ conn "pragma cache_size=-6000;"
+  SQL.execute_ conn "pragma cache_size=-8000;"
   SQL.execute_ conn "CREATE TABLE IF NOT EXISTS ast_modules (module_name TEXT, path TEXT, UNIQUE(module_name) on conflict replace, UNIQUE(path) on conflict replace)"
   SQL.execute_
     conn
@@ -352,8 +353,6 @@ initDb conn = do
   SQL.execute_ conn "CREATE TABLE IF NOT EXISTS available_srcs (path TEXT PRIMARY KEY NOT NULL, UNIQUE(path) on conflict replace)"
   SQL.execute_ conn "CREATE TABLE IF NOT EXISTS export_environments (path TEXT PRIMARY KEY NOT NULL, hash INT NOT NULL, value BLOB NOT NULL, UNIQUE(path) on conflict replace)"
   SQL.execute_ conn "CREATE TABLE IF NOT EXISTS environments (path TEXT PRIMARY KEY NOT NULL, hash INT NOT NULL, value BLOB NOT NULL, UNIQUE(path) on conflict replace)"
-  SQL.execute_ conn "CREATE TABLE IF NOT EXISTS imports (module_name TEXT, imported_module TEXT, imported_as TEXT)"
-  SQL.execute_ conn "CREATE TABLE IF NOT EXISTS exports (module_name TEXT, ident TEXT, value BLOB)"
   initEnvTables conn
   addDbIndexes conn
 
@@ -380,20 +379,42 @@ dropTables conn = do
   SQL.execute_ conn "DROP TABLE IF EXISTS ef_imports"
   dropEnvTables conn
 
-indexExportedEnv :: (MonadIO m) => P.Module -> E.Environment -> Maybe [DeclarationRef] -> Connection -> m ()
-indexExportedEnv module' env refs conn = liftIO do
+indexExportedEnv :: (MonadIO m) => P.Module -> E.Environment -> Connection -> m ()
+indexExportedEnv module'@(P.Module _ _ mn _ refs) env conn = liftIO do
   deleteModuleEnv
   insertModule conn moduleName path
-  forConcurrently_ (P.exportedDeclarations module') (indexFixity conn moduleName)
+  forConcurrently_ (P.getModuleDeclarations module') (indexDeclaration conn moduleName)
+  forConcurrently_ (fold refs) (insertExport conn moduleName)
   envFromModule E.names & filter nameExported & mapConcurrently_ (uncurry $ insertEnvValue conn)
   envFromModule E.types & filter typeOrClassExported & mapConcurrently_ (uncurry $ insertType conn)
   envFromModule E.dataConstructors & filter dataConstructorExportedOrDict & mapConcurrently_ (uncurry $ insertDataConstructor conn)
   envFromModule E.typeSynonyms & filter typeExported & mapConcurrently_ (uncurry $ insertTypeSynonym conn)
-  envFromModule E.typeClasses & filter typeClassExported & mapConcurrently_ (uncurry $ insertTypeClass conn)
+  envFromModule E.typeClasses & filter typeClassExported & mapConcurrently_ (uncurry insertTypeClassAndTypes)
   dicts
     -- & filter ((== Just moduleName) . P.getQual . tcdValue)
     & mapConcurrently_ (insertNamedDict conn)
   where
+    insertTypeClassAndTypes :: Qualified (P.ProperName 'P.ClassName) -> P.TypeClassData -> IO ()
+    insertTypeClassAndTypes qualClassName@(P.Qualified _ className) tcd = do
+      insertTypeClass conn qualClassName tcd
+      for_
+        (P.Qualified (P.ByModuleName mn) (P.coerceProperName className) `Map.lookup` E.types env)
+        \(kind, tk) -> do
+          insertType conn (P.Qualified (P.ByModuleName mn) (P.coerceProperName className)) (kind, tk)
+          let dictName = P.dictTypeName . P.coerceProperName $ className
+          for_
+            (P.Qualified (P.ByModuleName mn) dictName `Map.lookup` E.types env)
+            \(dictKind, dictData) -> do
+              insertType conn (P.Qualified (P.ByModuleName mn) dictName) (dictKind, dictData)
+              case dictData of
+                (P.DataType _ _ [(dctor, _)]) -> do
+                  let dctorName = P.coerceProperName dctor
+                  for_
+                    (P.Qualified (P.ByModuleName mn) dctorName `Map.lookup` E.dataConstructors env)
+                    \(dty, _, st, idents) ->
+                      insertDataConstructor conn (P.Qualified (P.ByModuleName mn) dctorName) (dty, dictName, st, idents)
+                _ -> pure ()
+
     path = P.spanName (P.getModuleSourceSpan module')
 
     moduleName = P.getModuleName module'
@@ -416,10 +437,20 @@ indexExportedEnv module' env refs conn = liftIO do
         else dict {tcdValue = P.Qualified (P.ByModuleName moduleName) (P.disqualify $ tcdValue dict)}
 
     deleteModuleEnv = do
+      SQL.execute conn "DELETE FROM env_values WHERE module_name = ?" (SQL.Only moduleName)
+      SQL.execute conn "DELETE FROM env_types WHERE module_name = ?" (SQL.Only moduleName)
+      SQL.execute conn "DELETE FROM env_data_constructors WHERE module_name = ?" (SQL.Only moduleName)
+      SQL.execute conn "DELETE FROM env_type_synonyms WHERE module_name = ?" (SQL.Only moduleName)
+      SQL.execute conn "DELETE FROM env_type_classes WHERE module_name = ?" (SQL.Only moduleName)
+      SQL.execute conn "DELETE FROM env_type_class_instances WHERE module_name = ?" (SQL.Only moduleName)
+      SQL.execute conn "DELETE FROM type_operators WHERE module_name = ?" (SQL.Only moduleName)
+      SQL.execute conn "DELETE FROM value_operators WHERE module_name = ?" (SQL.Only moduleName)
       SQL.execute conn "DELETE FROM modules WHERE module_name = ?" (SQL.Only moduleName)
 
     refMatch :: (Qualified a -> DeclarationRef -> Bool) -> (Qualified a, b) -> Bool
     refMatch f (k, _) = maybe True (any (f k)) refs
+
+    -- generatedNameOrExported (i, t) = not (P.isPlainIdent $ P.disqualify i) || nameExported (i, t)
 
     nameExported = refMatch \k -> \case
       P.ValueRef _ ident -> ident == P.disqualify k
@@ -486,18 +517,15 @@ insertTypeSynonym :: Connection -> P.Qualified (P.ProperName 'P.TypeName) -> ([(
 insertTypeSynonym conn ident (idents, st) = do
   SQL.execute
     conn
-    "INSERT OR REPLACE INTO env_type_synonyms (module_name, type_name, idents, source_type, debug) VALUES (?, ?, ?, ?, ?)"
-    (toDbQualifer ident :. (serialise idents, st, debug))
-  where
-    debug :: Text
-    debug = "show (idents, st)"
+    "INSERT OR REPLACE INTO env_type_synonyms (module_name, type_name, idents, source_type) VALUES (?, ?, ?, ?)"
+    (toDbQualifer ident :. (serialise idents, st))
 
 insertTypeClass :: Connection -> P.Qualified (P.ProperName 'P.ClassName) -> P.TypeClassData -> IO ()
 insertTypeClass conn ident tcd = do
   SQL.execute
     conn
     "INSERT OR REPLACE INTO env_type_classes (module_name, class_name, class) VALUES (?, ?, ?)"
-    ((clasMod, className) :. SQL.Only tcd)
+    ((clasMod, className) :. SQL.Only tcd {E.typeClassMembers = (\(a, b, _) -> (a, b, Nothing)) <$> E.typeClassMembers tcd})
   where
     (clasMod, className) = toDbQualifer ident
 
@@ -510,6 +538,31 @@ insertNamedDict conn dict = do
   where
     (clasMod, className) = toDbQualifer (tcdClassName dict)
 
+insertImport :: Connection -> P.ModuleName -> P.ModuleName -> Maybe P.ModuleName -> P.ImportDeclarationType -> IO ()
+insertImport conn moduleName' importedModule importedAs importType = do
+  SQL.executeNamed
+    conn
+    ( SQL.Query
+        "INSERT OR REPLACE INTO imports (module_name, imported_module, imported_as, value) VALUES (:module_name, :imported_module, :imported_as, :value)"
+    )
+    [ ":module_name" := moduleName',
+      ":imported_module" := importedModule,
+      ":imported_as" := importedAs,
+      ":value" := serialise importType
+    ]
+
+insertExport :: Connection -> P.ModuleName -> P.DeclarationRef -> IO ()
+insertExport conn moduleName' ref = do
+  SQL.executeNamed
+    conn
+    ( SQL.Query
+        "INSERT OR REPLACE INTO exports (module_name, ident, value) VALUES (:module_name, :ident, :value)"
+    )
+    [ ":module_name" := moduleName',
+      ":ident" := T.pack (show (P.declRefName ref)),
+      ":value" := ref
+    ]
+
 initEnvTables :: Connection -> IO ()
 initEnvTables conn = do
   SQL.execute_ conn "CREATE TABLE IF NOT EXISTS modules (module_name TEXT NOT NULL PRIMARY KEY, path TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, hash INT)"
@@ -519,8 +572,10 @@ initEnvTables conn = do
   SQL.execute_ conn "CREATE TABLE IF NOT EXISTS env_type_synonyms (module_name TEXT references modules(module_name) ON DELETE CASCADE, type_name TEXT, idents BLOB, source_type BLOB, debug TEXT)"
   SQL.execute_ conn "CREATE TABLE IF NOT EXISTS env_type_classes (module_name TEXT references modules(module_name) ON DELETE CASCADE, class_name TEXT, class BLOB, debug TEXT)"
   SQL.execute_ conn "CREATE TABLE IF NOT EXISTS env_type_class_instances (module_name TEXT references modules(module_name) ON DELETE CASCADE, instance_name TEXT, class_module TEXT, class_name TEXT, idents TEXT, types TEXT, kinds TEXT, dict BLOB, debug TEXT)"
-  SQL.execute_ conn "CREATE TABLE IF NOT EXISTS value_operators (module_name TEXT references modules(module_name) ON DELETE CASCADE, op_name TEXT, alias_module_name TEXT, alias TEXT, associativity TEXT, precedence INTEGER, UNIQUE(module_name, op_name) on conflict replace)"
-  SQL.execute_ conn "CREATE TABLE IF NOT EXISTS type_operators (module_name TEXT references modules(module_name) ON DELETE CASCADE, op_name TEXT, alias_module_name TEXT, alias TEXT, associativity TEXT, precedence INTEGER, UNIQUE(module_name, op_name) on conflict replace)"
+  SQL.execute_ conn "CREATE TABLE IF NOT EXISTS value_operators (module_name TEXT references modules(module_name) ON DELETE CASCADE, defined_in TEXT, op_name TEXT, alias_module_name TEXT, alias TEXT, associativity TEXT, precedence INTEGER, UNIQUE(module_name, op_name) on conflict replace)"
+  SQL.execute_ conn "CREATE TABLE IF NOT EXISTS type_operators (module_name TEXT references modules(module_name) ON DELETE CASCADE, defined_in TEXT, op_name TEXT, alias_module_name TEXT, alias TEXT, associativity TEXT, precedence INTEGER, UNIQUE(module_name, op_name) on conflict replace)"
+  SQL.execute_ conn "CREATE TABLE IF NOT EXISTS imports (module_name TEXT references modules(module_name) ON DELETE CASCADE, imported_module TEXT, imported_as TEXT, value BLOB)"
+  SQL.execute_ conn "CREATE TABLE IF NOT EXISTS exports (module_name TEXT references modules(module_name) ON DELETE CASCADE, ident TEXT, value BLOB)"
   addEnvIndexes conn
 
 addEnvIndexes :: Connection -> IO ()
