@@ -18,7 +18,7 @@ import Language.PureScript.Ide.Imports (Import (..))
 import Language.PureScript.Lsp.Cache.Query (CompletionResult (crModule, crName, crNameType, crType), getAstDeclarationsStartingWith, getAstDeclarationsStartingWithAndSearchingModuleNames, getAstDeclarationsStartingWithOnlyInModule)
 import Language.PureScript.Lsp.Docs (readDeclarationDocsWithNameType)
 import Language.PureScript.Lsp.Imports (addImportToTextEdit, getIdentModuleQualifier, getMatchingImport, parseModuleNameFromFile)
-import Language.PureScript.Lsp.Log (logPerfStandard)
+import Language.PureScript.Lsp.Log (debugLsp, logPerfStandard)
 import Language.PureScript.Lsp.Monad (HandlerM)
 import Language.PureScript.Lsp.NameType (LspNameType (..), readableType, readableTypeIn)
 import Language.PureScript.Lsp.ServerConfig (getMaxCompletions)
@@ -49,7 +49,10 @@ completionAndResolveHandlers =
           vfMb <- Server.getVirtualFile uri
           forLsp vfMb \vf -> do
             let (range, word) = getSymbolAt (VFS._file_text vf) pos
+            debugLsp $ "Range: " <> show range
+            debugLsp $ "Word: " <> word
             mNameMb <- parseModuleNameFromFile uri
+            debugLsp $ "mNameMb: " <> show mNameMb
             forLsp mNameMb \mName -> do
               let withQualifier = getIdentModuleQualifier word
                   wordWithoutQual = maybe word snd withQualifier
@@ -72,13 +75,13 @@ completionAndResolveHandlers =
                               nameType = crNameType cr
                               declModName = crModule cr
                            in Types.CompletionItem
-                                { _label = label,
-                                  _labelDetails =
+                                { _label = label
+                                , _labelDetails =
                                     Just $
                                       Types.CompletionItemLabelDetails
                                         (Just $ " " <> crType cr)
-                                        (Just $ readableTypeIn (crNameType cr) <> P.runModuleName declModName),
-                                  _kind =
+                                        (Just $ readableTypeIn (crNameType cr) <> P.runModuleName declModName)
+                                , _kind =
                                     Just case nameType of
                                       IdentNameType | "->" `T.isInfixOf` crType cr -> Types.CompletionItemKind_Function
                                       IdentNameType -> Types.CompletionItemKind_Value
@@ -89,25 +92,25 @@ completionAndResolveHandlers =
                                       TyOpNameType -> Types.CompletionItemKind_TypeParameter
                                       ModNameType -> Types.CompletionItemKind_Module
                                       KindNameType -> Types.CompletionItemKind_Struct
-                                      RoleNameType -> Types.CompletionItemKind_Struct,
-                                  _tags = Nothing,
-                                  _detail = Nothing,
-                                  _documentation = Nothing,
-                                  _deprecated = Nothing, --  Maybe Bool
-                                  _preselect = Nothing, --  Maybe Bool
-                                  _sortText = Nothing, --  Maybe Text
-                                  _filterText = Nothing, --  Maybe Text
-                                  _insertText = Nothing, --  Maybe Text
-                                  _insertTextFormat = Nothing, --  Maybe Types.InsertTextFormat
-                                  _insertTextMode = Nothing, --  Maybe Types.InsertTextMode
-                                  _textEdit = Just $ Types.InL $ Types.TextEdit range label,
-                                  _textEditText = Nothing, --  Maybe Text
-                                  _additionalTextEdits = Nothing, --  Maybe [Types.TextEdit]
-                                  _commitCharacters = Nothing, --  Maybe [Text]
-                                  _command = Nothing, --  Maybe Types.Command
-                                  _data_ = Just $ A.toJSON $ Just $ CompleteItemData filePath mName declModName label nameType word range
-                                },
-      Server.requestHandler Message.SMethod_CompletionItemResolve $ \req res -> do
+                                      RoleNameType -> Types.CompletionItemKind_Struct
+                                , _tags = Nothing
+                                , _detail = Nothing
+                                , _documentation = Nothing
+                                , _deprecated = Nothing --  Maybe Bool
+                                , _preselect = Nothing --  Maybe Bool
+                                , _sortText = Nothing --  Maybe Text
+                                , _filterText = Nothing --  Maybe Text
+                                , _insertText = Nothing --  Maybe Text
+                                , _insertTextFormat = Nothing --  Maybe Types.InsertTextFormat
+                                , _insertTextMode = Nothing --  Maybe Types.InsertTextMode
+                                , _textEdit = Just $ Types.InL $ Types.TextEdit range label
+                                , _textEditText = Nothing --  Maybe Text
+                                , _additionalTextEdits = Nothing --  Maybe [Types.TextEdit]
+                                , _commitCharacters = Nothing --  Maybe [Text]
+                                , _command = Nothing --  Maybe Types.Command
+                                , _data_ = Just $ A.toJSON $ Just $ CompleteItemData filePath mName declModName label nameType word range
+                                }
+    , Server.requestHandler Message.SMethod_CompletionItemResolve $ \req res -> do
         let completionItem = req ^. LSP.params
             result = completionItem ^. LSP.data_ & decodeCompleteItemData
 

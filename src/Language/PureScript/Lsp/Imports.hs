@@ -1,11 +1,11 @@
-module Language.PureScript.Lsp.Imports
-  ( getMatchingImport,
-    addImportToTextEdit,
-    getIdentModuleQualifier,
-    parseModuleNameFromFile,
-    parseImportsFromFile,
-    printImports,
-  )
+module Language.PureScript.Lsp.Imports (
+  getMatchingImport,
+  addImportToTextEdit,
+  getIdentModuleQualifier,
+  parseModuleNameFromFile,
+  parseImportsFromFile,
+  printImports,
+)
 where
 
 import Control.Lens (set)
@@ -24,7 +24,7 @@ import Language.PureScript.CST qualified as CST
 import Language.PureScript.CST.Monad qualified as CSTM
 import Language.PureScript.Ide.Imports (Import (Import), prettyPrintImportSection, sliceImportSection)
 import Language.PureScript.Lsp.Cache.Query (getAstDeclarationInModule)
-import Language.PureScript.Lsp.Log (errorLsp, warnLsp)
+import Language.PureScript.Lsp.Log (debugLsp, errorLsp, warnLsp)
 import Language.PureScript.Lsp.NameType (LspNameType (..))
 import Language.PureScript.Lsp.ReadFile (lspReadFileRope)
 import Language.PureScript.Lsp.ServerConfig (ServerConfig)
@@ -71,8 +71,8 @@ getImportEdits (CompleteItemData path moduleName' importedModuleName name nameTy
                     _ -> []
 
               pure $ Just $ [importEdits] <> qualifierEdits
-  where
-    wordQualifierMb = fst <$> getIdentModuleQualifier word
+ where
+  wordQualifierMb = fst <$> getIdentModuleQualifier word
 
 getIdentModuleQualifier :: Text -> Maybe (P.ModuleName, Text)
 getIdentModuleQualifier word =
@@ -100,12 +100,12 @@ addDeclarationToImports ::
   LspNameType ->
   [Import] ->
   Maybe
-    ( [Import], -- new imports
-      Maybe P.ModuleName -- module qualifier
+    ( [Import] -- new imports
+    , Maybe P.ModuleName -- module qualifier
     )
 addDeclarationToImports moduleName' importedModuleName wordQualifierMb declName ctrType nameType imports
   | importingSelf = Nothing
-  | Just existing <- alreadyImportedModuleMb  = case existing of
+  | Just existing <- alreadyImportedModuleMb = case existing of
       Import _ (P.Explicit refs') mName
         | wordQualifierMb == mName -> Just (Import importedModuleName (P.Explicit (insertImportRef newRef refs')) Nothing : withoutOldImport, mName)
         | otherwise -> Just (imports, mName)
@@ -118,31 +118,31 @@ addDeclarationToImports moduleName' importedModuleName wordQualifierMb declName 
         | otherwise -> Just (imports, mName)
   | isJust wordQualifierMb = Just (Import importedModuleName P.Implicit wordQualifierMb : imports, wordQualifierMb)
   | otherwise = addExplicitNewImport
-  where
-    addExplicitNewImport = Just (Import importedModuleName (P.Explicit refs) wordQualifierMb : imports, wordQualifierMb)
-    withoutOldImport :: [Import]
-    withoutOldImport = maybe identity (\im -> filter (/= im)) alreadyImportedModuleMb imports
+ where
+  addExplicitNewImport = Just (Import importedModuleName (P.Explicit refs) wordQualifierMb : imports, wordQualifierMb)
+  withoutOldImport :: [Import]
+  withoutOldImport = maybe identity (\im -> filter (/= im)) alreadyImportedModuleMb imports
 
-    refs :: [P.DeclarationRef]
-    refs = pure newRef
+  refs :: [P.DeclarationRef]
+  refs = pure newRef
 
-    newRef :: P.DeclarationRef
-    newRef =
-      case nameType of
-        IdentNameType -> P.ValueRef nullSourceSpan (P.Ident declName)
-        ValOpNameType -> P.ValueOpRef nullSourceSpan (P.OpName declName)
-        TyNameType -> P.TypeRef nullSourceSpan (P.ProperName declName) Nothing
-        TyOpNameType -> P.TypeOpRef nullSourceSpan (P.OpName declName)
-        DctorNameType -> P.TypeRef nullSourceSpan (P.ProperName $ fromMaybe "Ctr type not found" ctrType) (Just [P.ProperName declName])
-        TyClassNameType -> P.TypeClassRef nullSourceSpan (P.ProperName declName)
-        ModNameType -> P.ModuleRef nullSourceSpan (P.ModuleName declName)
-        RoleNameType -> P.TypeRef nullSourceSpan (P.ProperName declName) Nothing
-        KindNameType -> P.TypeRef nullSourceSpan (P.ProperName declName) Nothing
+  newRef :: P.DeclarationRef
+  newRef =
+    case nameType of
+      IdentNameType -> P.ValueRef nullSourceSpan (P.Ident declName)
+      ValOpNameType -> P.ValueOpRef nullSourceSpan (P.OpName declName)
+      TyNameType -> P.TypeRef nullSourceSpan (P.ProperName declName) Nothing
+      TyOpNameType -> P.TypeOpRef nullSourceSpan (P.OpName declName)
+      DctorNameType -> P.TypeRef nullSourceSpan (P.ProperName $ fromMaybe "Ctr type not found" ctrType) (Just [P.ProperName declName])
+      TyClassNameType -> P.TypeClassRef nullSourceSpan (P.ProperName declName)
+      ModNameType -> P.ModuleRef nullSourceSpan (P.ModuleName declName)
+      RoleNameType -> P.TypeRef nullSourceSpan (P.ProperName declName) Nothing
+      KindNameType -> P.TypeRef nullSourceSpan (P.ProperName declName) Nothing
 
-    alreadyImportedModuleMb =
-      find (\(Import mn' _ _) -> mn' == importedModuleName) imports
+  alreadyImportedModuleMb =
+    find (\(Import mn' _ _) -> mn' == importedModuleName) imports
 
-    importingSelf = moduleName' == importedModuleName
+  importingSelf = moduleName' == importedModuleName
 
 insertImportRef :: DeclarationRef -> [DeclarationRef] -> [DeclarationRef]
 insertImportRef (P.TypeRef _ ty ctrs) ((P.TypeRef ss ty' ctrs') : refs)
@@ -164,22 +164,24 @@ importsToTextEdit before imports =
         )
     )
     (T.unlines printed)
-  where
-    beforeLine = fromIntegral $ length before
-    printed = prettyPrintImportSection imports
+ where
+  beforeLine = fromIntegral $ length before
+  printed = prettyPrintImportSection imports
 
--- | Reads a file and returns the (lines before the imports, the imports, the
--- lines after the imports)
+{- | Reads a file and returns the (lines before the imports, the imports, the
+lines after the imports)
+-}
 parseImportsFromFile ::
-  (MonadThrow m, MonadLsp ServerConfig m) =>
+  (MonadThrow m, MonadLsp ServerConfig m, MonadReader LspEnvironment m) =>
   NormalizedUri ->
   m (Either Text (P.ModuleName, [Text], [Import], [Text]))
 parseImportsFromFile fp = do
+  debugLsp $ "Parsing imports from: " <> show fp
   rope <- lspReadFileRope fp
+  debugLsp $ "Did get rope" <> show rope
   pure $ sliceImportSection (Rope.lines rope)
 
-
-printImports :: (P.ModuleName, [Text], [Import], [Text]) -> Text 
+printImports :: (P.ModuleName, [Text], [Import], [Text]) -> Text
 printImports (_mn, before, imports, after) = T.unlines $ before <> prettyPrintImportSection imports <> after
 
 parseModuleNameFromFile ::
