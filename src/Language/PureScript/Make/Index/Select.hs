@@ -17,7 +17,7 @@ import Data.List.NonEmpty qualified as NEL
 import Data.Map qualified as Map
 import Data.Set qualified as Set
 import Data.Text qualified as T
-import Database.SQLite.Simple (Connection)
+import Database.SQLite.Simple (Connection, NamedParam ((:=)))
 import Database.SQLite.Simple qualified as SQL
 import Language.PureScript.AST.Declarations (ImportDeclarationType, ExportSource (..))
 import Language.PureScript.AST.Declarations qualified as P
@@ -97,7 +97,7 @@ selectFixitiesFromModuleImports conn env (P.Module _ _ _modName decls _refs) = d
     whenImportDecl :: (P.ModuleName -> ImportDeclarationType -> IO [(P.ModuleName, a)]) -> P.Declaration -> IO (Maybe [(P.ModuleName, a)])
     whenImportDecl f = \case
       P.ImportDeclaration _ mn' idt importedAs -> Just  <$> f mn' idt
-        where 
+        where
           addImportedAs (mn'', a) = (fromMaybe mn'' importedAs, a)
       _ -> pure Nothing
 
@@ -335,7 +335,7 @@ selectModuleExternImports conn modName = do
     conn
     "SELECT imported_module, value, imported_as FROM imports WHERE module_name = ?"
     (SQL.Only modName)
-    
+
 insertExports :: Connection -> P.ModuleName -> Maybe [P.DeclarationRef] -> IO ()
 insertExports conn modName = \case
   Nothing -> internalError "selectEnvFromImports called before desguaring module"
@@ -448,9 +448,9 @@ selectTypeClass conn modName className =
         <&> (fmap SQL.fromOnly . head)
 
 selectTypeClass' :: Connection -> P.Qualified (P.ProperName 'P.ClassName) -> IO (Maybe P.TypeClassData)
-selectTypeClass' conn = \case 
+selectTypeClass' conn = \case
    P.Qualified (P.ByModuleName modName) className -> selectTypeClass conn modName className
-   _ -> pure Nothing 
+   _ -> pure Nothing
 
 selectModuleTypeClasses :: Connection -> P.ModuleName -> IO [(P.Qualified (P.ProperName 'P.ClassName), P.TypeClassData)]
 selectModuleTypeClasses conn moduleName' = do
@@ -460,8 +460,8 @@ selectModuleTypeClasses conn moduleName' = do
     (SQL.Only moduleName')
     <&> fmap (first (P.Qualified (P.ByModuleName moduleName')))
 
-selectAllClassInstances :: 
-  Connection -> 
+selectAllClassInstances ::
+  Connection ->
   IO [NamedDict]
 selectAllClassInstances conn  = do
   SQL.query_
@@ -487,14 +487,13 @@ selectDoesClassInstanceExist ::
   P.Qualified P.Ident ->
   IO Bool
 selectDoesClassInstanceExist conn ident  = do
-  res <- SQL.query
+  res :: [SQL.Only Int] <- SQL.query
     conn
-    "SELECT EXISTS (SELECT 1 FROM env_type_class_instances WHERE module_name = ? AND instance_name = ?)"
+    "SELECT 1 FROM env_type_class_instances WHERE module_name = ? AND instance_name = ?"
     (toDbQualifer ident)
-  res 
-    & head
-    & maybe False SQL.fromOnly
-    & return
+  unless (null res) do
+    putErrText $ "selectDoesClassInstanceExist true: " <> show ((toDbQualifer ident), res)
+  return $ not $ null res
 
 
 selectValueOperatorAlias :: Connection -> P.ModuleName -> P.OpName 'P.ValueOpName -> IO (Maybe (P.ModuleName, Text))
@@ -549,15 +548,20 @@ insertImport conn mn = \case
 
 deleteModuleEnvImpl :: P.ModuleName -> Connection -> IO ()
 deleteModuleEnvImpl moduleName conn = do
-  SQL.execute conn "DELETE FROM env_values WHERE module_name = ?" (SQL.Only moduleName)
-  SQL.execute conn "DELETE FROM env_types WHERE module_name = ?" (SQL.Only moduleName)
-  SQL.execute conn "DELETE FROM env_data_constructors WHERE module_name = ?" (SQL.Only moduleName)
-  SQL.execute conn "DELETE FROM env_type_synonyms WHERE module_name = ?" (SQL.Only moduleName)
-  SQL.execute conn "DELETE FROM env_type_classes WHERE module_name = ?" (SQL.Only moduleName)
-  SQL.execute conn "DELETE FROM env_type_class_instances WHERE module_name = ?" (SQL.Only moduleName)
-  SQL.execute conn "DELETE FROM type_operators WHERE module_name = ?" (SQL.Only moduleName)
-  SQL.execute conn "DELETE FROM value_operators WHERE module_name = ?" (SQL.Only moduleName)
-  SQL.execute conn "DELETE FROM modules WHERE module_name = ?" (SQL.Only moduleName)
+      SQL.executeNamed
+        conn
+        "DELETE FROM env_values WHERE module_name = :module_name;\
+        \DELETE FROM env_types WHERE module_name = :module_name;\
+        \DELETE FROM env_data_constructors WHERE module_name = :module_name;\
+        \DELETE FROM env_type_synonyms WHERE module_name = :module_name;\
+        \DELETE FROM env_type_classes WHERE module_name = :module_name;\
+        \DELETE FROM env_type_class_instances WHERE module_name = :module_name;\
+        \DELETE FROM type_operators WHERE module_name = :module_name;\
+        \DELETE FROM value_operators WHERE module_name = :module_name;\
+        \DELETE FROM imports WHERE module_name = :module_name;\
+        \DELETE FROM exports WHERE module_name = :module_name;\
+        \DELETE FROM modules WHERE module_name = :module_name"
+        [":module_name" := P.runModuleName moduleName]
 
 getEnvConstraints :: E.Environment -> [P.SourceConstraint]
 getEnvConstraints env =
@@ -577,7 +581,7 @@ updateConcurrently a b = do
   g <- b
   pure $ f >>> g
 
-class GetEnv m where 
+class GetEnv m where
   getName :: P.Qualified P.Ident -> m (Maybe (P.SourceType, P.NameKind, P.NameVisibility))
   getType :: P.Qualified (P.ProperName 'P.TypeName) -> m (Maybe (P.SourceType, P.TypeKind))
   getDataConstructor :: P.Qualified (P.ProperName 'P.ConstructorName) -> m (Maybe (P.DataDeclType, P.ProperName 'P.TypeName, P.SourceType, [P.Ident]))
@@ -590,7 +594,7 @@ class GetEnv m where
   logGetEnv :: Text -> m ()
 
 
-instance (Monad m, GetEnv m) => GetEnv (MaybeT m ) where 
+instance (Monad m, GetEnv m) => GetEnv (MaybeT m ) where
   getName = lift . getName
   getType = lift . getType
   getDataConstructor = lift . getDataConstructor
@@ -601,7 +605,7 @@ instance (Monad m, GetEnv m) => GetEnv (MaybeT m ) where
   deleteModuleEnv = lift . deleteModuleEnv
   logGetEnv = lift . logGetEnv
   hasEnv = lift hasEnv
-instance (Monad m, GetEnv m) => GetEnv (ExceptT e m ) where 
+instance (Monad m, GetEnv m) => GetEnv (ExceptT e m ) where
   getName = lift . getName
   getType = lift . getType
   getDataConstructor = lift . getDataConstructor
@@ -613,7 +617,7 @@ instance (Monad m, GetEnv m) => GetEnv (ExceptT e m ) where
   logGetEnv = lift . logGetEnv
   hasEnv = lift hasEnv
 
-instance (Monad m, Monoid w, GetEnv m) => GetEnv (WriterT w m ) where 
+instance (Monad m, Monoid w, GetEnv m) => GetEnv (WriterT w m ) where
   getName = lift . getName
   getType = lift . getType
   getDataConstructor = lift . getDataConstructor
@@ -624,7 +628,7 @@ instance (Monad m, Monoid w, GetEnv m) => GetEnv (WriterT w m ) where
   deleteModuleEnv = lift . deleteModuleEnv
   logGetEnv = lift . logGetEnv
   hasEnv = lift hasEnv
-instance (Monad m, Monoid w, GetEnv m) => GetEnv (Strict.WriterT w m ) where 
+instance (Monad m, Monoid w, GetEnv m) => GetEnv (Strict.WriterT w m ) where
   getName = lift . getName
   getType = lift . getType
   getDataConstructor = lift . getDataConstructor
@@ -684,11 +688,11 @@ newtype WoGetEnv m a = WoGetEnv (m a)
 runWoGetEnv :: WoGetEnv m a -> m a
 runWoGetEnv (WoGetEnv m) = m
 
-instance MonadSupply m => MonadSupply (WoGetEnv m) where 
+instance MonadSupply m => MonadSupply (WoGetEnv m) where
   fresh = WoGetEnv fresh
   peek = WoGetEnv peek
 
-instance Monad m => GetEnv (WoGetEnv m) where 
+instance Monad m => GetEnv (WoGetEnv m) where
   getName _ = pure Nothing
   getType _ = pure Nothing
   getDataConstructor _ = pure Nothing
@@ -698,7 +702,7 @@ instance Monad m => GetEnv (WoGetEnv m) where
   hasTypeClassInEnv _ = pure False
   deleteModuleEnv _ = pure ()
   logGetEnv _ = pure ()
-  
+
   hasEnv = pure False
 
 
@@ -709,7 +713,7 @@ dbEnv
    . (MonadIO m, MonadError MultipleErrors m, MonadWriter MultipleErrors m)
   => Connection
   -> P.Env
-  -> SourceSpan 
+  -> SourceSpan
   -> P.ModuleName
   -> m P.Env
 dbEnv conn env ss modName = do
@@ -728,7 +732,7 @@ dbEnv conn env ss modName = do
 
       exportedTypes :: M.Map (P.ProperName 'P.TypeName) ([P.ProperName 'P.ConstructorName], ExportSource)
       exportedTypes = M.fromListWith combineCtrs $ exportedCtrs <> exportedTypes'
-        where 
+        where
           combineCtrs (cs1, e) (cs2, _) = (cs1 <> cs2, e)
 
       exportedTypeOps :: M.Map (P.OpName 'P.TypeOpName) ExportSource

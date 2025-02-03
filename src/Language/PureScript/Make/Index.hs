@@ -381,7 +381,6 @@ dropTables conn = do
 
 indexExportedEnv :: (MonadIO m) => P.Module -> E.Environment -> Connection -> m ()
 indexExportedEnv module'@(P.Module _ _ mn _ refs) env conn = liftIO do
-  deleteModuleEnv
   insertModule conn moduleName path
   forConcurrently_ (P.getModuleDeclarations module') (indexDeclaration conn moduleName)
   forConcurrently_ (fold refs) (insertExport conn moduleName)
@@ -436,16 +435,19 @@ indexExportedEnv module'@(P.Module _ _ mn _ refs) env conn = liftIO do
         then dict
         else dict {tcdValue = P.Qualified (P.ByModuleName moduleName) (P.disqualify $ tcdValue dict)}
 
-    deleteModuleEnv = do
-      SQL.execute conn "DELETE FROM env_values WHERE module_name = ?" (SQL.Only moduleName)
-      SQL.execute conn "DELETE FROM env_types WHERE module_name = ?" (SQL.Only moduleName)
-      SQL.execute conn "DELETE FROM env_data_constructors WHERE module_name = ?" (SQL.Only moduleName)
-      SQL.execute conn "DELETE FROM env_type_synonyms WHERE module_name = ?" (SQL.Only moduleName)
-      SQL.execute conn "DELETE FROM env_type_classes WHERE module_name = ?" (SQL.Only moduleName)
-      SQL.execute conn "DELETE FROM env_type_class_instances WHERE module_name = ?" (SQL.Only moduleName)
-      SQL.execute conn "DELETE FROM type_operators WHERE module_name = ?" (SQL.Only moduleName)
-      SQL.execute conn "DELETE FROM value_operators WHERE module_name = ?" (SQL.Only moduleName)
-      SQL.execute conn "DELETE FROM modules WHERE module_name = ?" (SQL.Only moduleName)
+    -- deleteModuleEnv = do
+    --   SQL.executeNamed
+    --     conn
+    --     "DELETE FROM env_values WHERE module_name = :module_name;\
+    --     \DELETE FROM env_types WHERE module_name = :module_name;\
+    --     \DELETE FROM env_data_constructors WHERE module_name = :module_name;\
+    --     \DELETE FROM env_type_synonyms WHERE module_name = :module_name;\
+    --     \DELETE FROM env_type_classes WHERE module_name = :module_name;\
+    --     \DELETE FROM env_type_class_instances WHERE module_name = :module_name;\
+    --     \DELETE FROM type_operators WHERE module_name = :module_name;\
+    --     \DELETE FROM value_operators WHERE module_name = :module_name;\
+    --     \DELETE FROM modules WHERE module_name = :module_name"
+    --     [":module_name" := P.runModuleName moduleName]
 
     refMatch :: (Qualified a -> DeclarationRef -> Bool) -> (Qualified a, b) -> Bool
     refMatch f (k, _) = maybe True (any (f k)) refs
