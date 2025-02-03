@@ -5,6 +5,8 @@
 --
 module Language.PureScript.CoreFn.ToJSON
   ( moduleToJSON
+  , bindToJSON
+  , exprToJSON
   ) where
 
 import Prelude

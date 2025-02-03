@@ -60,16 +60,18 @@ toJSONError verbose level files e =
   spans :: Maybe (NEL.NonEmpty P.SourceSpan)
   spans = P.errorSpan e
 
-  toErrorPosition :: P.SourceSpan -> ErrorPosition
-  toErrorPosition ss =
-    ErrorPosition (P.sourcePosLine   (P.spanStart ss))
-                  (P.sourcePosColumn (P.spanStart ss))
-                  (P.sourcePosLine   (P.spanEnd   ss))
-                  (P.sourcePosColumn (P.spanEnd   ss))
-  toSuggestion :: P.ErrorMessage -> Maybe ErrorSuggestion
-  toSuggestion em =
-    case P.errorSuggestion $ P.unwrapErrorMessage em of
-      Nothing -> Nothing
-      Just s -> Just $ ErrorSuggestion (suggestionText s) (toErrorPosition <$> P.suggestionSpan em)
+toErrorPosition :: P.SourceSpan -> ErrorPosition
+toErrorPosition ss =
+  ErrorPosition (P.sourcePosLine   (P.spanStart ss))
+                (P.sourcePosColumn (P.spanStart ss))
+                (P.sourcePosLine   (P.spanEnd   ss))
+                (P.sourcePosColumn (P.spanEnd   ss))
 
-  suggestionText (P.ErrorSuggestion s) = s
+toSuggestion :: P.ErrorMessage -> Maybe ErrorSuggestion
+toSuggestion em =
+  case P.errorSuggestion $ P.unwrapErrorMessage em of
+    Nothing -> Nothing
+    Just s -> Just $ ErrorSuggestion (suggestionText s) (toErrorPosition <$> P.suggestionSpan em)
+
+suggestionText :: P.ErrorSuggestion -> Text
+suggestionText (P.ErrorSuggestion s) = s

@@ -214,3 +214,11 @@ construct MakeActions{..} cacheDb (sorted, graph) = do
 maximumMaybe :: Ord a => [a] -> Maybe a
 maximumMaybe [] = Nothing
 maximumMaybe xs = Just $ maximum xs
+
+
+-- constructFromDb  :: forall m. MonadBaseControl IO m
+--   => MakeActions m
+--   -> ([CST.PartialResult Module], [(ModuleName, [ModuleName])])
+--   -> m (BuildPlan, CacheDb)
+-- constructFromDb MakeActions{..}  (sorted, graph) = do
+--   pure undefined

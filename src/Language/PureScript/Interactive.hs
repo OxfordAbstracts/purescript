@@ -42,6 +42,7 @@ import Language.PureScript.Interactive.Types        as Interactive
 import System.Directory (getCurrentDirectory)
 import System.FilePath ((</>))
 import System.FilePath.Glob (glob)
+import Language.PureScript.Make.Index.Select (runWoGetEnv, WoGetEnv)
 
 -- | Pretty-print errors
 printErrors :: MonadIO m => P.MultipleErrors -> m ()
@@ -296,8 +297,8 @@ handleKindOf print' typ = do
           let chk = (P.emptyCheckState env') { P.checkCurrentModule = Just mName }
               k   = check (snd <$> P.kindOf typ') chk
 
-              check :: StateT P.CheckState (ExceptT P.MultipleErrors (Writer P.MultipleErrors)) a -> P.CheckState -> Either P.MultipleErrors (a, P.CheckState)
-              check sew = fst . runWriter . runExceptT . runStateT sew
+              check :: WoGetEnv (StateT P.CheckState (ExceptT P.MultipleErrors (Writer P.MultipleErrors))) a -> P.CheckState -> Either P.MultipleErrors (a, P.CheckState)
+              check sew st' = fst $ runWriter  $ runExceptT $ flip runStateT st' $ runWoGetEnv sew
           case k of
             Left err        -> printErrors err
             Right (kind, _) -> print' . P.prettyPrintType 1024 $ kind

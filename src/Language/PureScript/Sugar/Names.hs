@@ -112,6 +112,7 @@ externsEnv env ExternsFile{..} = do
   exportedRefs f =
     M.fromList $ (, localExportSource) <$> mapMaybe f efExports
 
+
 -- |
 -- Make all exports for a module explicit. This may still affect modules that
 -- have an exports list, as it will also make all data constructor exports

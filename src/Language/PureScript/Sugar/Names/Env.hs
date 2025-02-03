@@ -1,3 +1,4 @@
+{-# LANGUAGE DeriveAnyClass #-}
 module Language.PureScript.Sugar.Names.Env
   ( ImportRecord(..)
   , ImportProvenance(..)
@@ -38,6 +39,8 @@ import Language.PureScript.Crash (internalError)
 import Language.PureScript.Environment
 import Language.PureScript.Errors (MultipleErrors, SimpleErrorMessage(..), errorMessage, errorMessage')
 import Language.PureScript.Names (Ident, ModuleName, Name(..), OpName, OpNameType(..), ProperName, ProperNameType(..), Qualified(..), QualifiedBy(..), coerceProperName, disqualify, getQual)
+import GHC.Generics (Generic)
+import Codec.Serialise (Serialise)
 
 -- |
 -- The details for an import: the name of the thing that is being imported
@@ -51,7 +54,7 @@ data ImportRecord a =
     , importSourceSpan :: SourceSpan
     , importProvenance :: ImportProvenance
     }
-    deriving (Eq, Ord, Show)
+    deriving (Eq, Ord, Show,  Generic, Serialise)
 
 -- |
 -- Used to track how an import was introduced into scope. This allows us to
@@ -63,7 +66,7 @@ data ImportProvenance
   | FromExplicit
   | Local
   | Prim
-  deriving (Eq, Ord, Show)
+  deriving (Eq, Ord, Show, Generic, Serialise)
 
 type ImportMap a = M.Map (Qualified a) [ImportRecord a]
 
@@ -110,7 +113,7 @@ data Imports = Imports
   -- Local names for kinds within a module mapped to their qualified names
   --
   , importedKinds :: ImportMap (ProperName 'TypeName)
-  } deriving (Show)
+  } deriving (Show, Eq, Ord, Generic, Serialise)
 
 nullImports :: Imports
 nullImports = Imports M.empty M.empty M.empty M.empty M.empty M.empty S.empty S.empty M.empty
@@ -142,7 +145,7 @@ data Exports = Exports
   -- from.
   --
   , exportedValueOps :: M.Map (OpName 'ValueOpName) ExportSource
-  } deriving (Show)
+  } deriving (Show, Eq, Ord, Generic, Serialise)
 
 -- |
 -- An empty 'Exports' value.

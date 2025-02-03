@@ -4,7 +4,7 @@
 module Language.PureScript.AST.Traversals where
 
 import Prelude
-import Protolude (swap)
+import Protolude (swap, Bifunctor (bimap), first)
 
 import Control.Monad ((<=<), (>=>))
 import Control.Monad.Trans.State (StateT(..))
@@ -17,13 +17,14 @@ import Data.List.NonEmpty qualified as NEL
 import Data.Map qualified as M
 import Data.Set qualified as S
 
-import Language.PureScript.AST.Binders (Binder(..), binderNames)
+import Language.PureScript.AST.Binders (Binder(..), binderNames, binderNamesWithSpans)
 import Language.PureScript.AST.Declarations (CaseAlternative(..), DataConstructorDeclaration(..), Declaration(..), DoNotationElement(..), Expr(..), Guard(..), GuardedExpr(..), TypeDeclarationData(..), TypeInstanceBody(..), pattern ValueDecl, ValueDeclarationData(..), mapTypeInstanceBody, traverseTypeInstanceBody)
 import Language.PureScript.AST.Literals (Literal(..))
 import Language.PureScript.Names (pattern ByNullSourcePos, Ident)
 import Language.PureScript.Traversals (sndM, sndM', thirdM)
 import Language.PureScript.TypeClassDictionaries (TypeClassDictionaryInScope(..))
 import Language.PureScript.Types (Constraint(..), SourceType, mapConstraintArgs)
+import Language.PureScript.AST.SourcePos (SourceAnn, SourceSpan)
 
 guardedExprM :: Applicative m
              => (Guard -> m Guard)
@@ -664,6 +665,133 @@ everythingWithScope f g h i j = (f'', g'', h'', i'', \s -> snd . j'' s)
   getDeclIdent _ = Nothing
 
   localBinderNames = map LocalIdent . binderNames
+
+type IdentsAnn = M.Map ScopedIdent SourceAnn
+
+everythingWithScopeAnn
+  :: forall r
+   . (Monoid r)
+  => (IdentsAnn -> Declaration -> r)
+  -> (IdentsAnn -> Expr -> r)
+  -> (IdentsAnn -> Binder -> r)
+  -> (IdentsAnn -> CaseAlternative -> r)
+  -> (IdentsAnn -> DoNotationElement -> r)
+  -> ( IdentsAnn -> Declaration -> r
+     , IdentsAnn -> Expr -> r
+     , IdentsAnn -> Binder -> r
+     , IdentsAnn -> CaseAlternative -> r
+     , IdentsAnn -> DoNotationElement -> r
+     )
+everythingWithScopeAnn f g h i j = (f'', g'', h'', i'', \s -> snd . j'' s)
+  where
+  f'' :: IdentsAnn -> Declaration -> r
+  f'' s a = f s a <> f' s a
+
+  f' :: IdentsAnn -> Declaration -> r
+  f' s (DataBindingGroupDeclaration ds) =
+    let s' = M.union s (M.fromList (map (first ToplevelIdent) (mapMaybe getDeclIdentAndAnn (NEL.toList ds))))
+    in foldMap (f'' s') ds
+  f' s (ValueDecl sann name _ bs val) =
+    let s' = M.insert (ToplevelIdent name) sann s
+        s'' = M.union s' (M.fromList (concatMap localBinderNames bs))
+    in foldMap (h'' s') bs <> foldMap (l' s'') val
+  f' s (BindingGroupDeclaration ds) =
+    let s' = M.union s (M.fromList (NEL.toList (fmap (\((sa, name), _, _) -> (ToplevelIdent name, sa)) ds)))
+    in foldMap (\(_, _, val) -> g'' s' val) ds
+  f' s (TypeClassDeclaration _ _ _ _ _ ds) = foldMap (f'' s) ds
+  f' s (TypeInstanceDeclaration _ _ _ _ _ _ _ _ (ExplicitInstance ds)) = foldMap (f'' s) ds
+  f' _ _ = mempty
+
+  g'' :: IdentsAnn -> Expr -> r
+  g'' s a = g s a <> g' s a
+
+  g' :: IdentsAnn -> Expr -> r
+  g' s (Literal _ l) = lit g'' s l
+  g' s (UnaryMinus _ v1) = g'' s v1
+  g' s (BinaryNoParens op v1 v2) = g'' s op <> g'' s v1 <> g'' s v2
+  g' s (Parens v1) = g'' s v1
+  g' s (Accessor _ v1) = g'' s v1
+  g' s (ObjectUpdate obj vs) = g'' s obj <> foldMap (g'' s . snd) vs
+  g' s (ObjectUpdateNested obj vs) = g'' s obj <> foldMap (g'' s) vs
+  g' s (Abs b v1) =
+    let s' = M.union (M.fromList (localBinderNames b)) s
+    in h'' s b <> g'' s' v1
+  g' s (App v1 v2) = g'' s v1 <> g'' s v2
+  g' s (VisibleTypeApp v _) = g'' s v
+  g' s (Unused v) = g'' s v
+  g' s (IfThenElse v1 v2 v3) = g'' s v1 <> g'' s v2 <> g'' s v3
+  g' s (Case vs alts) = foldMap (g'' s) vs <> foldMap (i'' s) alts
+  g' s (TypedValue _ v1 _) = g'' s v1
+  g' s (Let _ ds v1) =
+    let s' = M.union s (M.fromList (map (first LocalIdent) (mapMaybe getDeclIdentAndAnn ds)))
+    in foldMap (f'' s') ds <> g'' s' v1
+  g' s (Do _ es) = fold . snd . mapAccumL j'' s $ es
+  g' s (Ado _ es v1) =
+    let s' = M.union s (foldMap (fst . j'' s) es)
+    in g'' s' v1
+  g' s (PositionedValue _ _ v1) = g'' s v1
+  g' _ _ = mempty
+
+  h'' :: IdentsAnn -> Binder -> r
+  h'' s a = h s a <> h' s a
+
+  h' :: IdentsAnn -> Binder -> r
+  h' s (LiteralBinder _ l) = lit h'' s l
+  h' s (ConstructorBinder _ _ bs) = foldMap (h'' s) bs
+  h' s (BinaryNoParensBinder b1 b2 b3) = foldMap (h'' s) [b1, b2, b3]
+  h' s (ParensInBinder b) = h'' s b
+  h' s (NamedBinder ss name b1) = h'' (M.insert (LocalIdent name) (noComments ss) s) b1
+  h' s (PositionedBinder _ _ b1) = h'' s b1
+  h' s (TypedBinder _ b1) = h'' s b1
+  h' _ _ = mempty
+
+  lit :: (IdentsAnn -> a -> r) -> IdentsAnn -> Literal a -> r
+  lit go s (ArrayLiteral as) = foldMap (go s) as
+  lit go s (ObjectLiteral as) = foldMap (go s . snd) as
+  lit _ _ _ = mempty
+
+  i'' :: IdentsAnn -> CaseAlternative -> r
+  i'' s a = i s a <> i' s a
+
+  i' :: IdentsAnn -> CaseAlternative -> r
+  i' s (CaseAlternative bs gs) =
+    let s' = M.union s (M.fromList (concatMap localBinderNames bs))
+    in foldMap (h'' s) bs <> foldMap (l' s') gs
+
+  j'' :: IdentsAnn -> DoNotationElement -> (IdentsAnn, r)
+  j'' s a = let (s', r) = j' s a in (s', j s a <> r)
+
+  j' :: IdentsAnn -> DoNotationElement -> (IdentsAnn, r)
+  j' s (DoNotationValue v) = (s, g'' s v)
+  j' s (DoNotationBind b v) =
+    let s' = M.union (M.fromList (localBinderNames b)) s
+    in (s', h'' s b <> g'' s v)
+  j' s (DoNotationLet ds) =
+    let s' = M.union s (M.fromList (map (first LocalIdent) (mapMaybe getDeclIdentAndAnn ds)))
+    in (s', foldMap (f'' s') ds)
+  j' s (PositionedDoNotationElement _ _ e1) = j'' s e1
+
+  k' :: IdentsAnn -> Guard -> (IdentsAnn, r)
+  k' s (ConditionGuard e) = (s, g'' s e)
+  k' s (PatternGuard b e) =
+    let s' = M.union (M.fromList (localBinderNames b)) s
+    in (s', h'' s b <> g'' s' e)
+
+  l' s (GuardedExpr [] e) = g'' s e
+  l' s (GuardedExpr (grd:gs) e) =
+    let (s', r) = k' s grd
+    in r <> l' s' (GuardedExpr gs e)
+
+  getDeclIdentAndAnn :: Declaration -> Maybe (Ident, SourceAnn)
+  getDeclIdentAndAnn (ValueDeclaration vd) = Just (valdeclIdent vd, valdeclSourceAnn vd)
+  getDeclIdentAndAnn (TypeDeclaration td) = Just (tydeclIdent td, tydeclSourceAnn td)
+  getDeclIdentAndAnn _ = Nothing
+
+  localBinderNames :: Binder -> [(ScopedIdent, SourceAnn)]
+  localBinderNames = fmap (bimap LocalIdent noComments . swap) .  binderNamesWithSpans
+
+  noComments :: SourceSpan -> SourceAnn
+  noComments ss = (ss, [])
 
 accumTypes
   :: (Monoid r)

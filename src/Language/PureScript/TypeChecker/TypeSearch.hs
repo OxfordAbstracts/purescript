@@ -22,6 +22,7 @@ import Language.PureScript.Pretty.Types            as P
 import Language.PureScript.TypeChecker.Skolems     as Skolem
 import Language.PureScript.TypeChecker.Synonyms    as P
 import Language.PureScript.Types                   as P
+import Language.PureScript.Make.Index.Select (runWoGetEnv)
 
 checkInEnvironment
   :: Environment
@@ -53,7 +54,7 @@ checkSubsume
 checkSubsume unsolved env st userT envT = checkInEnvironment env st $ do
   let initializeSkolems =
         Skolem.introduceSkolemScope
-        <=< P.replaceAllTypeSynonyms
+        <=< (runWoGetEnv . P.replaceAllTypeSynonyms)
         <=< P.replaceTypeWildcards
 
   userT' <- initializeSkolems userT
@@ -61,14 +62,14 @@ checkSubsume unsolved env st userT envT = checkInEnvironment env st $ do
 
   let dummyExpression = P.Var nullSourceSpan (P.Qualified P.ByNullSourcePos (P.Ident "x"))
 
-  elab <- subsumes envT' userT'
+  elab <- runWoGetEnv $ subsumes envT' userT' -- TODO add DB
   subst <- gets TC.checkSubstitution
   let expP = P.overTypes (P.substituteType subst) (elab dummyExpression)
 
   -- Now check that any unsolved constraints have not become impossible
   (traverse_ . traverse_) (\(_, context, constraint) -> do
     let constraint' = P.mapConstraintArgs (map (P.substituteType subst)) constraint
-    flip evalStateT Map.empty . evalWriterT $
+    runWoGetEnv $ flip evalStateT Map.empty . evalWriterT $  -- TODO add DB
       Entailment.entails
         (Entailment.SolverOptions
           { solverShouldGeneralize = True
@@ -76,7 +77,7 @@ checkSubsume unsolved env st userT envT = checkInEnvironment env st $ do
           }) constraint' context []) unsolved
 
   -- Finally, check any constraints which were found during elaboration
-  Entailment.replaceTypeClassDictionaries (isJust unsolved) expP
+  runWoGetEnv $ Entailment.replaceTypeClassDictionaries (isJust unsolved) expP -- TODO add DB
 
 accessorSearch
   :: Maybe [(P.Ident, Entailment.InstanceContext, P.SourceConstraint)]
@@ -88,7 +89,7 @@ accessorSearch
 accessorSearch unsolved env st userT = maybe ([], []) fst $ checkInEnvironment env st $ do
   let initializeSkolems =
         Skolem.introduceSkolemScope
-        <=< P.replaceAllTypeSynonyms
+        <=< (runWoGetEnv . P.replaceAllTypeSynonyms)
         <=< P.replaceTypeWildcards
 
   userT' <- initializeSkolems userT
@@ -96,7 +97,7 @@ accessorSearch unsolved env st userT = maybe ([], []) fst $ checkInEnvironment e
   rowType <- freshTypeWithKind (P.kindRow P.kindType)
   resultType <- freshTypeWithKind P.kindType
   let recordFunction = srcTypeApp (srcTypeApp tyFunction (srcTypeApp tyRecord rowType)) resultType
-  _ <- subsumes recordFunction userT'
+  _ <- runWoGetEnv $ subsumes recordFunction userT' -- TODO add DB
   subst <- gets TC.checkSubstitution
   let solvedRow = toRowPair <$> fst (rowToList (substituteType subst rowType))
   tcS <- get

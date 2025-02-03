@@ -8,9 +8,11 @@ import Language.PureScript.Errors (MultipleErrors)
 import Language.PureScript.Names (OpName(..), OpNameType(..), Qualified(..))
 import Language.PureScript.Sugar.Operators.Common (matchOperators)
 import Language.PureScript.Types (SourceType, Type(..), srcTypeApp)
+import GHC.Stack (HasCallStack)
 
 matchTypeOperators
   :: MonadError MultipleErrors m
+  => HasCallStack
   => SourceSpan
   -> [[(Qualified (OpName 'TypeOpName), Associativity)]]
   -> SourceType

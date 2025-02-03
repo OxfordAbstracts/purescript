@@ -1,4 +1,7 @@
 {-# LANGUAGE GADTs #-}
+{-# OPTIONS_GHC -Wno-unused-matches #-}
+{-# LANGUAGE BlockArguments #-}
+{-# OPTIONS_GHC -Wno-redundant-constraints #-}
 
 -- |
 -- Monads for type checking and type inference and associated data types
@@ -20,14 +23,20 @@ import Data.Text (Text, isPrefixOf, unpack)
 import Data.List.NonEmpty qualified as NEL
 
 import Language.PureScript.Crash (internalError)
-import Language.PureScript.Environment (Environment(..), NameKind(..), NameVisibility(..), TypeClassData(..), TypeKind(..))
-import Language.PureScript.Errors (Context, ErrorMessageHint, ExportSource, Expr, ImportDeclarationType, MultipleErrors, SimpleErrorMessage(..), SourceAnn, SourceSpan(..), addHint, errorMessage, positionedError, rethrow, warnWithPosition)
-import Language.PureScript.Names (Ident(..), ModuleName, ProperName(..), ProperNameType(..), Qualified(..), QualifiedBy(..), coerceProperName, disqualify, runIdent, runModuleName, showQualified, toMaybeModuleName)
+import Language.PureScript.Environment (Environment(..), NameKind(..), NameVisibility(..), TypeClassData(..), TypeKind(..), DataDeclType)
+import Language.PureScript.Errors (Context, ErrorMessageHint, ExportSource, Expr, ImportDeclarationType, MultipleErrors, SimpleErrorMessage(..), SourceAnn, SourceSpan(..), addHint, errorMessage, positionedError, rethrow, warnWithPosition, DeclarationRef, errorMessage')
+import Language.PureScript.Names (Ident(..), ModuleName, ProperName(..), ProperNameType(..), Qualified(..), QualifiedBy(..), coerceProperName, disqualify, runIdent, runModuleName, showQualified, toMaybeModuleName, Name (TyClassName, TyName))
 import Language.PureScript.Pretty.Types (prettyPrintType)
 import Language.PureScript.Pretty.Values (prettyPrintValue)
 import Language.PureScript.TypeClassDictionaries (NamedDict, TypeClassDictionaryInScope(..))
 import Language.PureScript.Types (Constraint(..), SourceType, Type(..), srcKindedType, srcTypeVar)
 import Text.PrettyPrint.Boxes (render)
+import Language.PureScript.TypeChecker.IdeArtifacts (IdeArtifacts, emptyIdeArtifacts, insertIaExpr, insertIaBinder, insertIaIdent, insertIaDecl, insertIaType, insertIaTypeName, insertIaClassName, moduleNameFromQual, substituteArtifactTypes, insertTypeSynonym, insertModule, insertImport)
+import Protolude (whenM, isJust, (&))
+import Language.PureScript.AST.Binders (Binder)
+import Language.PureScript.AST.Declarations (Declaration, Expr (..))
+import Language.PureScript.Make.Index.Select (GetEnv (getName, getType, getTypeClass, getDataConstructor, getTypeClassDictionary))
+import Language.PureScript.Make.Index.Select qualified as Select
 
 newtype UnkLevel = UnkLevel (NEL.NonEmpty Unknown)
   deriving (Eq, Show)
@@ -105,11 +114,18 @@ data CheckState = CheckState
   , checkConstructorImportsForCoercible :: S.Set (ModuleName, Qualified (ProperName 'ConstructorName))
   -- ^ Newtype constructors imports required to solve Coercible constraints.
   -- We have to keep track of them so that we don't emit unused import warnings.
+  , checkAddIdeArtifacts :: Maybe AddIdeArtifacts
+  -- ^ Whether to add IDE artifacts to the environment
+  , checkIdeArtifacts :: IdeArtifacts
+  -- ^ The IDE artifacts
   }
+
+data AddIdeArtifacts = AllIdeExprs | IdentIdeExprs
+  deriving (Eq)
 
 -- | Create an empty @CheckState@
 emptyCheckState :: Environment -> CheckState
-emptyCheckState env = CheckState env 0 0 0 Nothing [] emptySubstitution [] mempty
+emptyCheckState env = CheckState env 0 0 0 Nothing [] emptySubstitution [] mempty Nothing emptyIdeArtifacts
 
 -- | Unification variables
 type Unknown = Int
@@ -194,24 +210,34 @@ withTypeClassDictionaries
   -> m a
 withTypeClassDictionaries entries action = do
   orig <- get
-
-  let mentries =
-        M.fromListWith (M.unionWith (M.unionWith (<>)))
-          [ (qb, M.singleton className (M.singleton tcdValue (pure entry)))
-          | entry@TypeClassDictionaryInScope{ tcdValue = tcdValue@(Qualified qb _), tcdClassName = className }
-              <- entries
-          ]
-
-  modify $ \st -> st { checkEnv = (checkEnv st) { typeClassDictionaries = M.unionWith (M.unionWith (M.unionWith (<>))) (typeClassDictionaries . checkEnv $ st) mentries } }
+  
+  modify $ \st -> st { checkEnv = (checkEnv st) { typeClassDictionaries = addDictsToEnvMap entries (typeClassDictionaries . checkEnv $ st) } }
   a <- action
   modify $ \st -> st { checkEnv = (checkEnv st) { typeClassDictionaries = typeClassDictionaries . checkEnv $ orig } }
   return a
 
+addDictsToEnvMap :: [NamedDict] 
+     -> M.Map QualifiedBy (M.Map (Qualified (ProperName 'ClassName)) (M.Map (Qualified Ident) (NEL.NonEmpty NamedDict))) 
+    ->  M.Map QualifiedBy (M.Map (Qualified (ProperName 'ClassName)) (M.Map (Qualified Ident) (NEL.NonEmpty NamedDict)))
+addDictsToEnvMap entries envMap = 
+  M.unionWith (M.unionWith (M.unionWith (<>))) envMap (typeClassDictionariesEnvMap entries)
+
+
+typeClassDictionariesEnvMap :: [NamedDict] 
+  -> M.Map QualifiedBy (M.Map (Qualified (ProperName 'ClassName)) (M.Map (Qualified Ident) (NEL.NonEmpty NamedDict)))
+typeClassDictionariesEnvMap entries =
+  M.fromListWith (M.unionWith (M.unionWith (<>)))
+    [ (qb, M.singleton className (M.singleton tcdValue (pure entry)))
+    | entry@TypeClassDictionaryInScope{ tcdValue = tcdValue@(Qualified qb _), tcdClassName = className }
+        <- entries
+    ]
+
 -- | Get the currently available map of type class dictionaries
 getTypeClassDictionaries
-  :: (MonadState CheckState m)
+  :: (MonadState CheckState m, GetEnv m)
   => m (M.Map QualifiedBy (M.Map (Qualified (ProperName 'ClassName)) (M.Map (Qualified Ident) (NEL.NonEmpty NamedDict))))
 getTypeClassDictionaries = gets $ typeClassDictionaries . checkEnv
+   --   $ addDictsToEnvMap dbDicts envDicts
 
 -- | Lookup type class dictionaries in a module.
 lookupTypeClassDictionaries
@@ -222,11 +248,20 @@ lookupTypeClassDictionaries mn = gets $ fromMaybe M.empty . M.lookup mn . typeCl
 
 -- | Lookup type class dictionaries in a module.
 lookupTypeClassDictionariesForClass
-  :: (MonadState CheckState m)
+  :: (MonadState CheckState m, GetEnv m)
   => QualifiedBy
   -> Qualified (ProperName 'ClassName)
   -> m (M.Map (Qualified Ident) (NEL.NonEmpty NamedDict))
-lookupTypeClassDictionariesForClass mn cn = fromMaybe M.empty . M.lookup cn <$> lookupTypeClassDictionaries mn
+lookupTypeClassDictionariesForClass mn cn = do
+  dicts <- lookupTypeClassDictionaries mn
+  case M.lookup cn dicts of 
+    Just d -> pure  d
+    Nothing -> do 
+      inDb <- getTypeClassDictionary cn
+      modifyEnv $ \env -> env { typeClassDictionaries =  addDictsToEnvMap inDb (typeClassDictionaries env) }
+      pure $ key inDb 
+  where 
+    key = M.fromList . fmap \a -> (tcdValue a, pure a)
 
 -- | Temporarily bind a collection of names to local variables
 bindLocalVariables
@@ -263,31 +298,47 @@ preservingNames action = do
   modifyEnv $ \e -> e { names = orig }
   return a
 
+lookupName 
+  :: (MonadState CheckState m, GetEnv m)
+  => Qualified Ident 
+  -> m (Maybe (SourceType, NameKind, NameVisibility))
+lookupName qual = do
+  env <- getEnv
+  case M.lookup qual (names env) of
+    Nothing -> do 
+      nameMb <- getName qual
+      nameMb & maybe (return ()) \name -> 
+        modifyEnv (\env' -> env' { names = M.insert qual name (names env') })
+      return nameMb
+    n -> return n
+
 -- | Lookup the type of a value by name in the @Environment@
 lookupVariable
-  :: (e ~ MultipleErrors, MonadState CheckState m, MonadError e m)
+  :: (e ~ MultipleErrors, MonadState CheckState m, MonadError e m, GetEnv m)
   => Qualified Ident
   -> m SourceType
 lookupVariable qual = do
-  env <- getEnv
-  case M.lookup qual (names env) of
+  nameMb <- lookupName qual
+  case nameMb of
     Nothing -> throwError . errorMessage $ NameIsUndefined (disqualify qual)
     Just (ty, _, _) -> return ty
+    
+
 
 -- | Lookup the visibility of a value by name in the @Environment@
 getVisibility
-  :: (e ~ MultipleErrors, MonadState CheckState m, MonadError e m)
+  :: (e ~ MultipleErrors, MonadState CheckState m, MonadError e m, GetEnv m)
   => Qualified Ident
   -> m NameVisibility
 getVisibility qual = do
-  env <- getEnv
-  case M.lookup qual (names env) of
+  nameMb <- lookupName qual
+  case nameMb of
     Nothing -> throwError . errorMessage $ NameIsUndefined (disqualify qual)
     Just (_, _, vis) -> return vis
 
 -- | Assert that a name is visible
 checkVisibility
-  :: (e ~ MultipleErrors, MonadState CheckState m, MonadError e m)
+  :: (e ~ MultipleErrors, MonadState CheckState m, MonadError e m, GetEnv m)
   => Qualified Ident
   -> m ()
 checkVisibility name@(Qualified _ var) = do
@@ -296,21 +347,116 @@ checkVisibility name@(Qualified _ var) = do
     Undefined -> throwError . errorMessage $ CycleInDeclaration var
     _ -> return ()
 
+lookupTypeMb 
+  :: (MonadState CheckState m, GetEnv m)
+  => Qualified (ProperName 'TypeName) 
+  -> m (Maybe (SourceType, TypeKind))
+lookupTypeMb qual = do
+  env <- getEnv
+  case M.lookup qual (types env) of
+    Nothing -> do 
+      tyMb <- getType qual
+      tyMb & maybe (return ()) \ty -> modifyEnv (\env' -> env' { types = M.insert qual ty (types env') })
+      return tyMb
+    ty -> return ty
+
+lookupType :: (MonadState CheckState m, GetEnv m, MonadError MultipleErrors m) => SourceSpan -> Qualified (ProperName 'TypeName) -> m (SourceType, TypeKind)
+lookupType span' v = 
+  lookupTypeMb v >>= \case 
+    Nothing -> throwError . errorMessage' span' $ UnknownName $ fmap TyName v
+    Just ty -> return ty
+
+lookupTypeUnsafe :: (MonadState CheckState m, GetEnv m) => Qualified (ProperName 'TypeName) -> m (SourceType, TypeKind)
+lookupTypeUnsafe qual = lookupTypeMb qual >>= \case 
+  Nothing -> internalError $ "lookupTypeUnsafe: Encountered unknown type in: " <> show qual
+  Just ty -> return ty
+
+
+lookupSynonymMb 
+  :: (MonadState CheckState m, GetEnv m)
+  => Qualified (ProperName 'TypeName) 
+  -> m (Maybe ([(Text, Maybe SourceType)], SourceType))
+lookupSynonymMb qual = do
+  env <- getEnv
+  case M.lookup qual (typeSynonyms env) of
+    Nothing -> do 
+      sybMb <- Select.getTypeSynonym qual
+      sybMb & maybe (return ()) \syb -> modifyEnv (\env' -> env' { typeSynonyms = M.insert qual syb (typeSynonyms env') })
+      return sybMb
+    syn -> return syn
+
 -- | Lookup the kind of a type by name in the @Environment@
 lookupTypeVariable
-  :: (e ~ MultipleErrors, MonadState CheckState m, MonadError e m)
+  :: (e ~ MultipleErrors, MonadState CheckState m, MonadError e m, GetEnv m)
   => ModuleName
   -> Qualified (ProperName 'TypeName)
   -> m SourceType
 lookupTypeVariable currentModule (Qualified qb name) = do
   env <- getEnv
   case M.lookup (Qualified qb' name) (types env) of
-    Nothing -> throwError . errorMessage $ UndefinedTypeVariable name
+    Nothing -> do 
+      ty <- getType (Qualified qb' name)
+      case ty of 
+        Nothing -> throwError . errorMessage $ UndefinedTypeVariable name
+        Just kind@(k, _) -> do 
+          modifyEnv (\env' -> env' { types = M.insert (Qualified qb' name) kind (types env') })
+          return k
     Just (k, _) -> return k
   where
   qb' = ByModuleName $ case qb of
     ByModuleName m -> m
     BySourcePos _ -> currentModule
+
+lookupConstructorMb 
+  :: (MonadState CheckState m, GetEnv m)
+  => Qualified (ProperName 'ConstructorName)
+  -> m (Maybe (DataDeclType, ProperName 'TypeName, SourceType, [Ident]))
+lookupConstructorMb name = do
+  env <- getEnv
+  case M.lookup name (dataConstructors env) of
+    Nothing -> do 
+      ctrMb <- getDataConstructor name 
+      case ctrMb of 
+        Nothing -> return Nothing
+        Just ctr -> do 
+          modifyEnv (\env' -> env' { dataConstructors = M.insert name ctr (dataConstructors env') })
+          return $ Just ctr
+    ctr -> return ctr
+
+lookupConstructorUnsafe 
+  :: ( MonadState CheckState m, GetEnv m)
+  => Qualified (ProperName 'ConstructorName)
+  -> m (DataDeclType, ProperName 'TypeName, SourceType, [Ident])
+lookupConstructorUnsafe name = lookupConstructorMb name >>= \case 
+  Nothing -> internalError $ "lookupConstructorUnsafe: Encountered unknown constructor in: " <> show name
+  Just ctr -> return ctr
+
+lookupTypeClassMb 
+  :: (MonadState CheckState m, GetEnv m)
+  => Qualified (ProperName 'ClassName)
+  -> m (Maybe TypeClassData)
+lookupTypeClassMb name = do
+  env <- getEnv
+  case M.lookup name (typeClasses env) of
+    Nothing -> do 
+      getTypeClass name
+    tc -> return tc
+
+lookupTypeClassUnsafe 
+  :: (MonadState CheckState m, GetEnv m)
+  => Qualified (ProperName 'ClassName)
+  -> m TypeClassData
+lookupTypeClassUnsafe name = lookupTypeClassMb name >>= \case
+  Nothing -> internalError $ "lookupTypeClassUnsafe: Encountered unknown type class in: " <> show name
+  Just tc -> return tc
+  
+lookupTypeClassOrThrow 
+  :: (e ~ MultipleErrors, MonadState CheckState m, MonadError e m, GetEnv m)
+  => Qualified (ProperName 'ClassName)
+  -> m TypeClassData
+lookupTypeClassOrThrow name = lookupTypeClassMb name >>= \case
+  Nothing -> throwError . errorMessage $ UnknownName $ fmap TyClassName name
+  Just tc -> return tc
 
 -- | Get the current @Environment@
 getEnv :: (MonadState CheckState m) => m Environment
@@ -373,6 +519,69 @@ unsafeCheckCurrentModule
 unsafeCheckCurrentModule = gets checkCurrentModule >>= \case
   Nothing -> internalError "No module name set in scope"
   Just name -> pure name
+
+addIdeDecl :: MonadState CheckState m => Declaration -> SourceType -> m ()
+addIdeDecl declaration ty = onIdeArtifacts $ insertIaDecl declaration ty
+
+addIdeBinder :: MonadState CheckState m => Binder -> SourceType -> m ()
+addIdeBinder binder ty = onIdeArtifacts $ insertIaBinder binder ty
+
+addIdeIdent :: MonadState CheckState m => SourceSpan -> Ident -> SourceType -> m ()
+addIdeIdent ss ident ty  = onIdeArtifacts $ insertIaIdent ss ident ty 
+
+addIdeExpr ::  MonadState CheckState m => Expr -> SourceType -> m ()
+addIdeExpr expr ty = do 
+  addAllExprs <- shouldAddAllIdeExprs 
+  when (addAllExprs || allowedExpr expr) 
+   $ onIdeArtifacts $ insertIaExpr expr ty
+  where 
+    allowedExpr = \case 
+      Literal{} -> True
+      Abs{} -> True
+      Var{} -> True 
+      Op{} -> True 
+      Constructor{} -> True
+      TypedValue _ e _ -> allowedExpr e
+      PositionedValue _ _ e -> allowedExpr e
+      App e TypeClassDictionary{} -> allowedExpr e
+      _ -> False 
+
+addIdeType ::  MonadState CheckState m => SourceType -> SourceType -> m ()
+addIdeType expr ty = onIdeArtifacts $ insertIaType expr ty
+
+addIdeTypeName :: MonadState CheckState m => Maybe ModuleName -> SourceSpan -> ProperName 'TypeName -> SourceType -> m ()
+addIdeTypeName mName ss name ty = onIdeArtifacts $ insertIaTypeName ss name mName ty
+
+addIdeTypeNameQual :: MonadState CheckState m => SourceSpan -> Qualified (ProperName 'TypeName) -> SourceType -> m ()
+addIdeTypeNameQual ss name ty = onIdeArtifacts $ insertIaTypeName ss (disqualify name) (moduleNameFromQual name) ty
+
+addIdeClassName :: MonadState CheckState m => Maybe ModuleName -> SourceSpan -> ProperName 'ClassName -> SourceType -> m ()
+addIdeClassName mName ss name ty = onIdeArtifacts $ insertIaClassName ss name mName ty
+
+addIdeClassNameQual :: MonadState CheckState m => SourceSpan -> Qualified ( ProperName 'ClassName) -> SourceType -> m ()
+addIdeClassNameQual ss name ty = onIdeArtifacts $ insertIaClassName ss (disqualify name) (moduleNameFromQual name) ty
+
+addIdeModule :: MonadState CheckState m => SourceSpan -> ModuleName -> m ()
+addIdeModule ss mName = onIdeArtifacts $ insertModule ss mName
+
+addIdeImport :: MonadState CheckState m => ModuleName -> DeclarationRef -> m ()
+addIdeImport mName ref = onIdeArtifacts $ insertImport mName ref
+
+onIdeArtifacts :: MonadState CheckState m => (IdeArtifacts -> IdeArtifacts) -> m ()
+onIdeArtifacts f = whenAddingIdeArtifacts  
+  $ modify $ \env -> env { checkIdeArtifacts = f (checkIdeArtifacts env) }
+
+substituteIdeTypes :: MonadState CheckState m => (SourceType -> SourceType) -> m ()
+substituteIdeTypes = onIdeArtifacts . substituteArtifactTypes
+
+addIdeSynonym :: MonadState CheckState m => SourceType -> SourceType -> m ()
+addIdeSynonym ty syn = onIdeArtifacts $ insertTypeSynonym syn ty
+
+whenAddingIdeArtifacts :: MonadState CheckState m => m () -> m ()
+whenAddingIdeArtifacts = whenM (gets (isJust . checkAddIdeArtifacts)) 
+
+shouldAddAllIdeExprs ::  MonadState CheckState m => m  Bool
+shouldAddAllIdeExprs =  gets ((==) (Just AllIdeExprs) . checkAddIdeArtifacts)
 
 debugEnv :: Environment -> [String]
 debugEnv env = join

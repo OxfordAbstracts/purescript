@@ -24,6 +24,7 @@ import Language.PureScript.TypeChecker.Monad (CheckState, getHints, getTypeClass
 import Language.PureScript.TypeChecker.Skolems (newSkolemConstant, skolemize)
 import Language.PureScript.TypeChecker.Unify (alignRowsWith, freshTypeWithKind, unifyTypes)
 import Language.PureScript.Types (RowListItem(..), SourceType, Type(..), eqType, isREmpty, replaceTypeVars, rowFromList)
+import Language.PureScript.Make.Index.Select (GetEnv)
 
 -- | Subsumption can operate in two modes:
 --
@@ -59,7 +60,7 @@ defaultCoercion SNoElaborate = ()
 
 -- | Check that one type subsumes another, rethrowing errors to provide a better error message
 subsumes
-  :: (MonadError MultipleErrors m, MonadState CheckState m)
+  :: (MonadError MultipleErrors m, MonadState CheckState m, GetEnv m)
   => SourceType
   -> SourceType
   -> m (Expr -> Expr)
@@ -69,7 +70,7 @@ subsumes ty1 ty2 =
 
 -- | Check that one type subsumes another
 subsumes'
-  :: (MonadError MultipleErrors m, MonadState CheckState m)
+  :: (MonadError MultipleErrors m, MonadState CheckState m, GetEnv m)
   => ModeSing mode
   -> SourceType
   -> SourceType

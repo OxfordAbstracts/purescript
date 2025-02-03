@@ -1,10 +1,11 @@
+{-# LANGUAGE DeriveAnyClass #-}
 module Language.PureScript.Environment where
 
 import Prelude
 
 import GHC.Generics (Generic)
 import Control.DeepSeq (NFData)
-import Control.Monad (unless)
+import Control.Monad (unless, (>=>))
 import Codec.Serialise (Serialise)
 import Data.Aeson ((.=), (.:))
 import Data.Aeson qualified as A
@@ -21,12 +22,15 @@ import Data.Text qualified as T
 import Data.List.NonEmpty qualified as NEL
 
 import Language.PureScript.AST.SourcePos (nullSourceAnn)
-import Language.PureScript.Crash (internalError)
+import Language.PureScript.Crash (internalError, HasCallStack)
 import Language.PureScript.Names (Ident, ProperName(..), ProperNameType(..), Qualified, QualifiedBy, coerceProperName)
 import Language.PureScript.Roles (Role(..))
 import Language.PureScript.TypeClassDictionaries (NamedDict)
 import Language.PureScript.Types (SourceConstraint, SourceType, Type(..), TypeVarVisibility(..), eqType, srcTypeConstructor, freeTypeVariables)
 import Language.PureScript.Constants.Prim qualified as C
+import Codec.Serialise qualified as S
+import Database.SQLite.Simple.ToField (ToField (toField))
+import Database.SQLite.Simple.FromField (FromField (fromField), FieldParser)
 
 -- | The @Environment@ defines all values and types which are currently in scope:
 data Environment = Environment
@@ -45,9 +49,10 @@ data Environment = Environment
   -- scope (ie dictionaries brought in by a constrained type).
   , typeClasses :: M.Map (Qualified (ProperName 'ClassName)) TypeClassData
   -- ^ Type classes
-  } deriving (Show, Generic)
+  } deriving (Show, Eq, Generic, S.Serialise)
 
 instance NFData Environment
+
 
 -- | Information about a type class
 data TypeClassData = TypeClassData
@@ -71,9 +76,18 @@ data TypeClassData = TypeClassData
   -- ^ A sets of arguments that can be used to infer all other arguments.
   , typeClassIsEmpty :: Bool
   -- ^ Whether or not dictionaries for this type class are necessarily empty.
-  } deriving (Show, Generic)
+  } deriving (Show, Generic, Eq, S.Serialise)
 
 instance NFData TypeClassData
+
+instance ToField TypeClassData where
+  toField = toField . S.serialise
+
+instance FromField TypeClassData where
+  fromField = fmap S.deserialise . fromField
+
+-- instance ToRow TypeClassData where 
+--     toRow = _
 
 -- | A functional dependency indicates a relationship between two sets of
 -- type arguments in a class declaration.
@@ -82,7 +96,7 @@ data FunctionalDependency = FunctionalDependency
   -- ^ the type arguments which determine the determined type arguments
   , fdDetermined  :: [Int]
   -- ^ the determined type arguments
-  } deriving (Show, Generic)
+  } deriving (Show, Eq, Ord, Generic)
 
 instance NFData FunctionalDependency
 instance Serialise FunctionalDependency
@@ -238,6 +252,14 @@ data NameVisibility
 instance NFData NameVisibility
 instance Serialise NameVisibility
 
+instance ToField NameVisibility where
+  toField = toField . show
+instance FromField NameVisibility where
+  fromField = (fromField :: FieldParser Text) >=> \case
+    "Undefined" -> pure Undefined
+    "Defined" -> pure Defined
+    other -> fail $ "invalid NameVisibility: '" ++ T.unpack other ++ "'"
+
 -- | A flag for whether a name is for an private or public value - only public values will be
 -- included in a generated externs file.
 data NameKind
@@ -248,10 +270,20 @@ data NameKind
   -- ^ A public value for a module member or foreign import declaration
   | External
   -- ^ A name for member introduced by foreign import
-  deriving (Show, Eq, Generic)
+  deriving (Show, Eq, Ord, Generic)
 
 instance NFData NameKind
 instance Serialise NameKind
+
+instance ToField NameKind where
+  toField = toField . show
+
+instance FromField NameKind where
+  fromField = (fromField :: FieldParser Text) >=> \case
+    "Private" -> pure Private
+    "Public" -> pure Public
+    "External" -> pure External
+    other -> fail $ "invalid NameKind: '" ++ T.unpack other ++ "'"
 
 -- | The kinds of a type
 data TypeKind
@@ -270,6 +302,12 @@ data TypeKind
 instance NFData TypeKind
 instance Serialise TypeKind
 
+instance ToField TypeKind where
+  toField = toField . S.serialise
+
+instance FromField TypeKind where
+  fromField = fmap S.deserialise . fromField
+
 -- | The type ('data' or 'newtype') of a data type declaration
 data DataDeclType
   = Data
@@ -280,6 +318,14 @@ data DataDeclType
 
 instance NFData DataDeclType
 instance Serialise DataDeclType
+instance ToField DataDeclType where
+  toField = toField . showDataDeclType
+
+instance FromField DataDeclType where
+  fromField = (fromField :: FieldParser Text) >=> \case 
+    "data" -> pure Data
+    "newtype" -> pure Newtype
+    other -> fail $ "invalid DataDeclType: '" ++ T.unpack other ++ "'"
 
 showDataDeclType :: DataDeclType -> Text
 showDataDeclType Data = "data"
@@ -653,9 +699,9 @@ primTypeErrorClasses =
     ]
 
 -- | Finds information about data constructors from the current environment.
-lookupConstructor :: Environment -> Qualified (ProperName 'ConstructorName) -> (DataDeclType, ProperName 'TypeName, SourceType, [Ident])
+lookupConstructor :: HasCallStack => Environment -> Qualified (ProperName 'ConstructorName) -> (DataDeclType, ProperName 'TypeName, SourceType, [Ident])
 lookupConstructor env ctor =
-  fromMaybe (internalError "Data constructor not found") $ ctor `M.lookup` dataConstructors env
+  fromMaybe (internalError $ "Data constructor not found: " <> show ctor) $ ctor `M.lookup` dataConstructors env
 
 -- | Finds information about values from the current environment.
 lookupValue :: Environment -> Qualified Ident -> Maybe (SourceType, NameKind, NameVisibility)
