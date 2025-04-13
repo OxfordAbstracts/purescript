@@ -223,6 +223,7 @@ convertComments cs = do
   pure (T.unlines docs)
 
   where
+  toLines (P.PragmaNoCheckOverlappingInstance) = []
   toLines (P.LineComment s) = [s]
   toLines (P.BlockComment s) = T.lines s
 
