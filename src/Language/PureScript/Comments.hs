@@ -16,6 +16,7 @@ import Data.Aeson.TH (Options(..), SumEncoding(..), defaultOptions, deriveJSON)
 data Comment
   = LineComment Text
   | BlockComment Text
+  | PragmaGenerated
   deriving (Show, Eq, Ord, Generic)
 
 instance NFData Comment
