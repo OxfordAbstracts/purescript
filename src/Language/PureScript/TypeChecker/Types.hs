@@ -1,8 +1,10 @@
+{-# LANGUAGE BlockArguments #-}
 -- |
 -- This module implements the type checker
 --
 module Language.PureScript.TypeChecker.Types
   ( BindingGroupType(..)
+  , TypedValue'(..)
   , typesOf
   , checkTypeKind
   ) where
@@ -12,7 +14,7 @@ module Language.PureScript.TypeChecker.Types
 
     infer
       Synthesize a type for a value
-
+f
     check
       Check a value has a given type
 
@@ -24,7 +26,7 @@ module Language.PureScript.TypeChecker.Types
 -}
 
 import Prelude
-import Protolude (ordNub, fold, atMay)
+import Protolude (ordNub, fold, atMay, (>=>))
 
 import Control.Arrow (first, second, (***))
 import Control.Monad (forM, forM_, guard, replicateM, unless, when, zipWithM, (<=<))
@@ -49,7 +51,7 @@ import Language.PureScript.AST
 import Language.PureScript.Crash (internalError)
 import Language.PureScript.Environment
 import Language.PureScript.Errors (ErrorMessage(..), MultipleErrors, SimpleErrorMessage(..), errorMessage, errorMessage', escalateWarningWhen, internalCompilerError, onErrorMessages, onTypesInErrorMessage, parU)
-import Language.PureScript.Names (pattern ByNullSourcePos, Ident(..), ModuleName, Name(..), ProperName(..), ProperNameType(..), Qualified(..), QualifiedBy(..), byMaybeModuleName, coerceProperName, freshIdent)
+import Language.PureScript.Names (pattern ByNullSourcePos, Ident(..), ModuleName, Name(..), ProperName(..), Qualified(..), QualifiedBy(..), byMaybeModuleName, coerceProperName, freshIdent)
 import Language.PureScript.TypeChecker.Deriving (deriveInstance)
 import Language.PureScript.TypeChecker.Entailment (InstanceContext, newDictionaries, replaceTypeClassDictionaries)
 import Language.PureScript.TypeChecker.Kinds (checkConstraint, checkKind, checkTypeKind, kindOf, kindOfWithScopedVars, unifyKinds', unknownsWithKinds)
@@ -62,6 +64,7 @@ import Language.PureScript.TypeChecker.Unify (freshTypeWithKind, replaceTypeWild
 import Language.PureScript.Types
 import Language.PureScript.Label (Label(..))
 import Language.PureScript.PSString (PSString)
+import Language.PureScript.Make.Index.Select (GetEnv)
 
 data BindingGroupType
   = RecursiveBindingGroup
@@ -75,16 +78,16 @@ data TypedValue' = TypedValue' Bool Expr SourceType
 tvToExpr :: TypedValue' -> Expr
 tvToExpr (TypedValue' c e t) = TypedValue c e t
 
--- | Lookup data about a type class in the @Environment@
-lookupTypeClass :: MonadState CheckState m => Qualified (ProperName 'ClassName) -> m TypeClassData
-lookupTypeClass name =
-  let findClass = fromMaybe (internalError "entails: type class not found in environment") . M.lookup name
-   in gets (findClass . typeClasses . checkEnv)
+-- -- | Lookup data about a type class in the @Environment@
+-- lookupTypeClass :: MonadState CheckState m => Qualified (ProperName 'ClassName) -> m TypeClassData
+-- lookupTypeClass name =
+--   let findClass = fromMaybe (internalError "entails: type class not found in environment") . M.lookup name
+--    in gets (findClass . typeClasses . checkEnv)
 
 -- | Infer the types of multiple mutually-recursive values, and return elaborated values including
 -- type class dictionaries and type annotations.
 typesOf
-  :: (MonadSupply m, MonadState CheckState m, MonadError MultipleErrors m, MonadWriter MultipleErrors m)
+  :: (MonadSupply m, MonadState CheckState m, MonadError MultipleErrors m, MonadWriter MultipleErrors m, GetEnv m)
   => BindingGroupType
   -> ModuleName
   -> [((SourceAnn, Ident), Expr)]
@@ -123,7 +126,7 @@ typesOf bindingGroupType moduleName vals = withFreshSubstitution $ do
         -- ambiguous types to be inferred if they can be solved by some functional
         -- dependency.
         conData <- forM unsolved $ \(_, _, con) -> do
-          TypeClassData{ typeClassDependencies } <- lookupTypeClass $ constraintClass con
+          TypeClassData{ typeClassDependencies } <- lookupTypeClassUnsafe $ constraintClass con
           let
             -- The set of unknowns mentioned in each argument.
             unknownsForArg :: [S.Set Int]
@@ -169,32 +172,36 @@ typesOf bindingGroupType moduleName vals = withFreshSubstitution $ do
         unsolvedVarNames <- traverse lookupUnkName' (S.toList unsolvedVars)
         unless (S.null unsolvedVars) .
           throwError
-            . onErrorMessages (replaceTypes currentSubst)
+            . onErrorMessages (replaceErrorTypes currentSubst)
             . errorMessage' ss
             $ AmbiguousTypeVariables generalized unsolvedVarNames
 
       -- Check skolem variables did not escape their scope
       skolemEscapeCheck val'
+      addIdeIdent ss ident generalized
       return ((sai, (foldr (Abs . VarBinder nullSourceSpan . (\(x, _, _) -> x)) val' unsolved, generalized)), unsolved)
 
     -- Show warnings here, since types in wildcards might have been solved during
     -- instance resolution (by functional dependencies).
     finalState <- get
-    let replaceTypes' = replaceTypes (checkSubstitution finalState)
+    let replaceErrorTypes' = replaceErrorTypes (checkSubstitution finalState)
         runTypeSearch' gen = runTypeSearch (guard gen $> foldMap snd inferred) finalState
-        raisePreviousWarnings gen = escalateWarningWhen isHoleError . tell . onErrorMessages (runTypeSearch' gen . replaceTypes')
+        raisePreviousWarnings gen = escalateWarningWhen isHoleError . tell . onErrorMessages (runTypeSearch' gen . replaceErrorTypes')
+
+        -- replaceIdeTypes = 
 
     raisePreviousWarnings False wInfer
-    forM_ tys $ \(shouldGeneralize, ((_, (_, _)), w)) ->
+    forM_ tys $ \(shouldGeneralize, ((_, (_, _)), w)) -> do
       raisePreviousWarnings shouldGeneralize w
-
-    return (map fst inferred)
+      substituteIdeTypes $ removeRedundantConstraints . substituteType (checkSubstitution finalState)
+    
+    return $  map fst inferred 
   where
-    replaceTypes
+    replaceErrorTypes
       :: Substitution
       -> ErrorMessage
       -> ErrorMessage
-    replaceTypes subst = onTypesInErrorMessage (substituteType subst)
+    replaceErrorTypes subst = onTypesInErrorMessage (substituteType subst)
 
     -- Run type search to complete any typed hole error messages
     runTypeSearch
@@ -224,6 +231,20 @@ typesOf bindingGroupType moduleName vals = withFreshSubstitution $ do
     isHoleError (ErrorMessage _ HoleInferredType{}) = True
     isHoleError _ = False
 
+removeRedundantConstraints :: SourceType -> SourceType
+removeRedundantConstraints = \case 
+  ConstrainedType _ con ty | isRedundant con  -> ty
+  ty -> ty
+  where 
+    isRedundant :: SourceConstraint -> Bool
+    isRedundant (Constraint _ _ _ tys _) = all isTyCtr tys
+
+    isTyCtr :: SourceType -> Bool
+    isTyCtr = \case 
+      TypeConstructor _ _ -> True
+      _ -> False
+
+
 -- | A binding group contains multiple value definitions, some of which are typed
 -- and some which are not.
 --
@@ -245,7 +266,7 @@ data SplitBindingGroup = SplitBindingGroup
 -- This function also generates fresh unification variables for the types of
 -- declarations without type annotations, returned in the 'UntypedData' structure.
 typeDictionaryForBindingGroup
-  :: (MonadState CheckState m, MonadError MultipleErrors m, MonadWriter MultipleErrors m)
+  :: (MonadState CheckState m, MonadError MultipleErrors m, MonadWriter MultipleErrors m, GetEnv m)
   => Maybe ModuleName
   -> [((SourceAnn, Ident), Expr)]
   -> m SplitBindingGroup
@@ -282,7 +303,7 @@ typeDictionaryForBindingGroup moduleName vals = do
 
 -- | Check the type annotation of a typed value in a binding group.
 checkTypedBindingGroupElement
-  :: (MonadSupply m, MonadState CheckState m, MonadError MultipleErrors m, MonadWriter MultipleErrors m)
+  :: (MonadSupply m, MonadState CheckState m, MonadError MultipleErrors m, MonadWriter MultipleErrors m, GetEnv m)
   => ModuleName
   -> ((SourceAnn, Ident), (Expr, [(Text, SourceType)], SourceType, Bool))
   -- ^ The identifier we are trying to define, along with the expression and its type annotation
@@ -301,7 +322,7 @@ checkTypedBindingGroupElement mn (ident, (val, args, ty, checkType)) dict = do
 
 -- | Infer a type for a value in a binding group which lacks an annotation.
 typeForBindingGroupElement
-  :: (MonadSupply m, MonadState CheckState m, MonadError MultipleErrors m, MonadWriter MultipleErrors m)
+  :: (MonadSupply m, MonadState CheckState m, MonadError MultipleErrors m, MonadWriter MultipleErrors m, GetEnv m)
   => ((SourceAnn, Ident), (Expr, SourceType))
   -- ^ The identifier we are trying to define, along with the expression and its assigned type
   -- (at this point, this should be a unification variable)
@@ -321,7 +342,7 @@ typeForBindingGroupElement (ident, (val, ty)) dict = do
 -- This is necessary during type checking to avoid unifying a polymorphic type with a
 -- unification variable.
 instantiatePolyTypeWithUnknowns
-  :: (MonadState CheckState m, MonadError MultipleErrors m)
+  :: (MonadState CheckState m, MonadError MultipleErrors m, GetEnv m)
   => Expr
   -> SourceType
   -> m (Expr, SourceType)
@@ -346,7 +367,7 @@ instantiatePolyTypeWithUnknownsUntilVisible val (ForAll _ TypeVarInvisible ident
   instantiatePolyTypeWithUnknownsUntilVisible val $ replaceTypeVars ident u ty
 instantiatePolyTypeWithUnknownsUntilVisible val ty = return (val, ty)
 
-instantiateConstraint :: MonadState CheckState m => Expr -> Type SourceAnn -> m (Expr, Type SourceAnn)
+instantiateConstraint :: (MonadState CheckState m, GetEnv m) => Expr -> Type SourceAnn -> m (Expr, Type SourceAnn)
 instantiateConstraint val (ConstrainedType _ con ty) = do
   dicts <- getTypeClassDictionaries
   hints <- getHints
@@ -359,16 +380,28 @@ insertUnkName' (TUnknown _ i) n = insertUnkName i n
 insertUnkName' _ _ = internalCompilerError "type is not TUnknown"
 
 -- | Infer a type for a value, rethrowing any error to provide a more useful error message
+-- | and add the inferred type to the IDE artifacts if necessary.
 infer
-  :: (MonadSupply m, MonadState CheckState m, MonadError MultipleErrors m, MonadWriter MultipleErrors m)
+  :: (MonadSupply m, MonadState CheckState m, MonadError MultipleErrors m, MonadWriter MultipleErrors m, GetEnv m)
   => Expr
   -> m TypedValue'
-infer val = withErrorMessageHint (ErrorInferringType val) $ infer' val
+infer val = withErrorMessageHint (ErrorInferringType val) $ inferAndAddToIde val
+
+
+inferAndAddToIde  :: (MonadSupply m, MonadState CheckState m, MonadError MultipleErrors m, MonadWriter MultipleErrors m, GetEnv m)
+  => Expr
+  -> m TypedValue'
+inferAndAddToIde = infer' >=> addTypedValueToIde
+
+addTypedValueToIde :: MonadState CheckState m => TypedValue' -> m TypedValue'
+addTypedValueToIde tv@(TypedValue' _ expr ty) = do 
+  addIdeExpr expr ty 
+  pure tv
 
 -- | Infer a type for a value
 infer'
   :: forall m
-   . (MonadSupply m, MonadState CheckState m, MonadError MultipleErrors m, MonadWriter MultipleErrors m)
+   . (MonadSupply m, MonadState CheckState m, MonadError MultipleErrors m, MonadWriter MultipleErrors m, GetEnv m)
   => Expr
   -> m TypedValue'
 infer' v@(Literal _ (NumericLiteral (Left _))) = return $ TypedValue' True v tyInt
@@ -451,7 +484,7 @@ infer' (Abs binder ret)
   | VarBinder ss arg <- binder = do
       ty <- freshTypeWithKind kindType
       withBindingGroupVisible $ bindLocalVariables [(ss, arg, ty, Defined)] $ do
-        body@(TypedValue' _ _ bodyTy) <- infer' ret
+        body@(TypedValue' _ _ bodyTy) <- inferAndAddToIde ret
         (body', bodyTy') <- instantiatePolyTypeWithUnknowns (tvToExpr body) bodyTy
         return $ TypedValue' True (Abs (VarBinder ss arg) body') (function ty bodyTy')
   | otherwise = internalError "Binder was not desugared"
@@ -489,8 +522,8 @@ infer' (Var ss var) = do
       return $ TypedValue' True (App (Var ss var) (TypeClassDictionary con dicts hints)) ty'
     _ -> return $ TypedValue' True (Var ss var) ty
 infer' v@(Constructor _ c) = do
-  env <- getEnv
-  case M.lookup c (dataConstructors env) of
+  ctrMb <- lookupConstructorMb c
+  case ctrMb of
     Nothing -> throwError . errorMessage . UnknownName . fmap DctorName $ c
     Just (_, _, ty, _) -> TypedValue' True v <$> (introduceSkolemScope <=< replaceAllTypeSynonyms $ ty)
 infer' (Case vals binders) = do
@@ -530,7 +563,7 @@ infer' (Hole name) = do
   tell . errorMessage $ HoleInferredType name ty ctx . Just $ TSBefore env
   return $ TypedValue' True (Hole name) ty
 infer' (PositionedValue pos c val) = warnAndRethrowWithPositionTC pos $ do
-  TypedValue' t v ty <- infer' val
+  TypedValue' t v ty <- inferAndAddToIde val
   return $ TypedValue' t (PositionedValue pos c v) ty
 infer' v = internalError $ "Invalid argument to infer: " ++ show v
 
@@ -540,7 +573,7 @@ inferProperties
   :: ( MonadSupply m
      , MonadState CheckState m
      , MonadError MultipleErrors m
-     , MonadWriter MultipleErrors m
+     , MonadWriter MultipleErrors m, GetEnv m
      )
   => [(PSString, Expr)]
   -> m [(PSString, (Expr, SourceType))]
@@ -552,7 +585,7 @@ inferWithinRecord
   :: ( MonadSupply m
      , MonadState CheckState m
      , MonadError MultipleErrors m
-     , MonadWriter MultipleErrors m
+     , MonadWriter MultipleErrors m, GetEnv m
      )
   => Expr
   -> m (Expr, SourceType)
@@ -574,7 +607,7 @@ propertyShouldInstantiate = \case
   _ -> False
 
 inferLetBinding
-  :: (MonadSupply m, MonadState CheckState m, MonadError MultipleErrors m, MonadWriter MultipleErrors m)
+  :: (MonadSupply m, MonadState CheckState m, MonadError MultipleErrors m, MonadWriter MultipleErrors m, GetEnv m)
   => [Declaration]
   -> [Declaration]
   -> Expr
@@ -591,6 +624,7 @@ inferLetBinding seen (ValueDecl sa@(ss, _) ident nameKind [] [MkUnguarded (Typed
     if checkType
       then withScopedTypeVars moduleName args (bindNames dict (check val ty'))
       else return (TypedValue' checkType val elabTy)
+  addIdeIdent ss ident ty''
   bindNames (M.singleton (Qualified (BySourcePos $ spanStart ss) ident) (ty'', nameKind, Defined))
     $ inferLetBinding (seen ++ [ValueDecl sa ident nameKind [] [MkUnguarded (TypedValue checkType val' ty'')]]) rest ret j
 inferLetBinding seen (ValueDecl sa@(ss, _) ident nameKind [] [MkUnguarded val] : rest) ret j = do
@@ -599,6 +633,7 @@ inferLetBinding seen (ValueDecl sa@(ss, _) ident nameKind [] [MkUnguarded val] :
     let dict = M.singleton (Qualified (BySourcePos $ spanStart ss) ident) (valTy, nameKind, Undefined)
     bindNames dict $ infer val
   warnAndRethrowWithPositionTC ss $ unifyTypes valTy valTy'
+  addIdeIdent ss ident valTy'
   bindNames (M.singleton (Qualified (BySourcePos $ spanStart ss) ident) (valTy', nameKind, Defined))
     $ inferLetBinding (seen ++ [ValueDecl sa ident nameKind [] [MkUnguarded val']]) rest ret j
 inferLetBinding seen (BindingGroupDeclaration ds : rest) ret j = do
@@ -612,23 +647,36 @@ inferLetBinding seen (BindingGroupDeclaration ds : rest) ret j = do
     inferLetBinding (seen ++ [BindingGroupDeclaration ds']) rest ret j
 inferLetBinding _ _ _ _ = internalError "Invalid argument to inferLetBinding"
 
--- | Infer the types of variables brought into scope by a binder
-inferBinder
+inferBinder 
   :: forall m
-   . (MonadState CheckState m, MonadError MultipleErrors m, MonadWriter MultipleErrors m)
+   . (MonadState CheckState m, MonadError MultipleErrors m, MonadWriter MultipleErrors m, GetEnv m)
   => SourceType
   -> Binder
   -> m (M.Map Ident (SourceSpan, SourceType))
-inferBinder _ NullBinder = return M.empty
-inferBinder val (LiteralBinder _ (StringLiteral _)) = unifyTypes val tyString >> return M.empty
-inferBinder val (LiteralBinder _ (CharLiteral _)) = unifyTypes val tyChar >> return M.empty
-inferBinder val (LiteralBinder _ (NumericLiteral (Left _))) = unifyTypes val tyInt >> return M.empty
-inferBinder val (LiteralBinder _ (NumericLiteral (Right _))) = unifyTypes val tyNumber >> return M.empty
-inferBinder val (LiteralBinder _ (BooleanLiteral _)) = unifyTypes val tyBoolean >> return M.empty
-inferBinder val (VarBinder ss name) = return $ M.singleton name (ss, val)
-inferBinder val (ConstructorBinder ss ctor binders) = do
-  env <- getEnv
-  case M.lookup ctor (dataConstructors env) of
+inferBinder val binder = do 
+  addIdeBinder binder val
+  m <- inferBinder' val binder
+  forM_ (M.toList m) $ \(ident, (ss, ty)) -> do
+    addIdeIdent ss ident ty
+  pure m
+
+-- | Infer the types of variables brought into scope by a binder
+inferBinder'
+  :: forall m
+   . (MonadState CheckState m, MonadError MultipleErrors m, MonadWriter MultipleErrors m, GetEnv m)
+  => SourceType
+  -> Binder
+  -> m (M.Map Ident (SourceSpan, SourceType))
+inferBinder' _ NullBinder = return M.empty
+inferBinder' val (LiteralBinder _ (StringLiteral _)) = unifyTypes val tyString >> return M.empty
+inferBinder' val (LiteralBinder _ (CharLiteral _)) = unifyTypes val tyChar >> return M.empty
+inferBinder' val (LiteralBinder _ (NumericLiteral (Left _))) = unifyTypes val tyInt >> return M.empty
+inferBinder' val (LiteralBinder _ (NumericLiteral (Right _))) = unifyTypes val tyNumber >> return M.empty
+inferBinder' val (LiteralBinder _ (BooleanLiteral _)) = unifyTypes val tyBoolean >> return M.empty
+inferBinder' val (VarBinder ss name) = return $ M.singleton name (ss, val)
+inferBinder' val (ConstructorBinder ss ctor binders) = do
+  ctrMb <-  lookupConstructorMb ctor
+  case ctrMb of
     Just (_, _, ty, _) -> do
       (_, fn) <- instantiatePolyTypeWithUnknowns (internalError "Data constructor types cannot contain constraints") ty
       fn' <- introduceSkolemScope <=< replaceAllTypeSynonyms $ fn
@@ -645,7 +693,7 @@ inferBinder val (ConstructorBinder ss ctor binders) = do
     where
     go args (TypeApp _ (TypeApp _ fn arg) ret) | eqType fn tyFunction = go (arg : args) ret
     go args ret = (args, ret)
-inferBinder val (LiteralBinder _ (ObjectLiteral props)) = do
+inferBinder' val (LiteralBinder _ (ObjectLiteral props)) = do
   row <- freshTypeWithKind (kindRow kindType)
   rest <- freshTypeWithKind (kindRow kindType)
   m1 <- inferRowProperties row rest props
@@ -659,29 +707,29 @@ inferBinder val (LiteralBinder _ (ObjectLiteral props)) = do
     m1 <- inferBinder propTy binder
     m2 <- inferRowProperties nrow (srcRCons (Label name) propTy row) binders
     return $ m1 `M.union` m2
-inferBinder val (LiteralBinder _ (ArrayLiteral binders)) = do
+inferBinder' val (LiteralBinder _ (ArrayLiteral binders)) = do
   el <- freshTypeWithKind kindType
   m1 <- M.unions <$> traverse (inferBinder el) binders
   unifyTypes val (srcTypeApp tyArray el)
   return m1
-inferBinder val (NamedBinder ss name binder) =
+inferBinder' val (NamedBinder ss name binder) =
   warnAndRethrowWithPositionTC ss $ do
     m <- inferBinder val binder
     return $ M.insert name (ss, val) m
-inferBinder val (PositionedBinder pos _ binder) =
+inferBinder' val (PositionedBinder pos _ binder) =
   warnAndRethrowWithPositionTC pos $ inferBinder val binder
-inferBinder val (TypedBinder ty binder) = do
+inferBinder' val (TypedBinder ty binder) = do
   (elabTy, kind) <- kindOf ty
   checkTypeKind ty kind
   ty1 <- introduceSkolemScope <=< replaceAllTypeSynonyms <=< replaceTypeWildcards $ elabTy
   unifyTypes val ty1
   inferBinder ty1 binder
-inferBinder _ OpBinder{} =
-  internalError "OpBinder should have been desugared before inferBinder"
-inferBinder _ BinaryNoParensBinder{} =
-  internalError "BinaryNoParensBinder should have been desugared before inferBinder"
-inferBinder _ ParensInBinder{} =
-  internalError "ParensInBinder should have been desugared before inferBinder"
+inferBinder' _ OpBinder{} =
+  internalError "OpBinder should have been desugared before inferBinder'"
+inferBinder' _ BinaryNoParensBinder{} =
+  internalError "BinaryNoParensBinder should have been desugared before inferBinder'"
+inferBinder' _ ParensInBinder{} =
+  internalError "ParensInBinder should have been desugared before inferBinder'"
 
 -- | Returns true if a binder requires its argument type to be a monotype.
 -- | If this is the case, we need to instantiate any polymorphic types before checking binders.
@@ -695,7 +743,7 @@ binderRequiresMonotype _ = True
 
 -- | Instantiate polytypes only when necessitated by a binder.
 instantiateForBinders
-  :: (MonadSupply m, MonadState CheckState m, MonadError MultipleErrors m, MonadWriter MultipleErrors m)
+  :: (MonadSupply m, MonadState CheckState m, MonadError MultipleErrors m, MonadWriter MultipleErrors m, GetEnv m)
   => [Expr]
   -> [CaseAlternative]
   -> m ([Expr], [SourceType])
@@ -712,7 +760,7 @@ instantiateForBinders vals cas = unzip <$> zipWithM (\val inst -> do
 -- Check the types of the return values in a set of binders in a case statement
 --
 checkBinders
-  :: (MonadSupply m, MonadState CheckState m, MonadError MultipleErrors m, MonadWriter MultipleErrors m)
+  :: (MonadSupply m, MonadState CheckState m, MonadError MultipleErrors m, MonadWriter MultipleErrors m, GetEnv m)
   => [SourceType]
   -> SourceType
   -> [CaseAlternative]
@@ -728,7 +776,7 @@ checkBinders nvals ret (CaseAlternative binders result : bs) = do
   return $ r : rs
 
 checkGuardedRhs
-  :: (MonadSupply m, MonadState CheckState m, MonadError MultipleErrors m, MonadWriter MultipleErrors m)
+  :: (MonadSupply m, MonadState CheckState m, MonadError MultipleErrors m, MonadWriter MultipleErrors m, GetEnv m)
   => GuardedExpr
   -> SourceType
   -> m GuardedExpr
@@ -752,23 +800,28 @@ checkGuardedRhs (GuardedExpr (PatternGuard binder expr : guards) rhs) ret = do
 -- Check the type of a value, rethrowing errors to provide a better error message
 --
 check
-  :: (MonadSupply m, MonadState CheckState m, MonadError MultipleErrors m, MonadWriter MultipleErrors m)
+  :: (MonadSupply m, MonadState CheckState m, MonadError MultipleErrors m, MonadWriter MultipleErrors m, GetEnv m)
   => Expr
   -> SourceType
   -> m TypedValue'
-check val ty = withErrorMessageHint' val (ErrorCheckingType val ty) $ check' val ty
+check val ty = withErrorMessageHint' val (ErrorCheckingType val ty) $ checkAndAddToIde val ty
 
+checkAndAddToIde :: (MonadSupply m, MonadState CheckState m, MonadError MultipleErrors m, MonadWriter MultipleErrors m, GetEnv m)
+  => Expr -> SourceType -> m TypedValue'
+checkAndAddToIde val ty = do
+  tv <- check' val ty
+  addTypedValueToIde tv
 -- |
 -- Check the type of a value
 --
 check'
   :: forall m
-   . (MonadSupply m, MonadState CheckState m, MonadError MultipleErrors m, MonadWriter MultipleErrors m)
+   . (MonadSupply m, MonadState CheckState m, MonadError MultipleErrors m, MonadWriter MultipleErrors m, GetEnv m)
   => Expr
   -> SourceType
   -> m TypedValue'
 check' val (ForAll ann vis ident mbK ty _) = do
-  env <- getEnv
+  -- env <- getEnv
   mn <- gets checkCurrentModule
   scope <- newSkolemScope
   sko <- newSkolemConstant
@@ -780,14 +833,17 @@ check' val (ForAll ann vis ident mbK ty _) = do
       -- was actually brought into scope. Otherwise we can end up skolemizing
       -- an undefined type variable that happens to clash with the variable we
       -- want to skolemize. This can happen due to synonym expansion (see 2542).
+  k <- lookupTypeMb (Qualified (byMaybeModuleName mn) (ProperName ident)) 
+
+  let  
       skVal
-        | Just _ <- M.lookup (Qualified (byMaybeModuleName mn) (ProperName ident)) $ types env =
+        | Just _ <- k =
             skolemizeTypesInValue ss ident mbK sko scope val
         | otherwise = val
   val' <- tvToExpr <$> check skVal sk
   return $ TypedValue' True val' (ForAll ann vis ident mbK ty (Just scope))
 check' val t@(ConstrainedType _ con@(Constraint _ cls@(Qualified _ (ProperName className)) _ _ _) ty) = do
-  TypeClassData{ typeClassIsEmpty } <- lookupTypeClass cls
+  TypeClassData{ typeClassIsEmpty } <- lookupTypeClassUnsafe cls
   -- An empty class dictionary is never used; see code in `TypeChecker.Entailment`
   -- that wraps empty dictionary solutions in `Unused`.
   dictName <- if typeClassIsEmpty then pure UnusedIdent else freshIdent ("dict" <> className)
@@ -818,6 +874,7 @@ check' (Abs binder ret) ty@(TypeApp _ (TypeApp _ t argTy) retTy)
   | VarBinder ss arg <- binder = do
       unifyTypes t tyFunction
       ret' <- withBindingGroupVisible $ bindLocalVariables [(ss, arg, argTy, Defined)] $ check ret retTy
+      addIdeBinder binder argTy
       return $ TypedValue' True (Abs (VarBinder ss arg) (tvToExpr ret')) ty
   | otherwise = internalError "Binder was not desugared"
 check' (App f arg) ret = do
@@ -872,7 +929,7 @@ check' e@(Literal ss (ObjectLiteral ps)) t@(TypeApp _ obj row) | obj == tyRecord
   return $ TypedValue' True (Literal ss (ObjectLiteral ps')) t
 check' (DerivedInstancePlaceholder name strategy) t = do
   d <- deriveInstance t name strategy
-  d' <- tvToExpr <$> check' d t
+  d' <- tvToExpr <$> checkAndAddToIde d t
   return $ TypedValue' True d' t
 check' e@(ObjectUpdate obj ps) t@(TypeApp _ o row) | o == tyRecord = do
   ensureNoDuplicateProperties ps
@@ -889,8 +946,8 @@ check' (Accessor prop val) ty = withErrorMessageHint (ErrorCheckingAccessor val 
   val' <- tvToExpr <$> check val (srcTypeApp tyRecord (srcRCons (Label prop) ty rest))
   return $ TypedValue' True (Accessor prop val') ty
 check' v@(Constructor _ c) ty = do
-  env <- getEnv
-  case M.lookup c (dataConstructors env) of
+  ctrMb <- lookupConstructorMb c
+  case ctrMb of
     Nothing -> throwError . errorMessage . UnknownName . fmap DctorName $ c
     Just (_, _, ty1, _) -> do
       repl <- introduceSkolemScope <=< replaceAllTypeSynonyms $ ty1
@@ -902,10 +959,10 @@ check' (Let w ds val) ty = do
   return $ TypedValue' True (Let w ds' (tvToExpr val')) ty
 check' val kt@(KindedType _ ty kind) = do
   checkTypeKind ty kind
-  val' <- tvToExpr <$> check' val ty
+  val' <- tvToExpr <$> checkAndAddToIde val ty
   return $ TypedValue' True val' kt
 check' (PositionedValue pos c val) ty = warnAndRethrowWithPositionTC pos $ do
-  TypedValue' t v ty' <- check' val ty
+  TypedValue' t v ty' <- checkAndAddToIde val ty
   return $ TypedValue' t (PositionedValue pos c v) ty'
 check' val ty = do
   TypedValue' _ val' ty' <- infer val
@@ -918,7 +975,7 @@ check' val ty = do
 -- The @lax@ parameter controls whether or not every record member has to be provided. For object updates, this is not the case.
 --
 checkProperties
-  :: (MonadSupply m, MonadState CheckState m, MonadError MultipleErrors m, MonadWriter MultipleErrors m)
+  :: (MonadSupply m, MonadState CheckState m, MonadError MultipleErrors m, MonadWriter MultipleErrors m, GetEnv m)
   => Expr
   -> [(PSString, Expr)]
   -> SourceType
@@ -965,7 +1022,7 @@ checkProperties expr ps row lax = convert <$> go ps (toRowPair <$> ts') r' where
 -- * The elaborated expression for the function application (since we might need to
 --   insert type class dictionaries, etc.)
 checkFunctionApplication
-  :: (MonadSupply m, MonadState CheckState m, MonadError MultipleErrors m, MonadWriter MultipleErrors m)
+  :: (MonadSupply m, MonadState CheckState m, MonadError MultipleErrors m, MonadWriter MultipleErrors m, GetEnv m)
   => Expr
   -- ^ The function expression
   -> SourceType
@@ -976,11 +1033,13 @@ checkFunctionApplication
   -- ^ The result type, and the elaborated term
 checkFunctionApplication fn fnTy arg = withErrorMessageHint' fn (ErrorInApplication fn fnTy arg) $ do
   subst <- gets checkSubstitution
-  checkFunctionApplication' fn (substituteType subst fnTy) arg
+  res <- checkFunctionApplication' fn (substituteType subst fnTy) arg
+  addIdeExpr fn (substituteType subst fnTy)
+  pure res
 
 -- | Check the type of a function application
 checkFunctionApplication'
-  :: (MonadSupply m, MonadState CheckState m, MonadError MultipleErrors m, MonadWriter MultipleErrors m)
+  :: (MonadSupply m, MonadState CheckState m, MonadError MultipleErrors m, MonadWriter MultipleErrors m, GetEnv m)
   => Expr
   -> SourceType
   -> Expr

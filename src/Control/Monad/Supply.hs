@@ -13,9 +13,10 @@ import Control.Monad.State (StateT(..))
 import Control.Monad.Writer (MonadWriter)
 
 import Data.Functor.Identity (Identity(..))
+import Protolude (MonadIO)
 
 newtype SupplyT m a = SupplyT { unSupplyT :: StateT Integer m a }
-  deriving (Functor, Applicative, Monad, MonadTrans, MonadError e, MonadWriter w, MonadReader r, Alternative, MonadPlus)
+  deriving (MonadIO, Functor, Applicative, Monad, MonadTrans, MonadError e, MonadWriter w, MonadReader r, Alternative, MonadPlus)
 
 runSupplyT :: Integer -> SupplyT m a -> m (a, Integer)
 runSupplyT n = flip runStateT n . unSupplyT

@@ -2,6 +2,8 @@ module Language.PureScript.Docs.AsMarkdown
   ( Docs
   , runDocs
   , moduleAsMarkdown
+  , declAndModuleNameAsMarkdown
+  , declAsMarkdown
   , codeToString
   ) where
 
@@ -32,6 +34,12 @@ moduleAsMarkdown Module{..} = do
     headerLevel 3 $ "Re-exported from " <> P.runModuleName mn <> ":"
     spacer
     mapM_ declAsMarkdown decls
+
+declAndModuleNameAsMarkdown :: P.ModuleName -> Declaration -> Docs
+declAndModuleNameAsMarkdown mn decl = do
+  headerLevel 2 $ "Module " <> P.runModuleName mn
+  spacer
+  declAsMarkdown decl
 
 declAsMarkdown :: Declaration -> Docs
 declAsMarkdown decl@Declaration{..} = do

@@ -8,9 +8,11 @@ import Language.PureScript.AST (Associativity, Binder(..), SourceSpan)
 import Language.PureScript.Errors (MultipleErrors)
 import Language.PureScript.Names (OpName(..), OpNameType(..), Qualified(..))
 import Language.PureScript.Sugar.Operators.Common (matchOperators)
+import GHC.Stack (HasCallStack)
 
 matchBinderOperators
-  :: MonadError MultipleErrors m
+  :: HasCallStack
+  => MonadError MultipleErrors m
   => [[(Qualified (OpName 'ValueOpName), Associativity)]] 
   -> Binder
   -> m Binder

@@ -81,7 +81,7 @@ data SimpleErrorMessage
   | OrphanTypeDeclaration Ident
   | OrphanKindDeclaration (ProperName 'TypeName)
   | OrphanRoleDeclaration (ProperName 'TypeName)
-  | RedefinedIdent Ident
+  | RedefinedIdent Ident Text
   | OverlappingNamesInLet Ident
   | UnknownName (Qualified Name)
   | UnknownImport ModuleName Name
@@ -520,7 +520,7 @@ errorSuggestion err =
       ImplicitQualifiedImport mn asModule refs -> suggest $ importSuggestion mn refs (Just asModule)
       ImplicitQualifiedImportReExport mn asModule refs -> suggest $ importSuggestion mn refs (Just asModule)
       HidingImport mn refs -> suggest $ importSuggestion mn refs Nothing
-      MissingTypeDeclaration ident ty -> suggest $ showIdent ident <> " :: " <> T.pack (prettyPrintSuggestedTypeSimplified ty) <> "\n"
+      MissingTypeDeclaration ident ty -> suggest $ showIdent ident <> " :: " <> T.pack (prettyPrintSuggestedTypeSimplified ty)
       MissingKindDeclaration sig name ty -> suggest $ prettyPrintKindSignatureFor sig <> " " <> runProperName name <> " :: " <> T.pack (prettyPrintSuggestedTypeSimplified ty) <> "\n"
       WildcardInferredType ty _ -> suggest $ T.pack (prettyPrintSuggestedTypeSimplified ty)
       WarningParsingCSTModule pe -> do
@@ -619,6 +619,16 @@ data PPEOptions = PPEOptions
 defaultPPEOptions :: PPEOptions
 defaultPPEOptions = PPEOptions
   { ppeCodeColor         = Just defaultCodeColor
+  , ppeFull              = False
+  , ppeLevel             = Error
+  , ppeShowDocs          = True
+  , ppeRelativeDirectory = mempty
+  , ppeFileContents      = []
+  }
+  
+noColorPPEOptions :: PPEOptions
+noColorPPEOptions = PPEOptions
+  { ppeCodeColor         = Nothing
   , ppeFull              = False
   , ppeLevel             = Error
   , ppeShowDocs          = True
@@ -764,8 +774,8 @@ prettyPrintSingleError (PPEOptions codeColor full level showDocs relPath fileCon
       line $ "The kind declaration for " <> markCode (runProperName nm) <> " should be followed by its definition."
     renderSimpleErrorMessage (OrphanRoleDeclaration nm) =
       line $ "The role declaration for " <> markCode (runProperName nm) <> " should follow its definition."
-    renderSimpleErrorMessage (RedefinedIdent name) =
-      line $ "The value " <> markCode (showIdent name) <> " has been defined multiple times"
+    renderSimpleErrorMessage (RedefinedIdent name text) =
+      line $ "The value " <> markCode (showIdent name) <> " has been defined multiple times" <> text
     renderSimpleErrorMessage (UnknownName name@(Qualified (BySourcePos _) (IdentName (Ident i)))) | i `elem` [ C.S_bind, C.S_discard ] =
       line $ "Unknown " <> printName name <> ". You're probably using do-notation, which the compiler replaces with calls to the " <> markCode "bind" <> " and " <> markCode "discard" <> " functions. Please import " <> markCode i <> " from module " <> markCode "Prelude"
     renderSimpleErrorMessage (UnknownName name@(Qualified (BySourcePos _) (IdentName (Ident C.S_negate)))) =
@@ -2031,6 +2041,12 @@ withoutPosition :: ErrorMessage -> ErrorMessage
 withoutPosition (ErrorMessage hints se) = ErrorMessage (filter go hints) se
   where
   go (PositionedError _) = False
+  go _ = True
+  
+withoutModule :: ErrorMessage -> ErrorMessage
+withoutModule (ErrorMessage hints se) = ErrorMessage (filter go hints) se
+  where
+  go (ErrorInModule _) = False
   go _ = True
 
 positionedError :: SourceSpan -> ErrorMessageHint

@@ -1,6 +1,7 @@
 
 module Language.PureScript.Docs.Collect
   ( collectDocs
+  , parseDocsJsonFile
   ) where
 
 import Protolude hiding (check)

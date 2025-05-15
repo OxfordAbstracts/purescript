@@ -19,6 +19,7 @@ module Language.PureScript.Ide.Imports
        , parseImport
        , prettyPrintImportSection
        , sliceImportSection
+       , parseModuleHeader
        , prettyPrintImport'
        , Import(Import)
        )

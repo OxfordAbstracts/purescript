@@ -39,6 +39,8 @@ import Language.PureScript.TypeClassDictionaries (NamedDict, TypeClassDictionary
 import Language.PureScript.Types (SourceConstraint, SourceType, srcInstanceType)
 
 import Paths_purescript as Paths
+import Database.SQLite.Simple (FromRow (fromRow), field)
+import Control.Applicative ((<|>))
 
 -- | The data which will be serialized to an externs file
 data ExternsFile = ExternsFile
@@ -76,6 +78,9 @@ data ExternsImport = ExternsImport
   , eiImportedAs :: Maybe ModuleName
   } deriving (Show, Generic, NFData)
 
+instance FromRow ExternsImport where
+  fromRow = ExternsImport <$> field <*> field <*> field
+
 instance Serialise ExternsImport
 
 -- | A fixity declaration in an externs file
@@ -89,9 +94,19 @@ data ExternsFixity = ExternsFixity
   , efOperator :: OpName 'ValueOpName
   -- | The value the operator is an alias for
   , efAlias :: Qualified (Either Ident (ProperName 'ConstructorName))
-  } deriving (Show, Generic, NFData)
+  } deriving (Show, Eq, Ord, Generic, NFData)
 
 instance Serialise ExternsFixity
+
+instance FromRow ExternsFixity where
+  fromRow = do
+    assoc <- field
+    prec <- field
+    op <- field
+    aliasMod <- field
+    alias <- (Right <$> field) <|> (Left <$> field) 
+    pure $ ExternsFixity assoc prec op (Qualified (ByModuleName aliasMod) alias)
+    -- ExternsFixity <$> field <*> field <*> field <*> field
 
 -- | A type fixity declaration in an externs file
 data ExternsTypeFixity = ExternsTypeFixity
@@ -104,9 +119,17 @@ data ExternsTypeFixity = ExternsTypeFixity
   , efTypeOperator :: OpName 'TypeOpName
   -- | The value the operator is an alias for
   , efTypeAlias :: Qualified (ProperName 'TypeName)
-  } deriving (Show, Generic, NFData)
+  } deriving (Show, Eq, Ord, Generic, NFData)
 
 instance Serialise ExternsTypeFixity
+
+instance FromRow ExternsTypeFixity where
+  fromRow = do
+    assoc <- field
+    prec <- field
+    op <- field
+    aliasMod <- field
+    ExternsTypeFixity assoc prec op . Qualified (ByModuleName aliasMod) <$> field
 
 -- | A type or value declaration appearing in an externs file
 data ExternsDeclaration =
@@ -247,7 +270,7 @@ moduleToExternsFile (Module ss _ mn ds (Just exps)) env renamedIdents = ExternsF
   toExternsDeclaration (ValueRef _ ident)
     | Just (ty, _, _) <- Qualified (ByModuleName mn) ident `M.lookup` names env
     = [ EDValue (lookupRenamedIdent ident) ty ]
-  toExternsDeclaration (TypeClassRef _ className)
+  toExternsDeclaration (TypeClassRef _ss className)
     | let dictName = dictTypeName . coerceProperName $ className
     , Just TypeClassData{..} <- Qualified (ByModuleName mn) className `M.lookup` typeClasses env
     , Just (kind, tk) <- Qualified (ByModuleName mn) (coerceProperName className) `M.lookup` types env

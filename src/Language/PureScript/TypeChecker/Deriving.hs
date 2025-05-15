@@ -24,14 +24,15 @@ import Language.PureScript.Crash (internalError)
 import Language.PureScript.Environment (DataDeclType(..), Environment(..), FunctionalDependency(..), TypeClassData(..), TypeKind(..), kindType, (-:>))
 import Language.PureScript.Errors (MultipleErrors, SimpleErrorMessage(..), addHint, errorMessage, internalCompilerError)
 import Language.PureScript.Label (Label(..))
-import Language.PureScript.Names (pattern ByNullSourcePos, Ident(..), ModuleName(..), Name(..), ProperName(..), ProperNameType(..), Qualified(..), QualifiedBy(..), coerceProperName, freshIdent, qualify)
+import Language.PureScript.Names (pattern ByNullSourcePos, Ident(..), ModuleName(..), ProperName(..), ProperNameType(..), Qualified(..), QualifiedBy(..), coerceProperName, freshIdent, qualify)
 import Language.PureScript.PSString (PSString, mkString)
 import Language.PureScript.Sugar.TypeClasses (superClassDictionaryNames)
 import Language.PureScript.TypeChecker.Entailment (InstanceContext, findDicts)
-import Language.PureScript.TypeChecker.Monad (CheckState, getEnv, getTypeClassDictionaries, unsafeCheckCurrentModule)
+import Language.PureScript.TypeChecker.Monad (CheckState, getEnv, getTypeClassDictionaries, unsafeCheckCurrentModule, lookupTypeClassOrThrow, lookupTypeClassMb, lookupTypeClassDictionariesForClass, addDictsToEnvMap)
 import Language.PureScript.TypeChecker.Synonyms (replaceAllTypeSynonyms)
 import Language.PureScript.TypeClassDictionaries (TypeClassDictionaryInScope(..))
 import Language.PureScript.Types (Constraint(..), pattern REmptyKinded, SourceType, Type(..), completeBinderList, eqType, everythingOnTypes, replaceAllTypeVars, srcTypeVar, usedTypeVariables)
+import Language.PureScript.Make.Index.Select (GetEnv (getTypeClassDictionary))
 
 -- | Extract the name of the newtype appearing in the last type argument of
 -- a derived newtype instance.
@@ -48,6 +49,7 @@ extractNewtypeName mn
 deriveInstance
   :: forall m
    . MonadError MultipleErrors m
+  => GetEnv m
   => MonadState CheckState m
   => MonadSupply m
   => MonadWriter MultipleErrors m
@@ -57,13 +59,10 @@ deriveInstance
   -> m Expr
 deriveInstance instType className strategy = do
   mn <- unsafeCheckCurrentModule
-  env <- getEnv
   instUtc@UnwrappedTypeConstructor{ utcArgs = tys } <- maybe (internalCompilerError "invalid instance type") pure $ unwrapTypeConstructor instType
   let ctorName = coerceProperName <$> utcQTyCon instUtc
 
-  TypeClassData{..} <-
-    note (errorMessage . UnknownName $ fmap TyClassName className) $
-      className `M.lookup` typeClasses env
+  TypeClassData{..} <- lookupTypeClassOrThrow className
 
   case strategy of
     KnownClassStrategy -> let
@@ -111,6 +110,7 @@ deriveNewtypeInstance
    . MonadError MultipleErrors m
   => MonadState CheckState m
   => MonadWriter MultipleErrors m
+  => GetEnv m
   => Qualified (ProperName 'ClassName)
   -> [SourceType]
   -> UnwrappedTypeConstructor
@@ -151,11 +151,12 @@ deriveNewtypeInstance className tys (UnwrappedTypeConstructor mn tyConNm dkargs 
 
     verifySuperclasses :: m ()
     verifySuperclasses = do
-      env <- getEnv
-      for_ (M.lookup className (typeClasses env)) $ \TypeClassData{ typeClassArguments = args, typeClassSuperclasses = superclasses } ->
+      typeClass <- lookupTypeClassMb className
+      for_ typeClass $ \TypeClassData{ typeClassArguments = args, typeClassSuperclasses = superclasses } ->
         for_ superclasses $ \Constraint{..} -> do
           let constraintClass' = qualify (internalError "verifySuperclasses: unknown class module") constraintClass
-          for_ (M.lookup constraintClass (typeClasses env)) $ \TypeClassData{ typeClassDependencies = deps } ->
+          conTypeClass <- lookupTypeClassMb constraintClass
+          for_ conTypeClass $ \TypeClassData{ typeClassDependencies = deps } ->
             -- We need to check whether the newtype is mentioned, because of classes like MonadWriter
             -- with its Monoid superclass constraint.
             when (not (null args) && any ((fst (last args) `elem`) . usedTypeVariables) constraintArgs) $ do
@@ -171,20 +172,23 @@ deriveNewtypeInstance className tys (UnwrappedTypeConstructor mn tyConNm dkargs 
                   -- check, since the superclass might have multiple type arguments, so overlaps might still
                   -- be possible, so we warn again.
                   for_ (extractNewtypeName mn tys) $ \nm -> do
-                    unless (hasNewtypeSuperclassInstance constraintClass' nm (typeClassDictionaries env)) $
+                    consDicts <- lookupTypeClassDictionariesForClass (ByModuleName (fst constraintClass')) constraintClass
+                    newtypeDicts <- lookupTypeClassDictionariesForClass (ByModuleName (fst nm)) constraintClass
+                    unless (hasNewtypeSuperclassInstance constraintClass' nm (consDicts <> newtypeDicts)) $
                       tell . errorMessage $ MissingNewtypeSuperclassInstance constraintClass className tys
                 else tell . errorMessage $ UnverifiableSuperclassInstance constraintClass className tys
 
     -- Note that this check doesn't actually verify that the superclass is
     -- newtype-derived; see #3168. The whole verifySuperclasses feature
     -- is pretty sketchy, and could use a thorough review and probably rewrite.
-    hasNewtypeSuperclassInstance (suModule, suClass) nt@(newtypeModule, _) dicts =
-      let su = Qualified (ByModuleName suModule) suClass
+    hasNewtypeSuperclassInstance (suModule, _) nt@(newtypeModule, _) dicts =
+      let getDictNewtypeNames mn' = 
+            toList . extractNewtypeName mn' . tcdInstanceTypes
+              <=< foldMap toList . M.elems
           lookIn mn'
             = elem nt
-            . (toList . extractNewtypeName mn' . tcdInstanceTypes
-                <=< foldMap toList . M.elems
-                <=< toList . (M.lookup su <=< M.lookup (ByModuleName mn')))
+            . (getDictNewtypeNames mn'
+                <=< toList . Just)
             $ dicts
       in lookIn suModule || lookIn newtypeModule
 
@@ -207,7 +211,7 @@ lookupTypeInfo UnwrappedTypeConstructor{..} = do
 
 deriveEq
   :: forall m
-   . MonadError MultipleErrors m
+   . (MonadError MultipleErrors m, GetEnv m)
   => MonadState CheckState m
   => MonadSupply m
   => UnwrappedTypeConstructor
@@ -269,6 +273,7 @@ deriveEq1 = pure [(Libs.S_eq1, mkRef Libs.I_eq)]
 deriveOrd
   :: forall m
    . MonadError MultipleErrors m
+  => GetEnv m
   => MonadState CheckState m
   => MonadSupply m
   => UnwrappedTypeConstructor
@@ -439,6 +444,7 @@ validateParamsInTypeConstructors
   :: forall c m
    . MonadError MultipleErrors m
   => MonadState CheckState m
+  => GetEnv m
   => Qualified (ProperName 'ClassName)
   -> UnwrappedTypeConstructor
   -> Bool
@@ -456,7 +462,8 @@ validateParamsInTypeConstructors derivingClass utc isBi CovariantClasses{..} con
       (True, _)         -> Left $ kindType -:> kindType
   ctors <- traverse (traverse $ traverse replaceAllTypeSynonyms) tiCtors
   tcds <- getTypeClassDictionaries
-  let (ctorUsages, problemSpans) = runWriter $ traverse (traverse . traverse $ typeToUsageOf tcds tiArgSubst (maybe That These mbLParam param) False) ctors
+  classTcds <- getTypeClassDictionary derivingClass
+  let (ctorUsages, problemSpans) = runWriter $ traverse (traverse . traverse $ typeToUsageOf (addDictsToEnvMap classTcds tcds) tiArgSubst (maybe That These mbLParam param) False) ctors
   let relatedClasses = [monoClass, biClass] ++ ([contraClass, proClass] <*> (contravariantClasses <$> toList contravarianceSupport))
   for_ (nonEmpty $ ordNub problemSpans) $ \sss ->
     throwError . addHint (RelatedPositions sss) . errorMessage $ CannotDeriveInvalidConstructorArg derivingClass relatedClasses (isJust contravarianceSupport)
@@ -645,7 +652,7 @@ mkTraversal mn isBi te@TraversalExprs{..} getContraversalExprs (TraversalOps @_ 
 
 deriveFunctor
   :: forall m
-   . MonadError MultipleErrors m
+   . (MonadError MultipleErrors m, GetEnv m)
   => MonadState CheckState m
   => MonadSupply m
   => Maybe Bool -- does left parameter exist, and is it contravariant?
@@ -691,7 +698,7 @@ applyWhen cond f = if cond then f else identity
 
 deriveFoldable
   :: forall m
-   . MonadError MultipleErrors m
+   . (MonadError MultipleErrors m, GetEnv m)
   => MonadState CheckState m
   => MonadSupply m
   => Bool -- is there a left parameter (are we deriving Bifoldable)?
@@ -788,7 +795,7 @@ foldMapOps = TraversalOps { visitExpr = toConst, .. }
 
 deriveTraversable
   :: forall m
-   . MonadError MultipleErrors m
+   . (MonadError MultipleErrors m, GetEnv m)
   => MonadState CheckState m
   => MonadSupply m
   => Bool -- is there a left parameter (are we deriving Bitraversable)?

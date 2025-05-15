@@ -16,7 +16,7 @@ import Data.Set qualified as S
 import Data.Text qualified as T
 
 import Language.PureScript.CoreFn (Ann, Bind(..), Binder(..), CaseAlternative(..), Expr(..), Literal(..), Module(..))
-import Language.PureScript.Names (Ident(..), Qualified(..), isBySourcePos, isPlainIdent, runIdent, showIdent)
+import Language.PureScript.Names (Ident(..), Qualified(..), isBySourcePos, isPlainIdent, runIdent)
 import Language.PureScript.Traversals (eitherM, pairM, sndM)
 
 -- |
@@ -87,13 +87,14 @@ updateScope ident =
 -- |
 -- Finds the new name to use for an ident.
 --
-lookupIdent :: Ident -> Rename Ident
-lookupIdent UnusedIdent = return UnusedIdent
-lookupIdent name = do
+lookupIdent :: Show a => a -> Ident -> Rename Ident
+lookupIdent _ UnusedIdent = return UnusedIdent
+lookupIdent modName name = do
   name' <- gets $ M.lookup name . rsBoundNames
   case name' of
     Just name'' -> return name''
-    Nothing -> error $ "Rename scope is missing ident '" ++ T.unpack (showIdent name) ++ "'"
+    Nothing ->
+       error $ "In " ++ (show modName :: [Char]) ++ " rename scope is missing ident '" ++ show name ++ "'"
 
 
 -- |
@@ -102,10 +103,10 @@ lookupIdent name = do
 -- externs files as well.
 --
 renameInModule :: Module Ann -> (M.Map Ident Ident, Module Ann)
-renameInModule m@(Module _ _ _ _ _ exports _ foreigns decls) = (rsBoundNames, m { moduleExports, moduleDecls })
+renameInModule m@(Module _ _ name _ _ exports _ foreigns decls) = (rsBoundNames, m { moduleExports, moduleDecls })
   where
   ((moduleDecls, moduleExports), RenameState{..}) = runRename foreigns $
-    (,) <$> renameInDecls decls <*> traverse lookupIdent exports
+    (,) <$> renameInDecls decls <*> traverse (lookupIdent name) exports
 
 -- |
 -- Renames within a list of declarations. The list is processed in three
@@ -152,38 +153,38 @@ renameInDecls =
 
   renameValuesInDecl :: Bind Ann -> Rename (Bind Ann)
   renameValuesInDecl = \case
-    NonRec a name val -> NonRec a name <$> renameInValue val
+    NonRec a name val -> NonRec a name <$> renameInValue name val
     Rec ds -> Rec <$> traverse updateValues ds
     where
     updateValues :: ((Ann, Ident), Expr Ann) -> Rename ((Ann, Ident), Expr Ann)
-    updateValues (aname, val) = (aname, ) <$> renameInValue val
+    updateValues (aname, val) = (aname, ) <$> renameInValue (snd aname) val
 
 -- |
 -- Renames within a value.
 --
-renameInValue :: Expr Ann -> Rename (Expr Ann)
-renameInValue (Literal ann l) =
-  Literal ann <$> renameInLiteral renameInValue l
-renameInValue c@Constructor{} = return c
-renameInValue (Accessor ann prop v) =
-  Accessor ann prop <$> renameInValue v
-renameInValue (ObjectUpdate ann obj copy vs) =
-  (\obj' -> ObjectUpdate ann obj' copy) <$> renameInValue obj <*> traverse (\(name, v) -> (name, ) <$> renameInValue v) vs
-renameInValue (Abs ann name v) =
-  newScope $ Abs ann <$> updateScope name <*> renameInValue v
-renameInValue (App ann v1 v2) =
-  App ann <$> renameInValue v1 <*> renameInValue v2
-renameInValue (Var ann (Qualified qb name)) | isBySourcePos qb || not (isPlainIdent name) =
+renameInValue :: Ident -> Expr Ann -> Rename (Expr Ann)
+renameInValue declName (Literal ann l) =
+  Literal ann <$> renameInLiteral (renameInValue declName) l
+renameInValue _ c@Constructor{} = return c
+renameInValue declName (Accessor ann prop v) =
+  Accessor ann prop <$> renameInValue declName v
+renameInValue declName (ObjectUpdate ann obj copy vs) =
+  (\obj' -> ObjectUpdate ann obj' copy) <$> renameInValue declName obj <*> traverse (\(name, v) -> (name, ) <$> renameInValue declName v) vs
+renameInValue declName (Abs ann name v) =
+  newScope $ Abs ann <$> updateScope name <*> renameInValue declName v
+renameInValue declName (App ann v1 v2) =
+  App ann <$> renameInValue declName v1 <*> renameInValue declName v2
+renameInValue declName (Var ann (Qualified qb name)) | isBySourcePos qb || not (isPlainIdent name) =
   -- This should only rename identifiers local to the current module: either
   -- they aren't qualified, or they are but they have a name that should not
   -- have appeared in a module's externs, so they must be from this module's
   -- top-level scope.
-  Var ann . Qualified qb <$> lookupIdent name
-renameInValue v@Var{} = return v
-renameInValue (Case ann vs alts) =
-  newScope $ Case ann <$> traverse renameInValue vs <*> traverse renameInCaseAlternative alts
-renameInValue (Let ann ds v) =
-  newScope $ Let ann <$> renameInDecls ds <*> renameInValue v
+  Var ann . Qualified qb <$> lookupIdent (declName, qb) name
+renameInValue _ v@Var{} = return v
+renameInValue declName (Case ann vs alts) =
+  newScope $ Case ann <$> traverse (renameInValue declName) vs <*> traverse (renameInCaseAlternative declName) alts
+renameInValue declName (Let ann ds v) =
+  newScope $ Let ann <$> renameInDecls ds <*> renameInValue declName v
 
 -- |
 -- Renames within literals.
@@ -196,10 +197,10 @@ renameInLiteral _ l = return l
 -- |
 -- Renames within case alternatives.
 --
-renameInCaseAlternative :: CaseAlternative Ann -> Rename (CaseAlternative Ann)
-renameInCaseAlternative (CaseAlternative bs v) = newScope $
+renameInCaseAlternative :: Ident -> CaseAlternative Ann -> Rename (CaseAlternative Ann)
+renameInCaseAlternative  name (CaseAlternative bs v) = newScope $
   CaseAlternative <$> traverse renameInBinder bs
-                  <*> eitherM (traverse (pairM renameInValue renameInValue)) renameInValue v
+                  <*> eitherM (traverse (pairM (renameInValue name) (renameInValue name))) (renameInValue name) v
 
 -- |
 -- Renames within binders.

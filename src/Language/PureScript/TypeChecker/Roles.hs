@@ -29,6 +29,8 @@ import Language.PureScript.Errors (DataConstructorDeclaration(..), MultipleError
 import Language.PureScript.Names (ModuleName, ProperName, ProperNameType(..), Qualified(..), QualifiedBy(..))
 import Language.PureScript.Roles (Role(..))
 import Language.PureScript.Types (Constraint(..), SourceType, Type(..), freeTypeVariables, unapplyTypes)
+import Language.PureScript.Make.Index.Select (GetEnv)
+import Language.PureScript.TypeChecker.Monad (CheckState, lookupTypeMb)
 
 -- |
 -- A map of a type's formal parameter names to their roles. This type's
@@ -78,11 +80,21 @@ updateRoleEnv qualTyName roles' roleEnv =
 -- returns an empty list.
 --
 lookupRoles
-  :: Environment
-  -> Qualified (ProperName 'TypeName)
-  -> [Role]
-lookupRoles env tyName =
-  fromMaybe [] $ M.lookup tyName (types env) >>= typeKindRoles . snd
+  :: (GetEnv m, MonadState CheckState m)
+  => Qualified (ProperName 'TypeName)
+  -> m [Role]
+lookupRoles tyName = do 
+  tysMb <- lookupTypeMb tyName 
+  case tysMb of
+    Nothing -> pure []
+    Just ty -> 
+      pure $ fromMaybe [] $ typeKindRoles $ snd ty
+
+
+
+      -- fromMaybe (pure []) $ typeKindRoles . snd <$> M.lookup tyName tys
+ 
+  -- fromMaybe (pure []) $ M.lookup tyName (types env) >>= typeKindRoles . snd
 
 -- |
 -- Compares the inferred roles to the explicitly declared roles and ensures
