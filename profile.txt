@@ -1,27 +1,27 @@
 'purs' 'compile' '--source-globs-file' '.spago/sources.txt' +RTS '-N' '-A256m' '-n16m' '-sprofile.txt' 
-1,514,670,705,400 bytes allocated in the heap
- 100,283,741,944 bytes copied during GC
-   3,311,678,824 bytes maximum residency (14 sample(s))
-      47,472,136 bytes maximum slop
-           11326 MiB total memory in use (0 MB lost due to fragmentation)
+1,506,791,961,952 bytes allocated in the heap
+  98,435,279,688 bytes copied during GC
+   3,334,673,848 bytes maximum residency (13 sample(s))
+      47,501,584 bytes maximum slop
+           11887 MiB total memory in use (0 MB lost due to fragmentation)
 
                                      Tot time (elapsed)  Avg pause  Max pause
-  Gen  0       693 colls,   693 par   196.375s  42.165s     0.0608s    0.5568s
-  Gen  1        14 colls,    13 par   37.234s   5.165s     0.3689s    0.5430s
+  Gen  0       690 colls,   690 par   198.872s  41.325s     0.0599s    0.6849s
+  Gen  1        13 colls,    12 par   34.478s   4.768s     0.3668s    0.5143s
 
-  Parallel GC work balance: 84.01% (serial 0%, perfect 100%)
+  Parallel GC work balance: 84.54% (serial 0%, perfect 100%)
 
   TASKS: 68 (1 bound, 67 peak workers (67 total), using -N10)
 
   SPARKS: 7516 (7516 converted, 0 overflowed, 0 dud, 0 GC'd, 0 fizzled)
 
-  INIT    time    0.003s  (  0.191s elapsed)
-  MUT     time  692.332s  (136.117s elapsed)
-  GC      time  233.609s  ( 47.330s elapsed)
-  EXIT    time    0.053s  (  0.009s elapsed)
-  Total   time  925.997s  (183.648s elapsed)
+  INIT    time    0.003s  (  0.185s elapsed)
+  MUT     time  700.605s  (133.224s elapsed)
+  GC      time  233.350s  ( 46.093s elapsed)
+  EXIT    time    0.050s  (  0.008s elapsed)
+  Total   time  934.007s  (179.510s elapsed)
 
-  Alloc rate    2,187,780,137 bytes per MUT second
+  Alloc rate    2,150,702,531 bytes per MUT second
 
-  Productivity  74.8% of total user, 74.1% of total elapsed
+  Productivity  75.0% of total user, 74.2% of total elapsed
 

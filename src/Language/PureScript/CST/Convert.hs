@@ -42,6 +42,7 @@ comment :: Comment a -> Maybe C.Comment
 comment = \case
   Comment t
     | "{-" `Text.isPrefixOf` t -> Just $ C.BlockComment $ Text.drop 2 $ Text.dropEnd 2 t
+    | "-- @generated" `Text.isPrefixOf` t -> Just C.PragmaGenerated
     | "--" `Text.isPrefixOf` t -> Just $ C.LineComment $ Text.drop 2 t
   _ -> Nothing
 

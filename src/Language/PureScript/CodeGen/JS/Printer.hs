@@ -128,6 +128,7 @@ literals = mkPattern' match'
   match _ = mzero
 
 comment :: (Emit gen) => Comment -> StateT PrinterState Maybe gen
+comment PragmaGenerated = return $ emit ""
 comment (LineComment com) = mconcat <$> sequence
   [ currentIndent
   , return $ emit "//" <> emit com <> emit "\n"

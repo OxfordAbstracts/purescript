@@ -29,6 +29,7 @@ import Data.Text qualified as T
 
 import Language.PureScript.AST
 import Language.PureScript.AST.Declarations.ChainId (ChainId)
+import Language.PureScript.Comments qualified as C
 import Language.PureScript.Constants.Libs qualified as Libs
 import Language.PureScript.Crash (internalError)
 import Language.PureScript.Environment (DataDeclType(..), Environment(..), FunctionalDependency, NameKind(..), NameVisibility(..), TypeClassData(..), TypeKind(..), isDictTypeName, kindArity, makeTypeClassData, nominalRolesForKind, tyFunction)
@@ -251,10 +252,11 @@ checkTypeSynonyms = void . replaceAllTypeSynonyms
 typeCheckAll
   :: forall m
    . (MonadSupply m, MonadState CheckState m, MonadError MultipleErrors m, MonadWriter MultipleErrors m)
-  => ModuleName
+  => Bool
+  -> ModuleName
   -> [Declaration]
   -> m [Declaration]
-typeCheckAll moduleName = traverse go
+typeCheckAll pragmaGenerated moduleName = traverse go
   where
   go :: Declaration -> m Declaration
   go (DataDeclaration sa@(ss, _) dtype name args dctors) = do
@@ -404,7 +406,8 @@ typeCheckAll moduleName = traverse go
           let nonOrphanModules = findNonOrphanModules className typeClass tys''
           checkOrphanInstance dictName className tys'' nonOrphanModules
           let chainId = Just ch
-          checkOverlappingInstance ss chainId dictName vars className typeClass tys'' nonOrphanModules
+          when (not pragmaGenerated) $ do
+            checkOverlappingInstance ss chainId dictName vars className typeClass tys'' nonOrphanModules
           _ <- traverseTypeInstanceBody checkInstanceMembers body
           deps'' <- (traverse . overConstraintArgs . traverse) replaceAllTypeSynonyms deps'
           let dict =
@@ -589,7 +592,7 @@ typeCheckModule modulesExports (Module ss coms mn decls (Just exps)) =
   warnAndRethrow (addHint (ErrorInModule mn)) $ do
     let (decls', imports) = partitionEithers $ fromImportDecl <$> decls
     modify (\s -> s { checkCurrentModule = Just mn, checkCurrentModuleImports = imports })
-    decls'' <- typeCheckAll mn $ ignoreWildcardsUnderCompleteTypeSignatures <$> decls'
+    decls'' <- typeCheckAll pragmaGenerated mn $ ignoreWildcardsUnderCompleteTypeSignatures <$> decls'
     checkSuperClassesAreExported <- getSuperClassExportCheck
     for_ exps $ \e -> do
       checkTypesAreExported e
@@ -599,6 +602,8 @@ typeCheckModule modulesExports (Module ss coms mn decls (Just exps)) =
       checkDataConstructorsAreExported e
     return $ Module ss coms mn (map toImportDecl imports ++ decls'') (Just exps)
   where
+  pragmaGenerated :: Bool
+  pragmaGenerated = elem C.PragmaGenerated coms
 
   fromImportDecl
     :: Declaration
