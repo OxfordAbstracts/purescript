@@ -58,11 +58,9 @@ sqliteExtern outputDir m extern = liftIO $ do
 
 
     SQLite.executeNamed conn
-      "insert into modules (module_name, comment, extern, dec) values (:module_name, :docs, :extern, :dec)"
+      "insert into modules (module_name, extern) values (:module_name, :extern)"
       [ ":module_name" :=  runModuleName ( efModuleName extern )
-      , ":docs" := Just ("" :: Text)
       , ":extern" := Serialise.serialise extern
-      , ":dec" := show ( efExports extern )
       ]
 
     for_ (getModuleDeclarations m) (\d -> doDecl d)
@@ -138,9 +136,7 @@ sqliteInit outputDir = liftIO $ do
     SQLite.execute_ conn $ SQLite.Query $ Text.pack $ unlines
       [ "create table if not exists modules ("
       , " module_name text primary key,"
-      , " comment text,"
       , " extern blob,"
-      , " dec text,"
       , " unique (module_name) on conflict replace"
       , ")"
       ]
