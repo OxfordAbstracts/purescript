@@ -28,12 +28,10 @@ import Language.PureScript.AST.Traversals (everywhereOnValuesM)
 import Protolude (identity)
 import Language.PureScript.Names qualified as T
 
-sqliteExtern :: (MonadIO m) => FilePath -> Module -> Docs.Module -> ExternsFile -> m ()
-sqliteExtern outputDir m docs extern = liftIO $ do
+sqliteExtern :: (MonadIO m) => FilePath -> Module -> ExternsFile -> m ()
+sqliteExtern outputDir m extern = liftIO $ do
     conn <- SQLite.open db
     SQLite.execute_ conn "pragma busy_timeout = 300000;"
-
-    -- Debug.traceM $ show extern 
 
     let (doDecl, _, _) = everywhereOnValuesM (pure . identity) (\expr -> case expr of
          Var ss i -> do 
@@ -62,7 +60,7 @@ sqliteExtern outputDir m docs extern = liftIO $ do
     SQLite.executeNamed conn
       "insert into modules (module_name, comment, extern, dec) values (:module_name, :docs, :extern, :dec)"
       [ ":module_name" :=  runModuleName ( efModuleName extern )
-      , ":docs" := Docs.modComments docs
+      , ":docs" := Just ("" :: Text)
       , ":extern" := Serialise.serialise extern
       , ":dec" := show ( efExports extern )
       ]
@@ -110,52 +108,6 @@ sqliteExtern outputDir m docs extern = liftIO $ do
         , ":declaration" := serialise ideDeclaration
         ])
 
-    for_ (Docs.modDeclarations docs) (\d -> do
-       SQLite.executeNamed conn
-         ("insert into declarations (module_name, name, namespace, declaration_type, span, type, docs, declaration) " <>
-          "values (:module_name, :name, :namespace, :declaration_type, :span, :type, :docs, :declaration)"
-         )
-        [ ":module_name" := runModuleName (efModuleName extern)
-        , ":name" := Docs.declTitle d
-        , ":namespace" := toIdeNamespace d
-        , ":declaration_type" := toDeclarationType d
-        , ":span" := Aeson.encode (Docs.declSourceSpan d)
-        , ":docs" := Docs.declComments d
-        , ":type" := runDocs (declAsMarkdown d)
-        , ":declaration" := show d
-        ]
-
-
-       for_ (declChildren d) $ \ch -> do
-         SQLite.executeNamed conn
-            ("insert into declarations (module_name, name, namespace, span, docs, declaration) " <>
-             "values (:module_name, :name, :namespace, :span, :docs, :declaration)")
-          [ ":module_name" := runModuleName (efModuleName extern)
-          , ":name" := Docs.cdeclTitle ch
-          , ":namespace" := childDeclInfoNamespaceIde (Docs.cdeclInfo ch)
-          , ":span" := Aeson.encode (Docs.declSourceSpan d)
-          , ":docs" := Docs.cdeclComments ch
-          , ":declaration" := show d
-          ]
-        )
-
-
-    for_ (Docs.modReExports docs) $ \rexport -> do
-       for_ (snd rexport) $ \d  -> do
-         SQLite.executeNamed conn
-           ("insert into declarations (module_name, name, rexported_from, declaration_type, span, type, docs, declaration)" <>
-            "values (:module_name, :name, :rexported_from, :declaration_type, :span, :type, :docs, :declaration)"
-           )
-          [ ":module_name" := runModuleName (efModuleName extern)
-          , ":name" := Docs.declTitle d
-          , ":rexported_from" := ("HOLAS" :: Text) --runModuleName (Docs.ignorePackage (fst rexport))
-          , ":declaration_type" := toDeclarationType d
-          , ":span" := Aeson.encode (Docs.declSourceSpan d)
-          , ":docs" := Docs.declComments d
-          , ":type" := runDocs (declAsMarkdown d)
-          , ":declaration" := show d
-          ]
-
     SQLite.close conn
     return ()
   where
@@ -202,20 +154,6 @@ sqliteInit outputDir = liftIO $ do
       ]
 
     SQLite.execute_ conn $ SQLite.Query $ Text.pack $ unlines
-      [ "create table if not exists declarations ("
-      , " module_name text references modules(module_name) on delete cascade,"
-      , " name text not null,"
-      , " namespace text,"
-      , " declaration_type text,"
-      , " rexported_from text,"
-      , " type text,"
-      , " docs text,"
-      , " span text,"
-      , " declaration text not null"
-      , ")"
-      ]
-
-    SQLite.execute_ conn $ SQLite.Query $ Text.pack $ unlines
       [ "create table if not exists asts ("
       , " module_name text references modules(module_name) on delete cascade,"
       , " name text not null,"
@@ -232,12 +170,8 @@ sqliteInit outputDir = liftIO $ do
       , ")"
       ]
 
-    SQLite.execute_ conn "create index if not exists dm on declarations(module_name)"
-    SQLite.execute_ conn "create index if not exists dn on declarations(name);"
-    
     SQLite.execute_ conn "create index if not exists asts_module_name_idx on asts(module_name);"
     SQLite.execute_ conn "create index if not exists asts_name_idx on asts(name);"
-
 
     SQLite.execute_ conn "create index if not exists exports_name_idx on exports(name);"
     SQLite.execute_ conn "create index if not exists exports_module_name_idx on exports(module_name);"
