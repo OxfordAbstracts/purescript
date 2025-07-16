@@ -23,7 +23,7 @@ import Language.PureScript.Ide.Completion (getExactMatches)
 import Language.PureScript.Ide.Error (IdeError(..))
 import Language.PureScript.Ide.Filter (Filter)
 import Language.PureScript.Ide.Imports (Import(..), parseImportsFromFile', prettyPrintImportSection)
-import Language.PureScript.Ide.State (getAllModules, runQuery)
+import Language.PureScript.Ide.State (getAllModules, runQuery, escapeSQL)
 import Language.PureScript.Ide.Prim (idePrimDeclarations)
 import Language.PureScript.Ide.Types (Ide, IdeDeclaration(..), IdeType(..), Match(..), Success(..), _IdeDeclModule, ideDtorName, ideDtorTypeName, ideTCName, ideTypeName, ideTypeOpName, ideValueOpName, toText)
 import Language.PureScript.Ide.Util (discardAnn, identifierFromIdeDeclaration)
@@ -180,8 +180,8 @@ addImportForIdentifier fp ident qual filters' = do
       mapMaybe (\case
         F.Filter (Left modules) ->
           Just $ "module_name in (" <> T.intercalate "," (toList modules <&> runModuleName <&> \m -> "'" <> m <> "'") <> ")"
-        F.Filter (Right (F.Prefix f)) -> Just $ "name glob '" <> f <> "*'"
-        F.Filter (Right (F.Exact f)) -> Just $ "name glob '" <> f <> "'"
+        F.Filter (Right (F.Prefix f)) -> Just $ "name glob '" <> escapeSQL f <> "*'"
+        F.Filter (Right (F.Exact f)) -> Just $ "name glob '" <> escapeSQL f <> "'"
         F.Filter (Right (F.Namespace namespaces)) ->
           Just $ "namespace in (" <> T.intercalate "," (toList namespaces <&> \n -> "'" <> toText n <> "'") <> ")"
         F.Filter (Right (F.DeclType dt)) ->
