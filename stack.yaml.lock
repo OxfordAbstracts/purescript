@@ -19,13 +19,6 @@ packages:
   original:
     hackage: bower-json-1.1.0.0
 - completed:
-    hackage: haskeline-0.8.2@sha256:3b4b594095d64f5fa199b07bdca7d6b790313ed7f380a1b061845507e6563880,6005
-    pantry-tree:
-      sha256: 17ee6b093c5135399b8e6bc3a63d9c6a4b0bc2100b495d2d974bc1464769de39
-      size: 2955
-  original:
-    hackage: haskeline-0.8.2
-- completed:
     hackage: these-1.2.1@sha256:35c57aede96c15ea1fed559ac287b1168eb2b2869d79e62ed8c845780b7ea136,2294
     pantry-tree:
       sha256: dc6366ac715dfdf5338a615f71b9ed0542c403a6afcbedcddbc879e947aea6b3
@@ -42,17 +35,17 @@ packages:
 - completed:
     name: cheapskate
     pantry-tree:
-      sha256: a2253619f50d26f0137a802e51e5e7103ee52b1f71bc060d93a0979dcbefa2c8
+      sha256: b130a35ad29a61ac64c2d29bb09309ddf07b139342c67ef01ccc59ad4167d529
       size: 12069
-    sha256: 959fc7a6ca7e0a743b06b0c287aa4a1c3ec7fc740e5830a4a841d43e925a6d73
-    size: 62502
-    url: https://github.com/purescript/cheapskate/archive/8bfaf4beeb108e97a274ed51303f278905979e87.tar.gz
+    sha256: 2b495e2b6d571c33b91ebb76c1b7fe9c9b56ff90ca0804106a3260f2bbdc9a9a
+    size: 62489
+    url: https://github.com/purescript/cheapskate/archive/633c69024e061ad956f1aecfc137fb99a7a7a20b.tar.gz
     version: 0.1.1.2
   original:
-    url: https://github.com/purescript/cheapskate/archive/8bfaf4beeb108e97a274ed51303f278905979e87.tar.gz
+    url: https://github.com/purescript/cheapskate/archive/633c69024e061ad956f1aecfc137fb99a7a7a20b.tar.gz
 snapshots:
 - completed:
-    sha256: 08bd13ce621b41a8f5e51456b38d5b46d7783ce114a50ab604d6bbab0d002146
-    size: 720271
-    url: https://raw.githubusercontent.com/commercialhaskell/stackage-snapshots/master/lts/22/43.yaml
-  original: lts-22.43
+    sha256: d133abe75e408a407cce3f032c96ac1bbadf474a93b5156ebf4135b53382d56b
+    size: 683827
+    url: https://raw.githubusercontent.com/commercialhaskell/stackage-snapshots/master/lts/23/18.yaml
+  original: lts-23.18
