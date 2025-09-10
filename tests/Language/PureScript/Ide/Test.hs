@@ -5,6 +5,7 @@ import Control.Concurrent.STM (newTVarIO, readTVarIO)
 import "monad-logger" Control.Monad.Logger (NoLoggingT(..))
 import Data.IORef (newIORef)
 import Data.Map qualified as Map
+import Database.SQLite.Simple qualified as SQLite
 import Language.PureScript.Ide (handleCommand)
 import Language.PureScript.Ide.Command (Command)
 import Language.PureScript.Ide.Error (IdeError)
@@ -24,13 +25,20 @@ defConfig =
     , confGlobs = ["src/**/*.purs"]
     , confGlobsFromFile = Nothing
     , confGlobsExclude = []
+    , sqliteFilePath = "output/cache.db"
     }
 
 runIde' :: IdeConfiguration -> IdeState -> [Command] -> IO ([Either IdeError Success], IdeState)
 runIde' conf s cs = do
   stateVar <- newTVarIO s
   ts <- newIORef Nothing
-  let env' = IdeEnvironment {ideStateVar = stateVar, ideConfiguration = conf, ideCacheDbTimestamp = ts}
+  let env' = IdeEnvironment
+        { ideStateVar = stateVar
+        , ideConfiguration = conf
+        , ideCacheDbTimestamp = ts
+        , query = \q -> SQLite.withConnection defConfig.sqliteFilePath
+             (\conn -> SQLite.query_ conn $ SQLite.Query q)
+        }
   r <- runNoLoggingT (runReaderT (traverse (runExceptT . handleCommand) cs) env')
   newState <- readTVarIO stateVar
   pure (r, newState)

@@ -57,7 +57,7 @@ printWarningsAndErrors verbose True files warnings errors = do
 
 compile :: PSCMakeOptions -> IO ()
 compile PSCMakeOptions{..} = do
-  sqliteInit "output"
+  sqliteInit pscmOutputDir
   input <- toInputGlobs $ PSCGlobs
     { pscInputGlobs = pscmInput
     , pscInputGlobsFromFile = pscmInputFromFile

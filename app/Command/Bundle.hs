@@ -3,10 +3,27 @@ module Command.Bundle (command, initSqlite) where
 
 import Prelude
 
+import Language.PureScript.Make.IdeCache (sqliteInit)
+import Options.Applicative qualified as Opts
 import System.Exit (exitFailure)
 import System.IO (stderr, hPutStrLn)
-import Options.Applicative qualified as Opts
-import Language.PureScript.Make.IdeCache (sqliteInit)
+
+
+data PublishOptionsCLI = PublishOptionsCLI
+  { cliCompileOutputDir :: FilePath
+  }
+
+compileOutputDir :: Opts.Parser FilePath
+compileOutputDir = Opts.option Opts.auto $
+     Opts.value "output"
+  <> Opts.showDefault
+  <> Opts.long "compile-output"
+  <> Opts.metavar "DIR"
+  <> Opts.help "Compiler output directory"
+
+cliOptions :: Opts.Parser PublishOptionsCLI
+cliOptions =
+  PublishOptionsCLI <$> compileOutputDir
 
 app :: IO ()
 app = do
@@ -24,7 +41,7 @@ command = run <$> (Opts.helper <*> pure ()) where
   run _ = app
 
 initSqlite :: Opts.Parser (IO ())
-initSqlite = run <$> (Opts.helper <*> pure ()) where
-  run :: () -> IO ()
-  run _ = do
-    sqliteInit "output"
+initSqlite = run <$> (Opts.helper <*> cliOptions) where
+  run :: PublishOptionsCLI -> IO ()
+  run opts = do
+    sqliteInit opts.cliCompileOutputDir

@@ -42,7 +42,7 @@ import System.FilePath ((</>))
 import System.IO (BufferMode(..), hClose, hFlush, hSetBuffering, hSetEncoding, utf8)
 import System.IO.Error (isEOFError)
 import Database.SQLite.Simple qualified as SQLite
-import  Language.PureScript.Options as PO
+import Language.PureScript.Options as PO
 
 listenOnLocalhost :: Network.PortNumber -> IO Network.Socket
 listenOnLocalhost port = do
@@ -165,13 +165,13 @@ startServer fp'' env = do
      runExceptT $ do
       result <- handleCommand (RebuildSync fp Nothing (Set.fromList [PO.JS]))
 
-      -- liftIO $ BSL8.putStrLn $ Aeson.encode result 
-       
+      -- liftIO $ BSL8.putStrLn $ Aeson.encode result
+
       return ()
 
 
      return ()
-    
+
     loop :: (Ide m, MonadLogger m) => Network.Socket -> m ()
     loop sock = do
       accepted <- runExceptT (acceptCommand sock)
