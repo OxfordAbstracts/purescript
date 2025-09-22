@@ -10,6 +10,7 @@ import Language.PureScript.Ide (handleCommand)
 import Language.PureScript.Ide.Command (Command)
 import Language.PureScript.Ide.Error (IdeError)
 import Language.PureScript.Ide.Types
+import Language.PureScript.Make.IdeCache (sqliteInit)
 import Protolude
 import System.Directory (doesDirectoryExist, getCurrentDirectory, makeAbsolute, removeDirectoryRecursive, setCurrentDirectory)
 import System.FilePath ((</>))
@@ -30,13 +31,14 @@ defConfig =
 
 runIde' :: IdeConfiguration -> IdeState -> [Command] -> IO ([Either IdeError Success], IdeState)
 runIde' conf s cs = do
+  sqliteInit (confOutputPath conf)
   stateVar <- newTVarIO s
   ts <- newIORef Nothing
   let env' = IdeEnvironment
         { ideStateVar = stateVar
         , ideConfiguration = conf
         , ideCacheDbTimestamp = ts
-        , query = \q -> SQLite.withConnection defConfig.sqliteFilePath
+        , query = \q -> SQLite.withConnection conf.sqliteFilePath
              (\conn -> SQLite.query_ conn $ SQLite.Query q)
         }
   r <- runNoLoggingT (runReaderT (traverse (runExceptT . handleCommand) cs) env')

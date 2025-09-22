@@ -7,6 +7,7 @@ import Prelude hiding (writeFile)
 
 import Language.PureScript qualified as P
 import Language.PureScript.CST qualified as CST
+import Language.PureScript.Make.IdeCache (sqliteInit)
 
 import Control.Concurrent (threadDelay)
 import Control.Monad (guard, void, forM_, when)
@@ -696,6 +697,7 @@ compileWithOptions ::
   [FilePath] ->
   IO (Either P.MultipleErrors [P.ExternsFile], Set P.ModuleName)
 compileWithOptions opts input = do
+  sqliteInit modulesDir
   recompiled <- newMVar Set.empty
   moduleFiles <- readUTF8FilesT input
   (makeResult, _) <- P.runMake opts $ do
