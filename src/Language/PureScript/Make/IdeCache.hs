@@ -21,7 +21,8 @@ import Language.PureScript.Ide.Types (Annotation(..), declarationType, IdeDeclar
 import Language.PureScript.Docs.Types (Declaration(declChildren))
 import Language.PureScript.Docs.AsMarkdown (declAsMarkdown, runDocs)
 import Codec.Serialise (serialise)
-import Language.PureScript.AST.Declarations (Module, Expr (Var), getModuleDeclarations, DeclarationRef (..), ExportSource (..))
+import Language.PureScript.AST.Declarations (Module, Expr (Var, Constructor), getModuleDeclarations, DeclarationRef (..), ExportSource (..))
+import Language.PureScript.AST.Binders (Binder (ConstructorBinder, OpBinder))
 import Language.PureScript.Ide.Filter.Declaration (DeclarationType (..))
 import Data.Aeson qualified as Aeson
 import Language.PureScript.AST.Traversals (everywhereOnValuesM)
@@ -34,7 +35,7 @@ sqliteExtern outputDir m extern = liftIO $ do
     SQLite.execute_ conn "pragma busy_timeout = 300000;"
 
     let (doDecl, _, _) = everywhereOnValuesM (pure . identity) (\expr -> case expr of
-         Var ss i -> do 
+         Var ss i -> do
             let iv = disqualify i
             case iv of
               Ident t -> do
@@ -46,8 +47,37 @@ sqliteExtern outputDir m extern = liftIO $ do
                   ]
               _ -> pure ()
             pure expr
+         Constructor ss qctor -> do
+            let ctor = disqualify qctor
+            SQLite.executeNamed conn
+              "insert into asts (module_name, name, span) values (:module_name, :name, :span)"
+              [ ":module_name" := runModuleName ( efModuleName extern )
+              , ":name" := runProperName ctor
+              , ":span" := Aeson.encode ss
+              ]
+            pure expr
          _ -> pure expr
-         ) (pure . identity)
+         ) (\binder -> case binder of
+         ConstructorBinder ss qctor _ -> do
+            let ctor = disqualify qctor
+            SQLite.executeNamed conn
+              "insert into asts (module_name, name, span) values (:module_name, :name, :span)"
+              [ ":module_name" := runModuleName ( efModuleName extern )
+              , ":name" := runProperName ctor
+              , ":span" := Aeson.encode ss
+              ]
+            pure binder
+         OpBinder ss qop -> do
+            let op = disqualify qop
+            SQLite.executeNamed conn
+              "insert into asts (module_name, name, span) values (:module_name, :name, :span)"
+              [ ":module_name" := runModuleName ( efModuleName extern )
+              , ":name" := (\(OpName o) -> o) op
+              , ":span" := Aeson.encode ss
+              ]
+            pure binder
+         _ -> pure binder
+         )
 
     SQLite.execute_ conn "pragma foreign_keys = ON;"
 

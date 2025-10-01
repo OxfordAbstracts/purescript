@@ -13,7 +13,7 @@ import Language.PureScript.Ide.Types
 import Language.PureScript.Make.IdeCache (sqliteInit)
 import Protolude
 import System.Directory (doesDirectoryExist, getCurrentDirectory, makeAbsolute, removeDirectoryRecursive, setCurrentDirectory)
-import System.FilePath ((</>))
+import System.FilePath ((</>), takeDirectory)
 import System.Process (createProcess, getProcessExitCode, shell)
 
 import Language.PureScript qualified as P
@@ -31,7 +31,7 @@ defConfig =
 
 runIde' :: IdeConfiguration -> IdeState -> [Command] -> IO ([Either IdeError Success], IdeState)
 runIde' conf s cs = do
-  sqliteInit (confOutputPath conf)
+  sqliteInit $ takeDirectory $ sqliteFilePath conf
   stateVar <- newTVarIO s
   ts <- newIORef Nothing
   let env' = IdeEnvironment

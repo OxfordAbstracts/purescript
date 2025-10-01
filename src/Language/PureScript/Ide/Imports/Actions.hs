@@ -189,18 +189,19 @@ addImportForIdentifier fp ident qual filters' = do
         F.Filter _ -> Nothing)
       filters)
   
-  let declarations :: [Match IdeDeclaration] = rows <&> \(m, bs) -> Match (ModuleName m, discardAnn $ deserialise bs)
-
-
-
-      -- getExactMatches ident filters (addPrim modules)
-
-
-  -- let addPrim = Map.union idePrimDeclarations
-
   modules <- getAllModules Nothing
+
+  -- Fallback to volatile state if SQLite returns no results (e.g., for Prim modules)
+  let declarations :: [Match IdeDeclaration] =
+        if null rows
+        then
+          let addPrim = Map.union idePrimDeclarations
+          in fmap (fmap discardAnn) $ getExactMatches ident filters (addPrim modules)
+        else
+          rows <&> \(m, bs) -> Match (ModuleName m, discardAnn $ deserialise bs)
+
   let
-    matches = declarations 
+    matches = declarations
         & filter (\(Match (_, d)) -> not (has _IdeDeclModule d))
 
   case matches of

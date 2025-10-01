@@ -48,10 +48,11 @@ spec = describe "Rebuilding single modules" $ do
       ([_, result], _) <- Test.inProject $
         Test.runIde [ load ["RebuildSpecWithDeps"], rebuild "RebuildSpecDep.purs" ]
       result `shouldSatisfy` isRight
-    it "fails to rebuild a module if its dependencies are not loaded" $ do
+    it "succeeds to rebuild a module even if its dependencies are not explicitly loaded (they're in SQLite)" $ do
       ([_, result], _) <- Test.inProject $
         Test.runIde [ load ["RebuildSpecWithDeps"], rebuild "RebuildSpecWithDeps.purs" ]
-      result `shouldSatisfy` isLeft
+      -- With SQLite cache, dependencies are available even if not explicitly loaded
+      result `shouldSatisfy` isRight
     it "rebuilds a correct module with a foreign file" $ do
       ([_, result], _) <- Test.inProject $
         Test.runIde [ load ["RebuildSpecWithForeign"], rebuild "RebuildSpecWithForeign.purs" ]
