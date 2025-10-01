@@ -1,4 +1,4 @@
-module Language.PureScript.Ide.Imports.Actions 
+module Language.PureScript.Ide.Imports.Actions
        ( addImplicitImport
        , addQualifiedImport
        , addImportForIdentifier
@@ -188,7 +188,7 @@ addImportForIdentifier fp ident qual filters' = do
           Just $ "namespace in (" <> T.intercalate "," (toList dt <&> \t -> "'" <> declarationTypeToText t <> "'") <> ")"
         F.Filter _ -> Nothing)
       filters)
-  
+
   modules <- getAllModules Nothing
 
   -- Fallback to volatile state if SQLite returns no results (e.g., for Prim modules)
@@ -196,7 +196,8 @@ addImportForIdentifier fp ident qual filters' = do
         if null rows
         then
           let addPrim = Map.union idePrimDeclarations
-          in fmap (fmap discardAnn) $ getExactMatches ident filters (addPrim modules)
+          in fmap discardAnn
+              <$> getExactMatches ident filters (addPrim modules)
         else
           rows <&> \(m, bs) -> Match (ModuleName m, discardAnn $ deserialise bs)
 
@@ -230,7 +231,7 @@ addImportForIdentifier fp ident qual filters' = do
         -- worst
         Just decl ->
           Right <$> addExplicitImport fp decl m1 qual
-        -- Here we need the user to specify whether they wanted a 
+        -- Here we need the user to specify whether they wanted a
         -- dataconstructor or a type
         Nothing ->
           throwError (GeneralError "Undecidable between type and dataconstructor")
