@@ -5,13 +5,15 @@ import Control.Concurrent.STM (newTVarIO, readTVarIO)
 import "monad-logger" Control.Monad.Logger (NoLoggingT(..))
 import Data.IORef (newIORef)
 import Data.Map qualified as Map
+import Database.SQLite.Simple qualified as SQLite
 import Language.PureScript.Ide (handleCommand)
 import Language.PureScript.Ide.Command (Command)
 import Language.PureScript.Ide.Error (IdeError)
 import Language.PureScript.Ide.Types
+import Language.PureScript.Make.IdeCache (sqliteInit)
 import Protolude
 import System.Directory (doesDirectoryExist, getCurrentDirectory, makeAbsolute, removeDirectoryRecursive, setCurrentDirectory)
-import System.FilePath ((</>))
+import System.FilePath ((</>), takeDirectory)
 import System.Process (createProcess, getProcessExitCode, shell)
 
 import Language.PureScript qualified as P
@@ -24,13 +26,21 @@ defConfig =
     , confGlobs = ["src/**/*.purs"]
     , confGlobsFromFile = Nothing
     , confGlobsExclude = []
+    , sqliteFilePath = "output/cache.db"
     }
 
 runIde' :: IdeConfiguration -> IdeState -> [Command] -> IO ([Either IdeError Success], IdeState)
 runIde' conf s cs = do
+  sqliteInit $ takeDirectory $ sqliteFilePath conf
   stateVar <- newTVarIO s
   ts <- newIORef Nothing
-  let env' = IdeEnvironment {ideStateVar = stateVar, ideConfiguration = conf, ideCacheDbTimestamp = ts}
+  let env' = IdeEnvironment
+        { ideStateVar = stateVar
+        , ideConfiguration = conf
+        , ideCacheDbTimestamp = ts
+        , query = \q -> SQLite.withConnection conf.sqliteFilePath
+             (\conn -> SQLite.query_ conn $ SQLite.Query q)
+        }
   r <- runNoLoggingT (runReaderT (traverse (runExceptT . handleCommand) cs) env')
   newState <- readTVarIO stateVar
   pure (r, newState)

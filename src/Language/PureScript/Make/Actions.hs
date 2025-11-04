@@ -58,7 +58,7 @@ import System.Directory (getCurrentDirectory)
 import System.FilePath ((</>), makeRelative, splitPath, normalise, splitDirectories)
 import System.FilePath.Posix qualified as Posix
 import System.IO (stderr)
-import Language.PureScript.Make.IdeCache ( sqliteExtern)
+import Language.PureScript.Make.IdeCache ( sqliteExtern, sqliteInit)
 
 -- | Determines when to rebuild a module
 data RebuildPolicy
@@ -290,6 +290,7 @@ buildMakeActions outputDir filePathMap foreigns usePrefix =
   codegen ast m docs exts = do
     let mn = CF.moduleName m
     lift $ writeCborFile (outputFilename mn externsFileName) exts
+    lift $ sqliteInit outputDir
     lift $ sqliteExtern outputDir ast exts
     codegenTargets <- lift $ asks optionsCodegenTargets
     when (S.member CoreFn codegenTargets) $ do

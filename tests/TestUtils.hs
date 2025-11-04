@@ -7,6 +7,7 @@ import Language.PureScript.CST qualified as CST
 import Language.PureScript.AST qualified as AST
 import Language.PureScript.Names qualified as N
 import Language.PureScript.Interactive.IO (findNodeProcess)
+import Language.PureScript.Make.IdeCache (sqliteInit)
 
 import Control.Arrow ((***), (>>>))
 import Control.Monad (forM, guard, unless)
@@ -198,6 +199,7 @@ compile'
   -> [FilePath]
   -> IO ([(FilePath, T.Text)], (Either P.MultipleErrors FilePath, P.MultipleErrors))
 compile' options expectedModule SupportModules{..} inputFiles = do
+  sqliteInit modulesDir
   -- Sorting the input files makes some messages (e.g., duplicate module) deterministic
   fs <- readInput (sort inputFiles)
   fmap (fs, ) . P.runMake options $ do
@@ -259,7 +261,9 @@ makeActions modules foreigns = (P.buildMakeActions modulesDir (P.internalError "
 
 
 runTest :: P.Make a -> IO (Either P.MultipleErrors a, P.MultipleErrors)
-runTest = P.runMake P.defaultOptions
+runTest action = do
+  sqliteInit modulesDir
+  P.runMake P.defaultOptions action
 
 inferForeignModules
   :: MonadIO m

@@ -27,7 +27,7 @@ import Language.PureScript.Ide.Types (Ide, IdeConfiguration(..), IdeEnvironment(
 import Language.PureScript.Ide.Util (ideReadFile)
 import System.Directory (getCurrentDirectory)
 import Database.SQLite.Simple qualified as SQLite
-import System.FilePath ((</>))
+import System.FilePath ((</>), makeRelative)
 import Data.Aeson (decode)
 import Language.PureScript.Externs (ExternsFile(ExternsFile))
 import Data.ByteString qualified as T
@@ -38,7 +38,6 @@ import Unsafe.Coerce (unsafeCoerce)
 import Database.SQLite.Simple (Query(fromQuery), ToRow, SQLData (SQLText))
 import Data.String (String)
 import Codec.Serialise (deserialise)
-import System.FilePath (makeRelative)
 
 -- | Given a filepath performs the following steps:
 --
@@ -248,7 +247,7 @@ sortExterns'
   => FilePath
   -> P.Module
   -> m [P.ExternsFile]
-sortExterns' _ m = do 
+sortExterns' _ m = do
   let P.Module _ _ _ declarations _ = m
   let moduleDependencies = declarations >>= \case
               P.ImportDeclaration _ importName _ _ -> [importName]
@@ -256,26 +255,26 @@ sortExterns' _ m = do
 
   externs <- runQuery $ unlines [
            "with recursive",
-           "graph(dependency, level) as (", 
+           "graph(dependency, level) as (",
            " select module_name , 1 as level",
-           " from modules where module_name in (" <> Data.Text.intercalate ", " (moduleDependencies <&> \v -> "'" <> runModuleName v <> "'") <> ")", 
+           " from modules where module_name in (" <> Data.Text.intercalate ", " (moduleDependencies <&> \v -> "'" <> runModuleName v <> "'") <> ")",
            " union ",
-           " select d.dependency as dep, graph.level + 1 as level", 
-           " from graph join dependencies d on graph.dependency = d.module_name",  
+           " select d.dependency as dep, graph.level + 1 as level",
+           " from graph join dependencies d on graph.dependency = d.module_name",
            "),",
-           "topo as (", 
-           " select dependency, max(level) as level", 
-           " from graph group by dependency", 
-           ") ", 
+           "topo as (",
+           " select dependency, max(level) as level",
+           " from graph group by dependency",
+           ") ",
            "select extern",
            "from topo join modules on topo.dependency = modules.module_name order by level desc;"
           ]
 
-  pure $ (externs >>= identity) <&> deserialise 
+  pure $ (externs >>= identity) <&> deserialise
 
-  -- !r <- SQLite.withConnection (outputDir </> "cache.db") \conn -> 
+  -- !r <- SQLite.withConnection (outputDir </> "cache.db") \conn ->
   --   SQLite.query conn query (SQLite.Only $ "[" <> Data.Text.intercalate ", " (dependencies <&> \v -> "\"" <> runModuleName v <> "\"") <> "]")
-  --     <&> \r -> (r >>= identity) <&> deserialise 
+  --     <&> \r -> (r >>= identity) <&> deserialise
   -- pure r
 
 -- | Removes a modules export list.

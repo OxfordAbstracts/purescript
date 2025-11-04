@@ -25,6 +25,7 @@ import Language.PureScript.Crash qualified as P
 import Language.PureScript.Errors qualified as P
 import Language.PureScript.Externs qualified as P
 import Language.PureScript.Make qualified as P
+import Language.PureScript.Make.IdeCache (sqliteInit)
 import Language.PureScript.Names qualified as P
 import Language.PureScript.Options qualified as P
 
@@ -89,6 +90,7 @@ compileForDocs ::
   m [P.ExternsFile]
 compileForDocs outputDir inputFiles = do
   result <- liftIO $ do
+    sqliteInit outputDir
     moduleFiles <- readUTF8FilesT inputFiles
     fmap fst $ P.runMake testOptions $ do
       ms <- P.parseModulesFromFiles identity moduleFiles

@@ -28,7 +28,7 @@ import Language.PureScript qualified as P
 import Language.PureScript.Glob (toInputGlobs, PSCGlobs(..))
 import Language.PureScript.Ide.CaseSplit qualified as CS
 import Language.PureScript.Ide.Command (Command(..), ImportCommand(..), ListType(..))
-import Language.PureScript.Ide.Completion (CompletionOptions (coMaxResults), completionFromMatch, getCompletions, getExactCompletions, simpleExport)
+import Language.PureScript.Ide.Completion (CompletionOptions (coMaxResults), completionFromMatch, defaultCompletionOptions, getCompletions, getExactCompletions, simpleExport)
 import Language.PureScript.Ide.Error (IdeError(..))
 import Language.PureScript.Ide.Externs (readExternFile)
 import Language.PureScript.Ide.Filter qualified as F
@@ -181,7 +181,7 @@ findDeclarations filters currentModule completionOptions = do
           Just $ "id.namespace in (" <> T.intercalate "," (toList namespaces <&> \n -> "'" <> toText n <> "'") <> ")"
         F.Filter (Right (F.DeclType dt)) ->
           Just $ "id.namespace in (" <> T.intercalate "," (toList dt <&> \t -> "'" <> declarationTypeToText t <> "'") <> ")"
-        F.Filter (Right (F.Dependencies qualifier _ imports@(_:_))) -> 
+        F.Filter (Right (F.Dependencies qualifier _ imports@(_:_))) ->
           Just $ "(exists (select 1 from exports e where id.module_name = e.defined_in and id.name = e.name and id.declaration_type = e.declaration_type and e.module_name in "
              <> moduleNames <> ") or id.module_name in" <> moduleNames <> ")"
           where
@@ -197,9 +197,21 @@ findDeclarations filters currentModule completionOptions = do
       ) <>
     foldMap (\maxResults -> " limit " <> show maxResults ) (coMaxResults =<< completionOptions)
 
-  let matches = rows <&> \(m, decl) -> (Match (ModuleName m, deserialise decl), [])
-
-  pure $ CompletionResult $ completionFromMatch <$> matches
+  -- Fallback to volatile state if SQLite returns no results
+  if null rows
+    then do
+      modules <- getAllModules currentModule
+      let insertPrim = Map.union idePrimDeclarations
+      -- Extract the search term from the filters
+      let searchTerm = case filters of
+            (F.Filter (Right (F.Exact term)) : _) -> term
+            (F.Filter (Right (F.Prefix term)) : _) -> term
+            _ -> ""
+      let results = getExactCompletions searchTerm filters (insertPrim modules)
+      pure (CompletionResult (take (fromMaybe 100 (coMaxResults =<< completionOptions)) results))
+    else do
+      let matches = rows <&> \(m, decl) -> (Match (ModuleName m, deserialise decl), [])
+      pure $ CompletionResult $ completionFromMatch <$> matches
 
 sqliteFile :: Ide m => m FilePath
 sqliteFile = outputDirectory <&> ( </> "cache.db")
