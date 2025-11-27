@@ -51,11 +51,12 @@ import Language.PureScript.Make.Cache (CacheDb, ContentHash, cacheDbIsCurrentVer
 import Language.PureScript.Names (Ident(..), ModuleName, runModuleName)
 import Language.PureScript.Options (CodegenTarget(..), Options(..))
 import Language.PureScript.Pretty.Common (SMap(..))
+import Language.PureScript.PSString (mkString)
 import Paths_purescript qualified as Paths
 import SourceMap (generate)
 import SourceMap.Types (Mapping(..), Pos(..), SourceMapping(..))
 import System.Directory (getCurrentDirectory)
-import System.FilePath ((</>), makeRelative, splitPath, normalise, splitDirectories)
+import System.FilePath ((</>), makeRelative, splitPath, normalise, splitDirectories, takeExtension)
 import System.FilePath.Posix qualified as Posix
 import System.IO (stderr)
 import Language.PureScript.Make.IdeCache ( sqliteExtern, sqliteInit)
@@ -299,11 +300,12 @@ buildMakeActions outputDir filePathMap foreigns usePrefix =
       lift $ writeJSONFile coreFnFile json
     when (S.member JS codegenTargets) $ do
       foreignInclude <- case mn `M.lookup` foreigns of
-        Just _
+        Just path
           | not $ requiresForeign m -> do
               return Nothing
           | otherwise -> do
-              return $ Just "./foreign.js"
+              let ext = if takeExtension path == ".ts" then ".ts" else ".js"
+              return $ Just (mkString $ T.pack $ "./foreign" ++ ext)
         Nothing | requiresForeign m -> throwError . errorMessage' (CF.moduleSourceSpan m) $ MissingFFIModule mn
                 | otherwise -> return Nothing
       rawJs <- J.moduleToJs m foreignInclude
@@ -375,12 +377,19 @@ data ForeignModuleType = ESModule | CJSModule deriving (Show)
 checkForeignDecls :: CF.Module ann -> FilePath -> Make (Either MultipleErrors (ForeignModuleType, S.Set Ident))
 -- checkForeignDecls :: CF.Module ann -> FilePath -> Make (ForeignModuleType, S.Set Ident
 checkForeignDecls m path = do
-  jsStr <- T.unpack <$> readTextFile path
+  if takeExtension path == ".js"
+    then do
+      jsStr <- T.unpack <$> readTextFile path
 
-  let
-    parseResult :: Either MultipleErrors JS.JSAST
-    parseResult = first (errorParsingModule . Bundle.UnableToParseModule) $ JS.parseModule jsStr path
-  traverse checkFFI parseResult
+      let
+        parseResult :: Either MultipleErrors JS.JSAST
+        parseResult = first (errorParsingModule . Bundle.UnableToParseModule) $ JS.parseModule jsStr path
+      traverse checkFFI parseResult
+    else do
+      -- We cannot parse non-JS files to check for exports
+      -- Instead return a successful ES module result without validation
+      let foreignIdents = S.fromList (CF.moduleForeign m)
+      return $ Right (ESModule, foreignIdents)
 
   where
   mname = CF.moduleName m
@@ -495,5 +504,6 @@ ffiCodegen' foreigns codegenTargets makeOutputPath m = do
   where
   requiresForeign = not . null . CF.moduleForeign
 
-  copyForeign path mn =
-    for_ makeOutputPath (\outputFilename -> copyFile path (outputFilename mn "foreign.js"))
+  copyForeign path mn = do
+    let ext = takeExtension path
+    for_ makeOutputPath (\outputFilename -> copyFile path (outputFilename mn ("foreign" ++ ext)))
