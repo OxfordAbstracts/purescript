@@ -131,12 +131,22 @@ targetParser =
       . T.unpack
       . T.strip
 
+ffiExtensions :: Opts.Parser [String]
+ffiExtensions = Opts.option targetParser $
+     Opts.long "ffi-exts"
+  <> Opts.value ["js"]
+  <> Opts.help
+      ( "Specifies comma-separated file extensions to consider for foriegn module implementations. "
+      <> "Defaults to js"
+      )
+
 options :: Opts.Parser P.Options
 options =
   P.Options
     <$> verboseErrors
     <*> (not <$> comments)
     <*> (handleTargets <$> codegenTargets)
+    <*> (S.fromList <$> ffiExtensions)
   where
     -- Ensure that the JS target is included if sourcemaps are
     handleTargets :: [P.CodegenTarget] -> S.Set P.CodegenTarget
