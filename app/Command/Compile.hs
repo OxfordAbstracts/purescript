@@ -73,7 +73,7 @@ compile PSCMakeOptions{..} = do
   (makeErrors, makeWarnings) <- runMake pscmOpts $ do
     ms <- CST.parseModulesFromFiles id moduleFiles
     let filePathMap = M.fromList $ map (\(fp, pm) -> (P.getModuleName $ CST.resPartial pm, Right fp)) ms
-    foreigns <- inferForeignModules filePathMap
+    foreigns <- inferForeignModules (P.optionsFFIExts pscmOpts) filePathMap
     let makeActions = buildMakeActions pscmOutputDir filePathMap foreigns pscmUsePrefix
     P.make_ makeActions (map snd ms)
   printWarningsAndErrors (P.optionsVerboseErrors pscmOpts) pscmJSONErrors moduleFiles makeWarnings makeErrors
@@ -133,9 +133,14 @@ targetParser =
       . T.unpack
       . T.strip
 
+ffiExtParser :: Opts.ReadM [String]
+ffiExtParser =
+  Opts.str >>= \s -> 
+    for (T.split (== ',') s)
+      $ pure . T.unpack . T.strip
+
 ffiExtensions :: Opts.Parser [String]
-ffiExtensions = Opts.option targetParser $
-     Opts.long "ffi-exts"
+ffiExtensions = Opts.option ffiExtParser $ Opts.long "ffi-exts"
   <> Opts.value ["js"]
   <> Opts.help
       ( "Specifies comma-separated file extensions to consider for foriegn module implementations. "

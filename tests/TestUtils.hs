@@ -240,7 +240,7 @@ getPsModuleName psModule = case snd psModule of
   AST.Module _ _ (N.ModuleName t) _ _ -> t
 
 makeActions :: [P.Module] -> M.Map P.ModuleName FilePath -> P.MakeActions P.Make
-makeActions modules foreigns = (P.buildMakeActions modulesDir (P.internalError "makeActions: input file map was read.") foreigns False)
+makeActions modules foreigns = (P.buildMakeActions modulesDir (P.internalError "makeActions: input file map was read.") foreigns mempty False)
                                { P.getInputTimestampsAndHashes = getInputTimestampsAndHashes
                                , P.getOutputTimestamp = getOutputTimestamp
                                , P.progress = const (pure ())
@@ -269,7 +269,7 @@ inferForeignModules
   :: MonadIO m
   => [(FilePath, P.Module)]
   -> m (M.Map P.ModuleName FilePath)
-inferForeignModules = P.inferForeignModules . fromList
+inferForeignModules = P.inferForeignModules (P.optionsFFIExts P.defaultOptions) . fromList
   where
     fromList :: [(FilePath, P.Module)] -> M.Map P.ModuleName (Either P.RebuildPolicy FilePath)
     fromList = M.fromList . map ((P.getModuleName *** Right) . swap)

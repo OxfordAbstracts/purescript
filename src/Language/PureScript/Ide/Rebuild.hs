@@ -87,13 +87,14 @@ rebuildFile file actualFile codegenTargets runOpenBuild = do
   let filePathMap = M.singleton moduleName (Left P.RebuildAlways)
   let pureRebuild = fp == ""
   let modulePath = if pureRebuild then fp' else file
-  foreigns <- P.inferForeignModules (M.singleton moduleName (Right modulePath))
+  let opts = P.defaultOptions { P.optionsCodegenTargets = codegenTargets }
+  foreigns <- P.inferForeignModules (P.optionsFFIExts opts) (M.singleton moduleName (Right modulePath))
   let makeEnv = P.buildMakeActions outputDirectory filePathMap foreigns False
         & (if pureRebuild then enableForeignCheck foreigns codegenTargets . shushCodegen else identity)
         & shushProgress
   -- Rebuild the single module using the cached externs
   (result, warnings) <- logPerf (labelTimespec "Rebuilding Module") $
-    liftIO $ P.runMake (P.defaultOptions { P.optionsCodegenTargets = codegenTargets }) do
+    liftIO $ P.runMake opts do
       newExterns <- P.rebuildModule makeEnv externs m
       unless pureRebuild
         $ updateCacheDb codegenTargets outputDirectory file actualFile moduleName
@@ -137,7 +138,8 @@ updateCacheDb codegenTargets outputDirectory file actualFile moduleName = do
 
   foreignCacheInfo <-
     if S.member P.JS codegenTargets then do
-      foreigns' <- P.inferForeignModules (M.singleton moduleName (Right (fromMaybe file actualFile)))
+      let opts = P.defaultOptions { P.optionsCodegenTargets = codegenTargets }
+      foreigns' <- P.inferForeignModules (P.optionsFFIExts opts) (M.singleton moduleName (Right (fromMaybe file actualFile)))
       for (M.lookup moduleName foreigns') \foreignPath -> do
         foreignHash <- P.hashFile foreignPath
         pure (normaliseForCache cwd foreignPath, (dayZero, foreignHash))

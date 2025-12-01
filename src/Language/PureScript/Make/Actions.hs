@@ -304,7 +304,7 @@ buildMakeActions outputDir filePathMap foreigns usePrefix =
           | not $ requiresForeign m -> do
               return Nothing
           | otherwise -> do
-              let ext = if takeExtension path == ".ts" then ".ts" else ".js"
+              let ext = takeExtension path
               return $ Just (mkString $ T.pack $ "./foreign" ++ ext)
         Nothing | requiresForeign m -> throwError . errorMessage' (CF.moduleSourceSpan m) $ MissingFFIModule mn
                 | otherwise -> return Nothing
