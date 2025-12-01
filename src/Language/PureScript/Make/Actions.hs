@@ -171,10 +171,12 @@ buildMakeActions
   -- ^ a map between module names and paths to the file containing the PureScript module
   -> M.Map ModuleName FilePath
   -- ^ a map between module name and the file containing the foreign javascript for the module
+  -> S.Set String
+  -- ^ the set of FFI file extensions
   -> Bool
   -- ^ Generate a prefix comment?
   -> MakeActions Make
-buildMakeActions outputDir filePathMap foreigns usePrefix =
+buildMakeActions outputDir filePathMap foreigns _ffiExts usePrefix =
     MakeActions getInputTimestampsAndHashes getOutputTimestamp readExterns codegen ffiCodegen progress readCacheDb writeCacheDb writePackageJson outputPrimDocs
   where
 
@@ -261,7 +263,7 @@ buildMakeActions outputDir filePathMap foreigns usePrefix =
           | not $ requiresForeign m -> do
               return Nothing
           | otherwise -> do
-              let ext = if takeExtension path == ".ts" then ".ts" else ".js"
+              let ext = takeExtension path
               return $ Just (mkString $ T.pack $ "./foreign" ++ ext)
         Nothing | requiresForeign m -> throwError . errorMessage' (CF.moduleSourceSpan m) $ MissingFFIModule mn
                 | otherwise -> return Nothing

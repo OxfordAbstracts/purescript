@@ -10,6 +10,7 @@ import Language.PureScript.CST qualified as CST
 
 import Control.Concurrent (threadDelay)
 import Control.Monad (guard, void)
+import Control.Monad.Reader (asks)
 import Control.Exception (tryJust)
 import Control.Monad.IO.Class (liftIO)
 import Control.Concurrent.MVar (readMVar, newMVar, modifyMVar_)
@@ -229,9 +230,10 @@ compileWithOptions opts input = do
   (makeResult, _) <- P.runMake opts $ do
     ms <- CST.parseModulesFromFiles id moduleFiles
     let filePathMap = M.fromList $ map (\(fp, pm) -> (P.getModuleName $ CST.resPartial pm, Right fp)) ms
-    foreigns <- P.inferForeignModules filePathMap
+    ffiExts <- asks P.optionsFFIExts
+    foreigns <- P.inferForeignModules ffiExts filePathMap
     let makeActions =
-          (P.buildMakeActions modulesDir filePathMap foreigns True)
+          (P.buildMakeActions modulesDir filePathMap foreigns ffiExts True)
             { P.progress = \(P.CompilingModule mn _) ->
                 liftIO $ modifyMVar_ recompiled (return . Set.insert mn)
             }

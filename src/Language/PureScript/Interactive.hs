@@ -68,6 +68,7 @@ rebuild loadedExterns m = do
       (P.buildMakeActions modulesDir
                           filePathMap
                           M.empty
+                          mempty
                           False) { P.progress = const (return ()) }
 
     filePathMap :: M.Map P.ModuleName (Either P.RebuildPolicy FilePath)
@@ -78,15 +79,17 @@ make
   :: [(FilePath, CST.PartialResult P.Module)]
   -> P.Make ([P.ExternsFile], P.Environment)
 make ms = do
-    foreignFiles <- P.inferForeignModules filePathMap
-    externs <- P.make (buildActions foreignFiles) (map snd ms)
+    ffiExts <- asks P.optionsFFIExts
+    foreignFiles <- P.inferForeignModules ffiExts filePathMap
+    externs <- P.make (buildActions ffiExts foreignFiles) (map snd ms)
     return (externs, foldl' (flip P.applyExternsFileToEnvironment) P.initEnvironment externs)
   where
-    buildActions :: M.Map P.ModuleName FilePath -> P.MakeActions P.Make
-    buildActions foreignFiles =
+    buildActions :: S.Set String -> M.Map P.ModuleName FilePath -> P.MakeActions P.Make
+    buildActions ffiExts foreignFiles =
       P.buildMakeActions modulesDir
                          filePathMap
                          foreignFiles
+                         ffiExts
                          False
 
     filePathMap :: M.Map P.ModuleName (Either P.RebuildPolicy FilePath)

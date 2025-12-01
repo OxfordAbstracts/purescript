@@ -14,11 +14,12 @@ data Options = Options
   -- ^ Remove the comments from the generated js
   , optionsCodegenTargets :: S.Set CodegenTarget
   -- ^ Codegen targets (JS, CoreFn, etc.)
+  , optionsFFIExts :: S.Set String
   } deriving Show
 
 -- Default make options
 defaultOptions :: Options
-defaultOptions = Options False False (S.singleton JS)
+defaultOptions = Options False False (S.singleton JS) (S.singleton "js")
 
 data CodegenTarget = JS | JSSourceMap | CoreFn | Docs
   deriving (Eq, Ord, Show)
@@ -30,3 +31,4 @@ codegenTargets = Map.fromList
   , ("corefn", CoreFn)
   , ("docs", Docs)
   ]
+
