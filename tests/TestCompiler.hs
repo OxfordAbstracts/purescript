@@ -46,7 +46,8 @@ import System.IO.UTF8 (readUTF8File)
 import Text.Regex.Base (RegexContext(..), RegexMaker(..))
 import Text.Regex.TDFA (Regex)
 
-import TestUtils (ExpectedModuleName(..), SupportModules, compile, createOutputFile, getTestFiles, goldenVsString, modulesDir, trim)
+import Data.Set qualified as S
+import TestUtils (ExpectedModuleName(..), SupportModules, compile, compile', createOutputFile, getTestFiles, goldenVsString, modulesDir, trim)
 import Test.Hspec (Expectation, SpecWith, beforeAllWith, describe, expectationFailure, it, runIO)
 
 spec :: SpecWith SupportModules
@@ -134,7 +135,11 @@ assertCompiles
   -> Handle
   -> Expectation
 assertCompiles support inputFiles outputFile = do
-  (fileContents, (result, _)) <- compile (Just IsMain) support inputFiles
+  extraFfiExts <- getFfiExts (getTestMain inputFiles)
+  let opts = if null extraFfiExts
+        then P.defaultOptions
+        else P.defaultOptions { P.optionsFFIExts = S.fromList extraFfiExts `S.union` P.optionsFFIExts P.defaultOptions }
+  (fileContents, (result, _)) <- compile' opts (Just IsMain) support inputFiles
   let errorOptions = P.defaultPPEOptions { P.ppeFileContents = fileContents }
   case result of
     Left errs -> expectationFailure . P.prettyPrintMultipleErrors errorOptions $ errs
@@ -252,6 +257,11 @@ getShouldFailWith = extractPragma "shouldFailWith"
 -- determine expected warnings
 getShouldWarnWith :: FilePath -> IO [String]
 getShouldWarnWith = extractPragma "shouldWarnWith"
+
+-- Scans a file for @ffiExts directives in the comments, used to
+-- determine additional FFI file extensions for the test
+getFfiExts :: FilePath -> IO [String]
+getFfiExts = extractPragma "ffiExts"
 
 extractPragma :: String -> FilePath -> IO [String]
 extractPragma pragma = fmap go . readUTF8File

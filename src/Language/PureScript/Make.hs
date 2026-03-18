@@ -367,20 +367,30 @@ make' MakeOptions{..} ma@MakeActions{..} ms = do
     BuildPlan.markComplete buildPlan moduleName result
 
 -- | Infer the module name for a module by looking for the same filename with
--- a .js extension.
+-- an FFI extension (e.g., .js, .ts, or other configured extensions).
 inferForeignModules
   :: forall m
    . MonadIO m
-  => M.Map ModuleName (Either RebuildPolicy FilePath)
+  => S.Set String
+  -- ^ Set of FFI extensions to check (e.g., {"js", "ts"})
+  -> M.Map ModuleName (Either RebuildPolicy FilePath)
   -> m (M.Map ModuleName FilePath)
-inferForeignModules =
+inferForeignModules exts =
     fmap (M.mapMaybe id) . traverse inferForeignModule
   where
     inferForeignModule :: Either RebuildPolicy FilePath -> m (Maybe FilePath)
     inferForeignModule (Left _) = return Nothing
     inferForeignModule (Right path) = do
-      let jsFile = replaceExtension path "js"
-      exists <- liftIO $ doesFileExist jsFile
+      -- Try each extension in order
+      let extList = S.toList exts
+          candidates = map (replaceExtension path) extList
+      findFirst candidates
+
+    findFirst :: [FilePath] -> m (Maybe FilePath)
+    findFirst [] = return Nothing
+    findFirst (fp:fps) = do
+      exists <- liftIO $ doesFileExist fp
       if exists
-        then return (Just jsFile)
-        else return Nothing
+        then return (Just fp)
+        else findFirst fps
+

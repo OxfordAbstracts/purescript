@@ -1,0 +1,1 @@
+- Add `--ffi-exts` compiler option to allow non-JS FFI module implementations

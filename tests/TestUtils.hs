@@ -22,6 +22,7 @@ import Data.Char (isSpace)
 import Data.Function (on)
 import Data.List (sort, sortBy, stripPrefix, groupBy, find)
 import Data.Map qualified as M
+import Data.Set (Set)
 import Data.Maybe (isJust)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as T
@@ -147,7 +148,7 @@ setupSupportModules = do
   ms <- getSupportModuleTuples
   let modules = map snd ms
   supportExterns <- runExceptT $ do
-    foreigns <- inferForeignModules ms
+    foreigns <- inferForeignModules (P.optionsFFIExts P.defaultOptions) ms
     externs <- ExceptT . fmap fst . runTest $ P.make (makeActions modules foreigns) (CST.pureResult <$> modules)
     return (externs, foreigns)
   case supportExterns of
@@ -206,7 +207,7 @@ compile' options expectedModule SupportModules{..} inputFiles = do
     msWithWarnings <- CST.parseFromFiles id fs
     tell $ foldMap (\(fp, (ws, _)) -> CST.toMultipleWarnings fp ws) msWithWarnings
     let ms = fmap snd <$> msWithWarnings
-    foreigns <- inferForeignModules ms
+    foreigns <- inferForeignModules (P.optionsFFIExts options) ms
     let
       actions = makeActions supportModules (foreigns `M.union` supportForeigns)
       (hasExpectedModuleName, expectedModuleName, compiledModulePath) = case expectedModule of
@@ -240,7 +241,7 @@ getPsModuleName psModule = case snd psModule of
   AST.Module _ _ (N.ModuleName t) _ _ -> t
 
 makeActions :: [P.Module] -> M.Map P.ModuleName FilePath -> P.MakeActions P.Make
-makeActions modules foreigns = (P.buildMakeActions modulesDir (P.internalError "makeActions: input file map was read.") foreigns False)
+makeActions modules foreigns = (P.buildMakeActions modulesDir (P.internalError "makeActions: input file map was read.") foreigns mempty False)
                                { P.getInputTimestampsAndHashes = getInputTimestampsAndHashes
                                , P.getOutputTimestamp = getOutputTimestamp
                                , P.progress = const (pure ())
@@ -267,9 +268,10 @@ runTest action = do
 
 inferForeignModules
   :: MonadIO m
-  => [(FilePath, P.Module)]
+  => Set String
+  -> [(FilePath, P.Module)]
   -> m (M.Map P.ModuleName FilePath)
-inferForeignModules = P.inferForeignModules . fromList
+inferForeignModules exts = P.inferForeignModules exts . fromList
   where
     fromList :: [(FilePath, P.Module)] -> M.Map P.ModuleName (Either P.RebuildPolicy FilePath)
     fromList = M.fromList . map ((P.getModuleName *** Right) . swap)

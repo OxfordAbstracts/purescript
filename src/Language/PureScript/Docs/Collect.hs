@@ -95,7 +95,8 @@ compileForDocs outputDir inputFiles = do
     fmap fst $ P.runMake testOptions $ do
       ms <- P.parseModulesFromFiles identity moduleFiles
       let filePathMap = Map.fromList $ map (\(fp, pm) -> (P.getModuleName $ P.resPartial pm, Right fp)) ms
-      foreigns <- P.inferForeignModules filePathMap
+      ffiExts <- asks P.optionsFFIExts
+      foreigns <- P.inferForeignModules ffiExts filePathMap
       let makeActions =
             (P.buildMakeActions outputDir filePathMap foreigns False)
               { P.progress = liftIO . TIO.hPutStr stdout . (<> "\n") . P.renderProgressMessage "documentation for "
