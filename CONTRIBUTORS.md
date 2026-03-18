@@ -112,6 +112,7 @@ If you would prefer to use different terms, please use the section below instead
 | [@ncaq](https://github.com/ncaq) | ncaq | [MIT license] |
 | [@NickMolloy](https://github.com/NickMolloy) | Nick Molloy | [MIT license] |
 | [@nicodelpiano](https://github.com/nicodelpiano) | Nicolas Del Piano | [MIT license] |
+| [@noisyscanner](https://github.com/noisyscanner) | Brad Reed | [MIT license] |
 | [@noraesae](https://github.com/noraesae) | Hyunje Jun | [MIT license] |
 | [@nullobject](https://github.com/nullobject) | Josh Bassett | [MIT license] |
 | [@osa1](https://github.com/osa1) | Ömer Sinan Ağacan | [MIT license] |
