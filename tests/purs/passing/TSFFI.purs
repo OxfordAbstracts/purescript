@@ -1,3 +1,4 @@
+-- @ffiExts ts
 module Main where
 
 import Prelude
