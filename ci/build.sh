@@ -180,9 +180,9 @@ tar -xzf sdist-test/purescript-*.tar.gz -C sdist-test --strip-components=1
 (echo "::endgroup::"; echo "::group::Build and test PureScript") 2>/dev/null
 
 pushd sdist-test
-# Haddock -Werror goes here to keep us honest but prevent failing on
-# documentation errors in dependencies
-$STACK build $STACK_OPTS --haddock-arguments --optghc=-Werror
+# stack.yaml still treats compiler warnings as errors. Applying -Werror to
+# Haddock also affects snapshot dependencies, whose warnings we don't control.
+$STACK build $STACK_OPTS
 
 if [ "$do_prerelease" ]
 then
