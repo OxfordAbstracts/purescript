@@ -180,11 +180,9 @@ tar -xzf sdist-test/purescript-*.tar.gz -C sdist-test --strip-components=1
 (echo "::endgroup::"; echo "::group::Build and test PureScript") 2>/dev/null
 
 pushd sdist-test
-# --ghc-options -Werror applies only to local packages, catching our own
-# haddock doc-comment errors without failing on warnings in dependencies.
-# (--haddock-arguments --optghc=-Werror would pass -Werror to all packages
-# via haddock, which breaks when the dependency cache is cold.)
-$STACK build $STACK_OPTS --ghc-options -Werror
+# stack.yaml still treats compiler warnings as errors. Applying -Werror to
+# Haddock also affects snapshot dependencies, whose warnings we don't control.
+$STACK build $STACK_OPTS
 
 if [ "$do_prerelease" ]
 then
