@@ -72,6 +72,7 @@ jobs:
       volumes:
         - "${{ contains(matrix.os, 'arm') && '/opt:/opt:rw,rshared' || ' ' }}"
         - "${{ contains(matrix.os, 'arm') && '/opt:/__e/node20:ro,rshared' || ' ' }}"
+        - "${{ contains(matrix.os, 'arm') && '/opt:/__e/node24:ro,rshared' || ' ' }}"
     env:
       CI_STATIC: "${{ startsWith(matrix.os, 'ubuntu') }}"
       CI_LINUX_BUNDLE: "${{ github.repository == 'OxfordAbstracts/purescript' && github.event_name == 'push' && github.ref == 'refs/heads/master' && startsWith(matrix.os, 'ubuntu') }}"
