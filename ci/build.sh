@@ -10,10 +10,13 @@ set -ex
 # run CI on: linux, mac os, and windows. It makes use of the following
 # environment variables:
 #
-# - CI_RELEASE
+# - CI_RELEASE / CI_PRERELEASE
 #
-#   If set to "true", passes the RELEASE flag to the compiler, and enables
-#   optimizations. Otherwise, we disable optimizations (to speed builds up).
+#   If either is "true", passes the RELEASE flag to the compiler.
+# - CI_LINUX_BUNDLE
+#
+#   Builds optimized fork binaries without marking them as official releases.
+#   Otherwise, non-release builds use --fast to speed builds up.
 #
 # = Source distributions
 #
@@ -31,7 +34,8 @@ STACK_OPTS="--test"
 if [ "$CI_RELEASE" = "true" -o "$CI_PRERELEASE" = "true" ]
 then
   STACK_OPTS="$STACK_OPTS --flag=purescript:RELEASE"
-else
+elif [ "${CI_LINUX_BUNDLE:-}" != "true" ]
+then
   STACK_OPTS="$STACK_OPTS --fast"
 fi
 if [ "$CI_STATIC" = "true" ]

@@ -54,7 +54,10 @@ else
   SHASUM="shasum"
 fi
 
-$SHASUM bundle/${OS}.tar.gz > bundle/${OS}.sha
+# Record a path relative to the bundle so the checksum also works after download.
+pushd bundle > /dev/null
+$SHASUM ${OS}.tar.gz > ${OS}.sha
+popd > /dev/null
 
 # Remove the staging directory
 rm -r bundle/build
