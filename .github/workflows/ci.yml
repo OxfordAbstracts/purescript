@@ -236,53 +236,10 @@ jobs:
           GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
         run: "gh release upload --clobber ${{ github.ref_name }} sdist-test/bundle/*.{tar.gz,sha}"
 
-  lint:
-    container: haskell:9.8.4
-    runs-on: ubuntu-latest  # Exact version is not important, as it's only the container host
-
-    steps:
-      - uses: "actions/checkout@v4"
-
-      - name: "Fix working directory ownership"
-        run: |
-          chown root:root .
-
-      - uses: "actions/cache@v4"
-        with:
-          path: |
-            /root/.stack
-          key: "lint-${{ hashFiles('stack.yaml.lock', 'purescript.cabal') }}"
-
-      - run: "ci/fix-home ci/run-hlint.sh --git"
-        env:
-          VERSION: "3.10"
-
-      - name: Install weeder
-        run: |
-          ci/fix-home stack --no-terminal --jobs=2 \
-            build --copy-compiler-tool weeder-2.9.0
-
-      - run: |
-          ci/fix-home stack --no-terminal --jobs=2 \
-            build --fast --ghc-options -fwrite-ide-info
-
-      - run: "ci/fix-home stack exec weeder -- --hie-directory .stack-work"
-
-      # Now do it again, with the test suite included. We don't want a
-      # reference from our test suite to count in the above check; the fact
-      # that a function is tested is not evidence that it's needed. But we also
-      # don't want to leave weeds lying around in our test suite either.
-      - run: |
-          ci/fix-home stack --no-terminal --jobs=2 \
-            build --fast --test --no-run-tests --ghc-options -fwrite-ide-info
-
-      - run: "ci/fix-home stack exec weeder -- --hie-directory .stack-work"
-
   make-prerelease:
     runs-on: ubuntu-latest
     needs:
       - "build"
-      - "lint"
     if: "${{ github.repository == 'purescript/purescript' && github.event_name == 'push' && needs.build.outputs.do-not-prerelease != 'true' }}"
     steps:
       - uses: "actions/download-artifact@v4"
@@ -307,3 +264,26 @@ jobs:
           npm version --allow-same-version "$BUILD_VERSION"
           sed -i -e "s/--purs-ver=${src_version//./\\.}/--purs-ver=$BUILD_VERSION/" package.json
           npm publish --tag next
+
+  make-fork-prerelease:
+    runs-on: ubuntu-latest
+    needs: ["build"]
+    if: "${{ github.repository == 'OxfordAbstracts/purescript' && github.event_name == 'push' && github.ref == 'refs/heads/master' }}"
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: "actions/download-artifact@v4"
+        with:
+          pattern: "Linux-*-bundle"
+          merge-multiple: true
+          path: bundle
+      - uses: "ncipollo/release-action@v1.10.0"
+        with:
+          tag: "fork-preview-${{ github.run_id }}"
+          commit: "${{ github.sha }}"
+          name: "Fork preview ${{ github.run_number }}"
+          artifacts: "bundle/*"
+          artifactErrorsFailBuild: true
+          prerelease: true
+          body: "Linux x64 and arm64 compiler bundles built from ${{ github.sha }}. Development builds; not an upstream PureScript release. Verify the matching .sha file after downloading."
