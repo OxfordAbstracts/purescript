@@ -2,9 +2,9 @@ name: "CI"
 
 on:
   push:
-    branches: ["master", "restaumatic"]
+    branches: ["master"]
   pull_request:
-    branches: ["master", "restaumatic"]
+    branches: ["master"]
     paths:
       - .github/workflows/**/*.yml
       - app/**/*
