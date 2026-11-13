@@ -11,7 +11,11 @@ import Language.PureScript.Names (runModuleName, ProperName (runProperName), run
 import Language.PureScript.Externs (ExternsFile(..), ExternsImport(..))
 import Data.Foldable (for_)
 import Control.Monad.IO.Class (MonadIO (liftIO))
-import System.Directory (createDirectoryIfMissing)
+import System.Directory (createDirectoryIfMissing, doesFileExist, removeFile)
+import System.Environment (lookupEnv)
+import Control.Monad (when)
+import Control.Exception (Exception(..), throwIO)
+import Data.Char (toLower)
 import Language.PureScript.Externs qualified as P
 import Data.Text qualified as Text
 import Language.PureScript.Docs.Types qualified as Docs
@@ -139,7 +143,7 @@ sqliteExtern outputDir m extern = liftIO $ do
     SQLite.close conn
     return ()
   where
-  db = outputDir </> "cache.db"
+  db = ideCacheFile outputDir
 
 
 convertDecl :: P.ExternsDeclaration -> Text.Text
@@ -215,7 +219,98 @@ sqliteInit outputDir = liftIO $ do
 
     SQLite.close conn
   where
-  db = outputDir </> "cache.db"
+  db = ideCacheFile outputDir
+
+-- | Runs a read query against the IDE cache. Fails with an explanation when
+-- the cache doesn't exist, rather than letting SQLite create an empty one.
+queryIdeCache :: SQLite.FromRow r => FilePath -> Text -> IO [r]
+queryIdeCache db q = do
+  exists <- doesFileExist db
+  if exists
+    then SQLite.withConnection db $ \conn -> do
+      SQLite.execute_ conn "pragma busy_timeout = 30000;"
+      SQLite.query_ conn (SQLite.Query q)
+    else throwIO (IdeCacheMissing db)
+
+-- | Thrown when querying an IDE cache that hasn't been created.
+newtype IdeCacheMissing = IdeCacheMissing FilePath
+  deriving Show
+
+instance Exception IdeCacheMissing where
+  displayException (IdeCacheMissing db) =
+    "The IDE cache " <> db <> " does not exist. Compile with `purs compile --ide-cache` (or "
+      <> ideCacheEnvVar <> "=1) to create it."
+
+-- | Path of the SQLite IDE cache inside an output directory.
+ideCacheFile :: FilePath -> FilePath
+ideCacheFile outputDir = outputDir </> "cache.db"
+
+-- | Marker that exists while the IDE cache is being populated from scratch.
+-- If a populating build is interrupted, the marker survives and the next
+-- build with the cache enabled starts over.
+ideCacheIncompleteFile :: FilePath -> FilePath
+ideCacheIncompleteFile outputDir = outputDir </> "cache.db.incomplete"
+
+-- | Name of the environment variable that enables the IDE cache.
+ideCacheEnvVar :: String
+ideCacheEnvVar = "PURS_IDE_CACHE"
+
+-- | Resolves whether the IDE cache is enabled. An explicit command line flag
+-- wins; otherwise @PURS_IDE_CACHE@ is consulted, and the cache is off by
+-- default.
+resolveIdeCacheEnabled :: Maybe Bool -> IO Bool
+resolveIdeCacheEnabled (Just enabled) = pure enabled
+resolveIdeCacheEnabled Nothing = maybe False isTruthy <$> lookupEnv ideCacheEnvVar
+  where
+  isTruthy v = map toLower v `elem` ["1", "true", "yes", "on"]
+
+-- | Whether the IDE cache needs a full rebuild before it can be used.
+data IdeCachePopulation = IdeCacheComplete | IdeCacheNeedsFullBuild
+  deriving (Eq, Show)
+
+-- | Brings the IDE cache in an output directory in line with the requested
+-- setting, before a build.
+--
+-- * Disabled: any existing cache is deleted, since modules rebuilt without
+--   the cache would otherwise leave it silently stale.
+-- * Enabled with a complete cache: the schema is ensured and the build
+--   updates the rebuilt modules incrementally.
+-- * Enabled without a complete cache: the cache is created and every module
+--   has to be rebuilt to populate it. Call 'finishIdeCachePopulation' once
+--   that build has finished.
+prepareIdeCache :: Bool -> FilePath -> IO IdeCachePopulation
+prepareIdeCache False outputDir = do
+  removeIdeCache outputDir
+  pure IdeCacheComplete
+prepareIdeCache True outputDir = do
+  exists <- doesFileExist (ideCacheFile outputDir)
+  incomplete <- doesFileExist (ideCacheIncompleteFile outputDir)
+  if exists && not incomplete
+    then do
+      sqliteInit outputDir
+      pure IdeCacheComplete
+    else do
+      removeIdeCache outputDir
+      sqliteInit outputDir
+      writeFile (ideCacheIncompleteFile outputDir) ""
+      pure IdeCacheNeedsFullBuild
+
+-- | Marks a cache populated by a full rebuild as complete.
+finishIdeCachePopulation :: FilePath -> IO ()
+finishIdeCachePopulation = removeIfExists . ideCacheIncompleteFile
+
+-- | Deletes the IDE cache, including SQLite's write-ahead log files.
+removeIdeCache :: FilePath -> IO ()
+removeIdeCache outputDir = for_
+  [db, db <> "-wal", db <> "-shm", ideCacheIncompleteFile outputDir]
+  removeIfExists
+  where
+  db = ideCacheFile outputDir
+
+removeIfExists :: FilePath -> IO ()
+removeIfExists path = do
+  exists <- doesFileExist path
+  when exists (removeFile path)
 
 toDeclarationType :: Declaration -> DeclarationType
 toDeclarationType (Docs.Declaration _ _ _ _ (Docs.ValueDeclaration _) _) = Value

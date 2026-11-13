@@ -9,6 +9,7 @@ module Language.PureScript.Make.Actions
   , readCacheDb'
   , writeCacheDb'
   , ffiCodegen'
+  , forceFullRebuild
   ) where
 
 import Prelude
@@ -58,7 +59,7 @@ import System.Directory (getCurrentDirectory)
 import System.FilePath ((</>), makeRelative, splitPath, normalise, splitDirectories)
 import System.FilePath.Posix qualified as Posix
 import System.IO (stderr)
-import Language.PureScript.Make.IdeCache ( sqliteExtern, sqliteInit)
+import Language.PureScript.Make.IdeCache (sqliteExtern)
 
 -- | Determines when to rebuild a module
 data RebuildPolicy
@@ -181,6 +182,10 @@ writePackageJson' outputDir = writeJSONFile (outputDir </> "package.json") $ obj
   ]
 
 -- | A set of make actions that read and write modules from the given directory.
+-- | Ignores the incremental build cache, so every module is rebuilt.
+forceFullRebuild :: Applicative m => MakeActions m -> MakeActions m
+forceFullRebuild ma = ma { readCacheDb = pure M.empty }
+
 buildMakeActions
   :: FilePath
   -- ^ the output directory
@@ -290,8 +295,8 @@ buildMakeActions outputDir filePathMap foreigns usePrefix =
   codegen ast m docs exts = do
     let mn = CF.moduleName m
     lift $ writeCborFile (outputFilename mn externsFileName) exts
-    lift $ sqliteInit outputDir
-    lift $ sqliteExtern outputDir ast exts
+    ideCache <- lift $ asks optionsIdeCache
+    when ideCache $ lift $ sqliteExtern outputDir ast exts
     codegenTargets <- lift $ asks optionsCodegenTargets
     when (S.member CoreFn codegenTargets) $ do
       let coreFnFile = targetFilename mn CoreFn

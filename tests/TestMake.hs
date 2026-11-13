@@ -7,7 +7,8 @@ import Prelude hiding (writeFile)
 
 import Language.PureScript qualified as P
 import Language.PureScript.CST qualified as CST
-import Language.PureScript.Make.IdeCache (sqliteInit)
+import Language.PureScript.Make.IdeCache (IdeCachePopulation(..), finishIdeCachePopulation, ideCacheFile, prepareIdeCache, queryIdeCache, resolveIdeCacheEnabled, sqliteInit)
+import Database.SQLite.Simple (Only(..))
 
 import Control.Concurrent (threadDelay)
 import Control.Monad (guard, void, forM_, when)
@@ -24,7 +25,8 @@ import Data.Version (showVersion)
 
 import Paths_purescript qualified as Paths
 import System.FilePath ((</>))
-import System.Directory (createDirectory, removeDirectoryRecursive, removeFile, setModificationTime)
+import System.Directory (createDirectory, doesFileExist, removeDirectoryRecursive, removeFile, setModificationTime)
+import System.Environment (setEnv, unsetEnv)
 import System.IO.Error (isDoesNotExistError)
 import System.IO.UTF8 (readUTF8FilesT, readUTF8FileT, writeUTF8FileT)
 
@@ -669,6 +671,67 @@ spec = do
       , ("C", "module C where\nimport B\ntype C = T", Nothing)
       ] compile ["A", "B"]
 
+    it "does not write the IDE cache by default" $ do
+      let mPath = sourcesDir </> "Module.purs"
+      writeFile mPath timestampA "module Module where\nfoo = 0\n"
+      compile [mPath] `shouldReturn` moduleNames ["Module"]
+      doesFileExist (ideCacheFile modulesDir) `shouldReturn` False
+
+    it "deletes an existing IDE cache when the cache is disabled" $ do
+      sqliteInit modulesDir
+      prepareIdeCache False modulesDir `shouldReturn` IdeCacheComplete
+      doesFileExist (ideCacheFile modulesDir) `shouldReturn` False
+
+    it "populates a missing IDE cache by rebuilding every module" $ do
+      let mAPath = sourcesDir </> "A.purs"
+          mBPath = sourcesDir </> "B.purs"
+      writeFile mAPath timestampA "module A where\nfoo = 0\n"
+      writeFile mBPath timestampB "module B where\nimport A (foo)\nbar = foo\n"
+      compile [mAPath, mBPath] `shouldReturn` moduleNames ["A", "B"]
+
+      prepareIdeCache True modulesDir `shouldReturn` IdeCacheNeedsFullBuild
+      (compileWithOptions' ideCacheOptions P.forceFullRebuild [mAPath, mBPath] >>= assertSuccess)
+        `shouldReturn` moduleNames ["A", "B"]
+      finishIdeCachePopulation modulesDir
+      cachedModules `shouldReturn` ["A", "B"]
+
+      prepareIdeCache True modulesDir `shouldReturn` IdeCacheComplete
+
+    it "updates a complete IDE cache incrementally" $ do
+      let mAPath = sourcesDir </> "A.purs"
+          mBPath = sourcesDir </> "B.purs"
+      writeFile mAPath timestampA "module A where\nfoo = 0\n"
+      writeFile mBPath timestampB "module B where\nimport A (foo)\nbar = foo\n"
+      prepareIdeCache True modulesDir `shouldReturn` IdeCacheNeedsFullBuild
+      (compileWithOptions ideCacheOptions [mAPath, mBPath] >>= assertSuccess)
+        `shouldReturn` moduleNames ["A", "B"]
+      finishIdeCachePopulation modulesDir
+
+      writeFile mBPath timestampC "module B where\nimport A (foo)\nbaz = foo\n"
+      prepareIdeCache True modulesDir `shouldReturn` IdeCacheComplete
+      (compileWithOptions ideCacheOptions [mAPath, mBPath] >>= assertSuccess)
+        `shouldReturn` moduleNames ["B"]
+      -- The module itself is stored as a declaration too; `bar` must be gone.
+      cachedDeclarations "B" `shouldReturn` ["B", "baz"]
+
+    it "restarts IDE cache population after an interrupted build" $ do
+      prepareIdeCache True modulesDir `shouldReturn` IdeCacheNeedsFullBuild
+      -- No finishIdeCachePopulation: the populating build never completed.
+      prepareIdeCache True modulesDir `shouldReturn` IdeCacheNeedsFullBuild
+
+    it "reads the IDE cache setting from flags, then PURS_IDE_CACHE" $ do
+      unsetEnv "PURS_IDE_CACHE"
+      resolveIdeCacheEnabled Nothing `shouldReturn` False
+      resolveIdeCacheEnabled (Just True) `shouldReturn` True
+      forM_ ["1", "true", "TRUE", "yes", "on"] $ \v -> do
+        setEnv "PURS_IDE_CACHE" v
+        resolveIdeCacheEnabled Nothing `shouldReturn` True
+      setEnv "PURS_IDE_CACHE" "0"
+      resolveIdeCacheEnabled Nothing `shouldReturn` False
+      setEnv "PURS_IDE_CACHE" "1"
+      resolveIdeCacheEnabled (Just False) `shouldReturn` False
+      unsetEnv "PURS_IDE_CACHE"
+
 -- Note [Sleeping to avoid flaky tests]
 --
 -- One of the things we want to test here is that all requested output files
@@ -696,15 +759,23 @@ compileWithOptions ::
   P.Options ->
   [FilePath] ->
   IO (Either P.MultipleErrors [P.ExternsFile], Set P.ModuleName)
-compileWithOptions opts input = do
-  sqliteInit modulesDir
+compileWithOptions opts = compileWithOptions' opts id
+
+-- | Like 'compileWithOptions', but also lets the caller adjust the make
+-- actions.
+compileWithOptions' ::
+  P.Options ->
+  (P.MakeActions P.Make -> P.MakeActions P.Make) ->
+  [FilePath] ->
+  IO (Either P.MultipleErrors [P.ExternsFile], Set P.ModuleName)
+compileWithOptions' opts adjust input = do
   recompiled <- newMVar Set.empty
   moduleFiles <- readUTF8FilesT input
   (makeResult, _) <- P.runMake opts $ do
     ms <- CST.parseModulesFromFiles id moduleFiles
     let filePathMap = M.fromList $ map (\(fp, pm) -> (P.getModuleName $ CST.resPartial pm, Right fp)) ms
     foreigns <- P.inferForeignModules filePathMap
-    let makeActions =
+    let makeActions = adjust $
           (P.buildMakeActions modulesDir filePathMap foreigns True)
             { P.progress = \case
                 P.CompilingModule mn _ ->
@@ -756,5 +827,17 @@ writeFile path mtime contents = do
 
 -- | Use a different output directory to ensure that we don't get interference
 -- from other test results
+ideCacheOptions :: P.Options
+ideCacheOptions = P.defaultOptions { P.optionsIdeCache = True }
+
+cachedModules :: IO [T.Text]
+cachedModules = map fromOnly <$>
+  queryIdeCache (ideCacheFile modulesDir) "select module_name from modules order by module_name"
+
+cachedDeclarations :: T.Text -> IO [T.Text]
+cachedDeclarations mn = map fromOnly <$>
+  queryIdeCache (ideCacheFile modulesDir)
+    ("select name from ide_declarations where module_name = '" <> mn <> "' order by name")
+
 modulesDir :: FilePath
 modulesDir = ".test_modules" </> "make"

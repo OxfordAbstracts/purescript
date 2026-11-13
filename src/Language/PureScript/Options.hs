@@ -14,11 +14,13 @@ data Options = Options
   -- ^ Remove the comments from the generated js
   , optionsCodegenTargets :: S.Set CodegenTarget
   -- ^ Codegen targets (JS, CoreFn, etc.)
+  , optionsIdeCache :: Bool
+  -- ^ Write declarations to the SQLite IDE cache (output/cache.db)
   } deriving Show
 
 -- Default make options
 defaultOptions :: Options
-defaultOptions = Options False False (S.singleton JS)
+defaultOptions = Options False False (S.singleton JS) False
 
 data CodegenTarget = JS | JSSourceMap | CoreFn | Docs
   deriving (Eq, Ord, Show)

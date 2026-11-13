@@ -93,7 +93,7 @@ rebuildFile file actualFile codegenTargets runOpenBuild = do
         & shushProgress
   -- Rebuild the single module using the cached externs
   (result, warnings) <- logPerf (labelTimespec "Rebuilding Module") $
-    liftIO $ P.runMake (P.defaultOptions { P.optionsCodegenTargets = codegenTargets }) do
+    liftIO $ P.runMake (P.defaultOptions { P.optionsCodegenTargets = codegenTargets, P.optionsIdeCache = True }) do
       newExterns <- P.rebuildModule makeEnv externs m
       unless pureRebuild
         $ updateCacheDb codegenTargets outputDirectory file actualFile moduleName
@@ -243,7 +243,7 @@ sortExterns m ex = do
     inOrderOf xs ys = let s = S.fromList xs in filter (`S.member` s) ys
 
 sortExterns'
-  :: (Ide m)
+  :: (Ide m, MonadError IdeError m)
   => FilePath
   -> P.Module
   -> m [P.ExternsFile]

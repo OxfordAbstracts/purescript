@@ -5,12 +5,11 @@ import Control.Concurrent.STM (newTVarIO, readTVarIO)
 import "monad-logger" Control.Monad.Logger (NoLoggingT(..))
 import Data.IORef (newIORef)
 import Data.Map qualified as Map
-import Database.SQLite.Simple qualified as SQLite
 import Language.PureScript.Ide (handleCommand)
 import Language.PureScript.Ide.Command (Command)
 import Language.PureScript.Ide.Error (IdeError)
 import Language.PureScript.Ide.Types
-import Language.PureScript.Make.IdeCache (sqliteInit)
+import Language.PureScript.Make.IdeCache (queryIdeCache, sqliteInit)
 import Protolude
 import System.Directory (doesDirectoryExist, getCurrentDirectory, makeAbsolute, removeDirectoryRecursive, setCurrentDirectory)
 import System.FilePath ((</>), takeDirectory)
@@ -38,8 +37,7 @@ runIde' conf s cs = do
         { ideStateVar = stateVar
         , ideConfiguration = conf
         , ideCacheDbTimestamp = ts
-        , query = \q -> SQLite.withConnection conf.sqliteFilePath
-             (\conn -> SQLite.query_ conn $ SQLite.Query q)
+        , query = queryIdeCache conf.sqliteFilePath
         }
   r <- runNoLoggingT (runReaderT (traverse (runExceptT . handleCommand) cs) env')
   newState <- readTVarIO stateVar
@@ -139,7 +137,7 @@ inProject f = do
 compileTestProject :: IO Bool
 compileTestProject = inProject $ do
   (_, _, _, procHandle) <-
-    createProcess $ shell "purs compile \"src/**/*.purs\""
+    createProcess $ shell "purs compile --ide-cache \"src/**/*.purs\""
   r <- tryNTimes 10 (getProcessExitCode procHandle)
   pure (maybe False isSuccess r)
 

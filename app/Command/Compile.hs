@@ -24,7 +24,7 @@ import System.Exit (exitSuccess, exitFailure)
 import System.Directory (getCurrentDirectory)
 import System.IO (hPutStr, stderr, stdout)
 import System.IO.UTF8 (readUTF8FilesT)
-import Language.PureScript.Make.IdeCache (sqliteInit)
+import Language.PureScript.Make.IdeCache (IdeCachePopulation(..), finishIdeCachePopulation, ideCacheEnvVar, prepareIdeCache, resolveIdeCacheEnabled)
 
 data PSCMakeOptions = PSCMakeOptions
   { pscmInput        :: [FilePath]
@@ -34,6 +34,7 @@ data PSCMakeOptions = PSCMakeOptions
   , pscmOpts         :: P.Options
   , pscmUsePrefix    :: Bool
   , pscmJSONErrors   :: Bool
+  , pscmIdeCache     :: Maybe Bool
   }
 
 -- | Arguments: verbose, use JSON, warnings, errors
@@ -57,7 +58,9 @@ printWarningsAndErrors verbose True files warnings errors = do
 
 compile :: PSCMakeOptions -> IO ()
 compile PSCMakeOptions{..} = do
-  sqliteInit pscmOutputDir
+  ideCache <- resolveIdeCacheEnabled pscmIdeCache
+  population <- prepareIdeCache ideCache pscmOutputDir
+  let opts = pscmOpts { P.optionsIdeCache = ideCache }
   input <- toInputGlobs $ PSCGlobs
     { pscInputGlobs = pscmInput
     , pscInputGlobsFromFile = pscmInputFromFile
@@ -70,13 +73,20 @@ compile PSCMakeOptions{..} = do
                              ]
     exitFailure
   moduleFiles <- readUTF8FilesT input
-  (makeErrors, makeWarnings) <- runMake pscmOpts $ do
+  (makeErrors, makeWarnings) <- runMake opts $ do
     ms <- CST.parseModulesFromFiles id moduleFiles
     let filePathMap = M.fromList $ map (\(fp, pm) -> (P.getModuleName $ CST.resPartial pm, Right fp)) ms
     foreigns <- inferForeignModules filePathMap
     let makeActions = buildMakeActions pscmOutputDir filePathMap foreigns pscmUsePrefix
-    P.make_ makeActions (map snd ms)
-  printWarningsAndErrors (P.optionsVerboseErrors pscmOpts) pscmJSONErrors moduleFiles makeWarnings makeErrors
+        -- Rebuilding every module writes each one to the freshly created
+        -- IDE cache.
+        makeActions'
+          | population == IdeCacheNeedsFullBuild = P.forceFullRebuild makeActions
+          | otherwise = makeActions
+    P.make_ makeActions' (map snd ms)
+  when (population == IdeCacheNeedsFullBuild) $
+    finishIdeCachePopulation pscmOutputDir
+  printWarningsAndErrors (P.optionsVerboseErrors opts) pscmJSONErrors moduleFiles makeWarnings makeErrors
   exitSuccess
 
 outputDirectory :: Opts.Parser FilePath
@@ -110,6 +120,18 @@ jsonErrors = Opts.switch $
      Opts.long "json-errors"
   <> Opts.help "Print errors to stderr as JSON"
 
+ideCacheFlag :: Opts.Parser (Maybe Bool)
+ideCacheFlag =
+      Opts.flag' (Just True)
+        ( Opts.long "ide-cache"
+       <> Opts.help ("Write the SQLite cache used by `purs ide` (output/cache.db). Can also be enabled with " <> ideCacheEnvVar <> "=1. Without it, an existing cache is deleted so it never goes stale; enabling it on a project without a cache rebuilds every module once.")
+        )
+  <|> Opts.flag' (Just False)
+        ( Opts.long "no-ide-cache"
+       <> Opts.help ("Do not write the `purs ide` cache, overriding " <> ideCacheEnvVar <> ". This is the default.")
+        )
+  <|> pure Nothing
+
 codegenTargets :: Opts.Parser [P.CodegenTarget]
 codegenTargets = Opts.option targetParser $
      Opts.short 'g'
@@ -139,6 +161,7 @@ options =
     <$> verboseErrors
     <*> (not <$> comments)
     <*> (handleTargets <$> codegenTargets)
+    <*> pure False
   where
     -- Ensure that the JS target is included if sourcemaps are
     handleTargets :: [P.CodegenTarget] -> S.Set P.CodegenTarget
@@ -152,6 +175,7 @@ pscMakeOptions = PSCMakeOptions <$> many SharedCLI.inputFile
                                 <*> options
                                 <*> (not <$> noPrefix)
                                 <*> jsonErrors
+                                <*> ideCacheFlag
 
 command :: Opts.Parser (IO ())
 command = compile <$> (Opts.helper <*> pscMakeOptions)

@@ -57,6 +57,7 @@ import Language.PureScript.Make.Actions (cacheDbFile)
 import Language.PureScript.Ide.Externs (convertExterns)
 import Language.PureScript.Ide.Reexports (ReexportResult(..), prettyPrintReexportResult, reexportHasFailures, resolveReexports)
 import Language.PureScript.Ide.SourceFile (extractAstInformation)
+import Language.PureScript.Ide.Error (IdeError(..))
 import Language.PureScript.Ide.Types
 import Language.PureScript.Ide.Util (discardAnn, opNameT, properNameT, runLogger)
 import System.Directory (getModificationTime)
@@ -77,11 +78,13 @@ getSqliteFilePath :: Ide m => m FilePath
 getSqliteFilePath = do
   sqliteFilePath . ideConfiguration <$> ask
 
-runQuery :: SQLite.FromRow r => Ide m => Text -> m [r]
+-- | Runs a query against the IDE cache. Failures, such as a missing cache,
+-- are reported to the client instead of taking down the server.
+runQuery :: SQLite.FromRow r => (Ide m, MonadError IdeError m) => Text -> m [r]
 runQuery q = do
-  -- Debug.traceM $ show q
   IdeEnvironment{..} <- ask
-  liftIO $ query q
+  result <- liftIO $ try (query q)
+  either (throwError . GeneralError . toS . displayException @SomeException) pure result
 
 escapeSQL :: Text -> Text
 escapeSQL = T.replace "'" "''"

@@ -40,7 +40,7 @@ import System.Directory (doesDirectoryExist, getCurrentDirectory, setCurrentDire
 import System.FilePath ((</>))
 import System.IO (BufferMode(..), hClose, hFlush, hSetBuffering, hSetEncoding, utf8)
 import System.IO.Error (isEOFError)
-import Database.SQLite.Simple qualified as SQLite
+import Language.PureScript.Make.IdeCache (ideCacheFile, queryIdeCache)
 import Protolude qualified as D
 
 listenOnLocalhost :: Network.PortNumber -> IO Network.Socket
@@ -140,7 +140,7 @@ command = Opts.helper <*> subcommands where
       conf = IdeConfiguration
         { confLogLevel = logLevel
         , confOutputPath = outputPath
-        , sqliteFilePath = outputPath </> "cache.db"
+        , sqliteFilePath = ideCacheFile outputPath
         , confGlobs = globs
         , confGlobsFromFile = globsFromFile
         , confGlobsExclude = globsExcluded
@@ -151,11 +151,7 @@ command = Opts.helper <*> subcommands where
         { ideStateVar = ideState
         , ideConfiguration = conf
         , ideCacheDbTimestamp = ts
-        , query = \q -> SQLite.withConnection (outputPath </> "cache.db")
-             (\conn -> do
-              SQLite.execute_ conn "pragma busy_timeout = 30000;"
-              SQLite.query_ conn $ SQLite.Query q
-              )
+        , query = queryIdeCache (ideCacheFile outputPath)
         }
     startServer port env
 

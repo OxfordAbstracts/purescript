@@ -1,29 +1,11 @@
 -- | Bundles compiled PureScript modules for the browser.
-module Command.Bundle (command, initSqlite) where
+module Command.Bundle (command) where
 
 import Prelude
 
-import Language.PureScript.Make.IdeCache (sqliteInit)
-import Options.Applicative qualified as Opts
 import System.Exit (exitFailure)
 import System.IO (stderr, hPutStrLn)
-
-
-data PublishOptionsCLI = PublishOptionsCLI
-  { cliCompileOutputDir :: FilePath
-  }
-
-compileOutputDir :: Opts.Parser FilePath
-compileOutputDir = Opts.option Opts.auto $
-     Opts.value "output"
-  <> Opts.showDefault
-  <> Opts.long "compile-output"
-  <> Opts.metavar "DIR"
-  <> Opts.help "Compiler output directory"
-
-cliOptions :: Opts.Parser PublishOptionsCLI
-cliOptions =
-  PublishOptionsCLI <$> compileOutputDir
+import Options.Applicative qualified as Opts
 
 app :: IO ()
 app = do
@@ -39,9 +21,3 @@ command :: Opts.Parser (IO ())
 command = run <$> (Opts.helper <*> pure ()) where
   run :: () -> IO ()
   run _ = app
-
-initSqlite :: Opts.Parser (IO ())
-initSqlite = run <$> (Opts.helper <*> cliOptions) where
-  run :: PublishOptionsCLI -> IO ()
-  run opts = do
-    sqliteInit opts.cliCompileOutputDir

@@ -158,7 +158,7 @@ findCompletions filters matcher currentModule complOptions = do
   pure (CompletionResult (getCompletions filters matcher complOptions (insertPrim modules)))
 
 findDeclarations
-  :: Ide m
+  :: (Ide m, MonadError IdeError m)
   => [F.Filter]
   -> Maybe P.ModuleName
   -> Maybe CompletionOptions
