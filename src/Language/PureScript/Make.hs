@@ -208,16 +208,18 @@ make' MakeOptions{..} ma@MakeActions{..} ms = do
   lock <- C.newQSem concurrency
 
   let sortedModuleNames = getModuleName . CST.resPartial <$> sorted
+  let moduleRanks = M.fromList (zip sortedModuleNames [0 :: Int ..])
+  let graphMap = M.fromList graph
   let toBeRebuilt = filter (BuildPlan.needsRebuild buildPlan . getModuleName . CST.resPartial) sorted
   let totalModuleCount = length toBeRebuilt
   for_ toBeRebuilt $ \m -> fork $ do
     let moduleName = getModuleName . CST.resPartial $ m
-    let deps = fromMaybe (internalError "make: module not found in dependency graph.") (lookup moduleName graph)
+    let deps = fromMaybe (internalError "make: module not found in dependency graph.") (M.lookup moduleName graphMap)
     buildModule lock buildPlan moduleName totalModuleCount
       (spanName . getModuleSourceSpan . CST.resPartial $ m)
       (fst $ CST.resFull m)
       (fmap importPrim . snd $ CST.resFull m)
-      (deps `inOrderOf` sortedModuleNames)
+      (sortOn (moduleRanks M.!) deps)
 
       -- Prevent hanging on other modules when there is an internal error
       -- (the exception is thrown, but other threads waiting on MVars are released)
@@ -286,10 +288,6 @@ make' MakeOptions{..} ma@MakeActions{..} ms = do
     case filter ((> 1) . length) . NEL.groupBy ((==) `on` f) . sortOn f $ xs of
       [] -> Nothing
       xss -> Just xss
-
-  -- Sort a list so its elements appear in the same order as in another list.
-  inOrderOf :: (Ord a) => [a] -> [a] -> [a]
-  inOrderOf xs ys = let s = S.fromList xs in filter (`S.member` s) ys
 
   buildModule :: QSem -> BuildPlan -> ModuleName -> Int -> FilePath -> [CST.ParserWarning] -> Either (NEL.NonEmpty CST.ParserError) Module -> [ModuleName] -> m ()
   buildModule lock buildPlan moduleName cnt fp pwarnings mres deps = do

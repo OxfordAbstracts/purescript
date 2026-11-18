@@ -9,8 +9,9 @@ module Language.PureScript.ModuleDependencies
 
 import Protolude hiding (head)
 
-import Data.Array ((!))
-import Data.Graph (SCC(..), graphFromEdges, reachable, stronglyConnComp)
+import Data.Array (Array, (!), bounds, indices, listArray)
+import Data.Graph (SCC(..), graphFromEdges, stronglyConnComp)
+import Data.IntSet qualified as IS
 import Data.Set qualified as S
 import Language.PureScript.AST (Declaration(..), ErrorMessageHint(..), Module(..), SourceSpan)
 import Language.PureScript.Constants.Prim qualified as C
@@ -47,11 +48,13 @@ sortModules dependencyDepth toSig ms = do
     verts <- parU ms' (toGraphNode mns)
     ms'' <- parU (stronglyConnComp verts) toModule
     let (graph, fromVertex, toVertex) = graphFromEdges verts
+        transitiveDeps :: Array Int IS.IntSet
+        transitiveDeps = listArray (bounds graph) [ IS.unions [ IS.insert d (transitiveDeps ! d) | d <- graph ! v ] | v <- indices graph ]
         moduleGraph = do (_, mn, _) <- verts
                          let v       = fromMaybe (internalError "sortModules: vertex not found") (toVertex mn)
                              deps    = case dependencyDepth of
                                          Direct -> graph ! v
-                                         Transitive -> reachable graph v
+                                         Transitive -> IS.toList (transitiveDeps ! v)
                              toKey i = case fromVertex i of (_, key, _) -> key
                          return (mn, filter (/= mn) (map toKey deps))
     return (fst <$> ms'', moduleGraph)

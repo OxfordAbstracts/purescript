@@ -284,7 +284,8 @@ construct Options{..} MakeActions{..} cacheDb (sorted, graph) = do
             , rsNewCacheInfo = Just newCacheInfo
             })
 
-    moduleDeps = fromMaybe graphError . flip lookup graph
+    graphMap = M.fromList graph
+    moduleDeps = fromMaybe graphError . flip M.lookup graphMap
       where
         graphError = internalError "make: module not found in dependency graph."
 
