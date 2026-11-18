@@ -32,7 +32,7 @@ import Language.PureScript.Errors (ErrorMessageHint(..), SimpleErrorMessage(..),
 import Language.PureScript.TypeChecker.Kinds (elaborateKind, instantiateKind, unifyKinds')
 import Language.PureScript.TypeChecker.Monad (CheckState(..), Substitution(..), UnkLevel(..), Unknown, getLocalContext, guardWith, lookupUnkName, withErrorMessageHint, TypeCheckM)
 import Language.PureScript.TypeChecker.Skolems (newSkolemConstant, skolemize)
-import Language.PureScript.Types (Constraint(..), pattern REmptyKinded, RowListItem(..), SourceType, Type(..), WildcardData(..), alignRowsWith, everythingOnTypes, everywhereOnTypes, everywhereOnTypesM, getAnnForType, mkForAll, rowFromList, srcTUnknown)
+import Language.PureScript.Types (Constraint(..), pattern REmptyKinded, RowListItem(..), SourceType, Type(..), WildcardData(..), alignRowsWith, everythingOnTypes, everywhereOnTypesM, rewriteTypesBottomUp, getAnnForType, mkForAll, rowFromList, srcTUnknown)
 import Data.Set qualified as S
 
 -- | Generate a fresh type variable with an unknown kind. Avoid this if at all possible.
@@ -81,14 +81,16 @@ solveType u t = rethrow (onErrorMessages withoutPosition) $ do
 
 -- | Apply a substitution to a type
 substituteType :: Substitution -> SourceType -> SourceType
-substituteType sub = everywhereOnTypes go
+substituteType sub
+  | IM.null (substType sub) = id
+  | otherwise = rewriteTypesBottomUp go
   where
-  go (TUnknown ann u) =
+  go (TUnknown _ u) =
     case IM.lookup u (substType sub) of
-      Nothing -> TUnknown ann u
-      Just (TUnknown ann' u1) | u1 == u -> TUnknown ann' u1
-      Just t -> substituteType sub t
-  go other = other
+      Nothing -> Nothing
+      Just t@(TUnknown _ u1) | u1 == u -> Just t
+      Just t -> Just (substituteType sub t)
+  go _ = Nothing
 
 -- | Make sure that an unknown does not occur in a type
 occursCheck :: Int -> SourceType -> TypeCheckM ()

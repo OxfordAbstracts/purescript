@@ -704,6 +704,40 @@ everywhereOnTypes f = go where
   go (ParensInType ann t) = f (ParensInType ann (go t))
   go other = f other
 
+rewriteTypesBottomUp :: (Type a -> Maybe (Type a)) -> Type a -> Type a
+rewriteTypesBottomUp f t = fromMaybe t (go t) where
+  go ty = case ty of
+    TypeApp ann t1 t2 -> rebuild2 ty (TypeApp ann) t1 t2
+    KindApp ann t1 t2 -> rebuild2 ty (KindApp ann) t1 t2
+    ForAll ann vis arg mbK body sco -> case (go =<< mbK, go body) of
+      (Nothing, Nothing) -> f ty
+      (mbK', body') -> changed $ ForAll ann vis arg (mbK' <|> mbK) (fromMaybe body body') sco
+    ConstrainedType ann c body ->
+      let kargs = constraintKindArgs c
+          args = constraintArgs c
+          kargs' = map go kargs
+          args' = map go args
+          body' = go body
+      in if all null kargs' && all null args' && null body'
+        then f ty
+        else changed $ ConstrainedType ann c { constraintKindArgs = zipWith fromMaybe kargs kargs', constraintArgs = zipWith fromMaybe args args' } (fromMaybe body body')
+    Skolem ann name (Just k) i sc -> case go k of
+      Nothing -> f ty
+      Just k' -> changed $ Skolem ann name (Just k') i sc
+    RCons ann name t1 rest -> rebuild2 ty (RCons ann name) t1 rest
+    KindedType ann t1 k -> rebuild2 ty (KindedType ann) t1 k
+    BinaryNoParensType ann t1 t2 t3 -> case (go t1, go t2, go t3) of
+      (Nothing, Nothing, Nothing) -> f ty
+      (t1', t2', t3') -> changed $ BinaryNoParensType ann (fromMaybe t1 t1') (fromMaybe t2 t2') (fromMaybe t3 t3')
+    ParensInType ann t1 -> case go t1 of
+      Nothing -> f ty
+      Just t1' -> changed $ ParensInType ann t1'
+    _ -> f ty
+  rebuild2 ty con t1 t2 = case (go t1, go t2) of
+    (Nothing, Nothing) -> f ty
+    (t1', t2') -> changed $ con (fromMaybe t1 t1') (fromMaybe t2 t2')
+  changed ty' = Just (fromMaybe ty' (f ty'))
+
 everywhereOnTypesM :: Monad m => (Type a -> m (Type a)) -> Type a -> m (Type a)
 everywhereOnTypesM f = go where
   go (TypeApp ann t1 t2) = (TypeApp ann <$> go t1 <*> go t2) >>= f
