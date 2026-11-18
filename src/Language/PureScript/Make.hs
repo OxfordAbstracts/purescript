@@ -294,13 +294,13 @@ make' MakeOptions{..} ma@MakeActions{..} ms = do
   buildModule :: QSem -> BuildPlan -> ModuleName -> Int -> FilePath -> [CST.ParserWarning] -> Either (NEL.NonEmpty CST.ParserError) Module -> [ModuleName] -> m ()
   buildModule lock buildPlan moduleName cnt fp pwarnings mres deps = do
     result <- flip catchError (return . BuildJobFailed) $ do
-      let pwarnings' = CST.toMultipleWarnings fp pwarnings
-      tell pwarnings'
-      m <- CST.unwrapParserError fp mres
       -- We need to wait for dependencies to be built, before checking if the current
       -- module should be rebuilt, so the first thing to do is to wait on the
       -- MVars for the module's dependencies.
       mexterns <- fmap unzip . sequence <$> traverse (getResult buildPlan) deps
+      let pwarnings' = CST.toMultipleWarnings fp pwarnings
+      tell pwarnings'
+      m <- CST.unwrapParserError fp mres
 
       case mexterns of
         Just (_, depsDiffExterns) -> do
