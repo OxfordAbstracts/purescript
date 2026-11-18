@@ -134,14 +134,13 @@ data CheckState = CheckState
   , checkConstructorImportsForCoercible :: S.Set (ModuleName, Qualified (ProperName 'ConstructorName))
   -- ^ Newtype constructors imports required to solve Coercible constraints.
   -- We have to keep track of them so that we don't emit unused import warnings.
-  , unificationCache :: S.Set (SourceType, SourceType)
   , checkUndefinedNames :: S.Set (Qualified Ident)
   , checkVisibleModules :: Maybe (S.Set ModuleName)
   }
 
 -- | Create an empty @CheckState@
 emptyCheckState :: Environment -> CheckState
-emptyCheckState env = CheckState env 0 0 0 Nothing [] emptySubstitution [] mempty mempty mempty Nothing
+emptyCheckState env = CheckState env 0 0 0 Nothing [] emptySubstitution [] mempty mempty Nothing
 
 -- | Unification variables
 type Unknown = Int
