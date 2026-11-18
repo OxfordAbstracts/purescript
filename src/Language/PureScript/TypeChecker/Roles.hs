@@ -28,7 +28,7 @@ import Language.PureScript.Environment (Environment(..), TypeKind(..))
 import Language.PureScript.Errors (DataConstructorDeclaration(..), MultipleErrors, RoleDeclarationData(..), SimpleErrorMessage(..), errorMessage)
 import Language.PureScript.Names (ModuleName, ProperName, ProperNameType(..), Qualified(..), QualifiedBy(..))
 import Language.PureScript.Roles (Role(..))
-import Language.PureScript.Types (Constraint(..), SourceType, Type(..), freeTypeVariables, unapplyTypes)
+import Language.PureScript.Types (Constraint(..), SourceType, Type(..), everythingOnTypes, freeTypeVariables, unapplyTypes)
 
 -- |
 -- A map of a type's formal parameter names to their roles. This type's
@@ -57,9 +57,9 @@ typeKindRoles = \case
   _ ->
     Nothing
 
-getRoleEnv :: Environment -> RoleEnv
+getRoleEnv :: Environment -> S.Set (Qualified (ProperName 'TypeName)) -> RoleEnv
 getRoleEnv env =
-  M.mapMaybe (typeKindRoles . snd) (types env)
+  M.mapMaybe (typeKindRoles . snd) . M.restrictKeys (types env)
 
 updateRoleEnv
   :: Qualified (ProperName 'TypeName)
@@ -141,7 +141,7 @@ inferDataBindingGroupRoles
   -> [Role]
 inferDataBindingGroupRoles env moduleName roleDeclarations group =
   let declaredRoleEnv = M.fromList $ map (Qualified (ByModuleName moduleName) . rdeclIdent &&& rdeclRoles) roleDeclarations
-      inferredRoleEnv = getRoleEnv env
+      inferredRoleEnv = getRoleEnv env (referencedTypeNames moduleName group)
       initialRoleEnv = declaredRoleEnv `M.union` inferredRoleEnv
       inferredRoleEnv' = inferDataBindingGroupRoles' moduleName group initialRoleEnv
   in \tyName tyArgs ->
@@ -154,6 +154,14 @@ type DataDeclaration =
   , [(Text, Maybe SourceType)]
   , [DataConstructorDeclaration]
   )
+
+referencedTypeNames :: ModuleName -> [DataDeclaration] -> S.Set (Qualified (ProperName 'TypeName))
+referencedTypeNames moduleName group =
+  S.fromList (map (\(tyName, _, _) -> Qualified (ByModuleName moduleName) tyName) group)
+    <> foldMap (everythingOnTypes (<>) typeConstructorName . snd) (group >>= \(_, _, ctors) -> ctors >>= dataCtorFields)
+  where
+  typeConstructorName (TypeConstructor _ name) = S.singleton name
+  typeConstructorName _ = S.empty
 
 inferDataBindingGroupRoles'
   :: ModuleName

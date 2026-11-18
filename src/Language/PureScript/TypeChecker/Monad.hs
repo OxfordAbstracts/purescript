@@ -12,6 +12,7 @@ import Control.Monad.Error.Class (MonadError(..))
 import Control.Monad.State (MonadState(..), StateT(..), gets, modify)
 import Control.Monad.State.Strict qualified as StrictState
 
+import Data.Foldable (foldl')
 import Data.Maybe (fromMaybe)
 import Data.IntMap.Lazy qualified as IM
 import Data.Map qualified as M
@@ -134,11 +135,13 @@ data CheckState = CheckState
   -- ^ Newtype constructors imports required to solve Coercible constraints.
   -- We have to keep track of them so that we don't emit unused import warnings.
   , unificationCache :: S.Set (SourceType, SourceType)
+  , checkUndefinedNames :: S.Set (Qualified Ident)
+  , checkVisibleModules :: Maybe (S.Set ModuleName)
   }
 
 -- | Create an empty @CheckState@
 emptyCheckState :: Environment -> CheckState
-emptyCheckState env = CheckState env 0 0 0 Nothing [] emptySubstitution [] mempty mempty
+emptyCheckState env = CheckState env 0 0 0 Nothing [] emptySubstitution [] mempty mempty mempty Nothing
 
 -- | Unification variables
 type Unknown = Int
@@ -150,9 +153,16 @@ bindNames
   -> TypeCheckM a
 bindNames newNames action = do
   orig <- get
-  modify $ \st -> st { checkEnv = (checkEnv st) { names = newNames `M.union` (names . checkEnv $ st) } }
+  let undefinedNames = M.keysSet $ M.filter (\(_, _, visibility) -> visibility == Undefined) newNames
+  modify $ \st -> st
+    { checkEnv = (checkEnv st) { names = newNames `M.union` (names . checkEnv $ st) }
+    , checkUndefinedNames = undefinedNames `S.union` checkUndefinedNames st
+    }
   a <- action
-  modify $ \st -> st { checkEnv = (checkEnv st) { names = names . checkEnv $ orig } }
+  modify $ \st -> st
+    { checkEnv = (checkEnv st) { names = names . checkEnv $ orig }
+    , checkUndefinedNames = checkUndefinedNames orig
+    }
   return a
 
 -- | Temporarily bind a collection of names to types
@@ -267,7 +277,12 @@ bindLocalTypeVariables moduleName bindings =
 
 -- | Update the visibility of all names to Defined
 makeBindingGroupVisible :: TypeCheckM ()
-makeBindingGroupVisible = modifyEnv $ \e -> e { names = M.map (\(ty, nk, _) -> (ty, nk, Defined)) (names e) }
+makeBindingGroupVisible = modify $ \st -> st
+  { checkEnv = (checkEnv st) { names = foldl' (flip (M.adjust define)) (names (checkEnv st)) (checkUndefinedNames st) }
+  , checkUndefinedNames = S.empty
+  }
+  where
+  define (ty, nk, _) = (ty, nk, Defined)
 
 -- | Update the visibility of all names to Defined in the scope of the provided action
 withBindingGroupVisible :: TypeCheckM a -> TypeCheckM a
@@ -276,9 +291,12 @@ withBindingGroupVisible action = preservingNames $ makeBindingGroupVisible >> ac
 -- | Perform an action while preserving the names from the @Environment@.
 preservingNames :: TypeCheckM a -> TypeCheckM a
 preservingNames action = do
-  orig <- gets (names . checkEnv)
+  orig <- get
   a <- action
-  modifyEnv $ \e -> e { names = orig }
+  modify $ \st -> st
+    { checkEnv = (checkEnv st) { names = names (checkEnv orig) }
+    , checkUndefinedNames = checkUndefinedNames orig
+    }
   return a
 
 -- | Lookup the type of a value by name in the @Environment@
@@ -329,6 +347,22 @@ lookupTypeVariable currentModule (Qualified qb name) = do
 -- | Get the current @Environment@
 getEnv :: TypeCheckM Environment
 getEnv = gets checkEnv
+
+getVisibleEnv :: TypeCheckM Environment
+getVisibleEnv = do
+  st <- get
+  let env = checkEnv st
+  pure $ case checkVisibleModules st of
+    Nothing -> env
+    Just visible ->
+      let
+        isVisible :: Qualified a -> b -> Bool
+        isVisible (Qualified (ByModuleName mn) _) _ = mn `S.member` visible || Just mn == checkCurrentModule st
+        isVisible _ _ = True
+      in env
+        { names = M.filterWithKey isVisible (names env)
+        , dataConstructors = M.filterWithKey isVisible (dataConstructors env)
+        }
 
 -- | Get locally-bound names in context, to create an error message.
 getLocalContext :: TypeCheckM Context

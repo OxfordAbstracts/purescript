@@ -11,6 +11,7 @@ import Data.List (sortOn)
 import Data.Maybe (mapMaybe, fromJust)
 import Data.List.NonEmpty qualified as NEL
 import Data.Map qualified as M
+import Data.Set qualified as S
 
 import Text.Parsec qualified as P
 import Text.Parsec.Pos qualified as P
@@ -83,11 +84,15 @@ matchOperators isBinOp extractOp fromOp reapply modOpTable ops = parseChains
     | otherwise = [Left ty]
   bracketChain :: Chain a -> m a
   bracketChain chain =
-    case P.parse opParser "operator expression" chain of
+    case P.parse (opParser (opsUsedIn chain)) "operator expression" chain of
       Right a -> pure a
       Left _ -> throwError . MultipleErrors $ mkErrors chain
-  opParser :: P.Parsec (Chain a) () a
-  opParser = P.buildExpressionParser (modOpTable (opTable ops fromOp reapply)) parseValue <* P.eof
+  opsUsedIn :: Chain a -> [[(Qualified (OpName nameType), Associativity)]]
+  opsUsedIn chain =
+    let used = S.fromList . map snd . mapMaybe fromOp $ rights chain
+    in filter (not . null) $ map (filter ((`S.member` used) . fst)) ops
+  opParser :: [[(Qualified (OpName nameType), Associativity)]] -> P.Parsec (Chain a) () a
+  opParser usedOps = P.buildExpressionParser (modOpTable (opTable usedOps fromOp reapply)) parseValue <* P.eof
 
   -- Generating a good error message involves a bit of work here, as the parser
   -- can't provide one for us.

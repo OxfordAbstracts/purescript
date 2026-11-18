@@ -377,7 +377,7 @@ typeCheckAll moduleName = traverse go
     rethrow (addHint (ErrorInInstance className tys) . addHint (positionedError ss)) $ do
       env <- getEnv
       let qualifiedDictName = Qualified (ByModuleName moduleName) dictName
-      flip (traverse_ . traverse_) (typeClassDictionaries env) $ \dictionaries ->
+      for_ (M.lookup (ByModuleName moduleName) (typeClassDictionaries env)) $ traverse_ $ \dictionaries ->
         guardWith (errorMessage (DuplicateInstance dictName ss)) $
           not (M.member qualifiedDictName dictionaries)
       case M.lookup className (typeClasses env) of

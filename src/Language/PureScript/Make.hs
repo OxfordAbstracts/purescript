@@ -35,7 +35,7 @@ import Language.PureScript.AST (ErrorMessageHint(..), Module(..), SourceSpan(..)
 import Language.PureScript.Crash (internalError)
 import Language.PureScript.CST qualified as CST
 import Language.PureScript.Docs.Convert qualified as Docs
-import Language.PureScript.Environment (initEnvironment)
+import Language.PureScript.Environment (Environment(..), initEnvironment)
 import Language.PureScript.Errors (MultipleErrors(..), SimpleErrorMessage(..), addHint, defaultPPEOptions, errorMessage', errorMessage'', prettyPrintMultipleErrors)
 import Language.PureScript.Externs (ExternsFile, applyExternsFileToEnvironment, moduleToExternsFile)
 import Language.PureScript.Linter (Name(..), lint, lintImports)
@@ -95,27 +95,30 @@ rebuildModule'
   -> [ExternsFile]
   -> Module
   -> m ExternsFile
-rebuildModule' act env ext mdl = rebuildModuleWithIndex act env ext mdl Nothing
+rebuildModule' act env ext mdl = rebuildModuleWithIndex act env checkEnv Nothing ext mdl Nothing
+  where
+  checkEnv = foldl' (flip applyExternsFileToEnvironment) initEnvironment ext
 
 rebuildModuleWithIndex
   :: forall m
    . (MonadError MultipleErrors m, MonadWriter MultipleErrors m)
   => MakeActions m
   -> Env
+  -> Environment
+  -> Maybe (S.Set ModuleName)
   -> [ExternsFile]
   -> Module
   -> Maybe (Int, Int)
   -> m ExternsFile
-rebuildModuleWithIndex MakeActions{..} exEnv externs m@(Module _ _ moduleName _ _) moduleIndex = do
+rebuildModuleWithIndex MakeActions{..} exEnv env visibleModules externs m@(Module _ _ moduleName _ _) moduleIndex = do
   progress $ CompilingModule moduleName moduleIndex
-  let env = foldl' (flip applyExternsFileToEnvironment) initEnvironment externs
-      withPrim = importPrim m
+  let withPrim = importPrim m
   lint withPrim
 
   ((Module ss coms _ elaborated exps, env'), nextVar) <- runSupplyT 0 $ do
     (desugared, (exEnv', usedImports)) <- runStateT (desugar externs withPrim) (exEnv, mempty)
     let modulesExports = (\(_, _, exports) -> exports) <$> exEnv'
-    (checked, CheckState{..}) <- runStateT (liftTypeCheckM $ typeCheckModule modulesExports desugared) $ emptyCheckState env
+    (checked, CheckState{..}) <- runStateT (liftTypeCheckM $ typeCheckModule modulesExports desugared) $ (emptyCheckState env) { checkVisibleModules = visibleModules }
     let usedImports' = foldl' (flip $ \(fromModuleName, newtypeCtorName) ->
           M.alter (Just . (fmap DctorName newtypeCtorName :) . fold) fromModuleName) usedImports checkConstructorImportsForCoercible
     -- Imports cannot be linted before type checking because we need to
@@ -324,14 +327,17 @@ make' MakeOptions{..} ma@MakeActions{..} ms = do
 
           -- We need to ensure that all dependencies have been included in Env.
           C.modifyMVar_ (bpEnv buildPlan) $ \env -> do
-            let
-              go :: Env -> ModuleName -> m Env
-              go e dep = case lookup dep (zip deps externs) of
-                Just exts
-                  | not (M.member dep e) -> externsEnv e exts
-                _ -> return e
-            foldM go env deps
+            let missing = filter (\(dep, _) -> not (M.member dep env)) (zip deps externs)
+            C.modifyMVar_ (bpCheckEnv buildPlan) $ \checkEnv -> do
+              let checkEnv' = foldl' (flip applyExternsFileToEnvironment) checkEnv (map snd missing)
+              _ <- evaluate $ sum
+                [ M.size (names checkEnv'), M.size (types checkEnv'), M.size (dataConstructors checkEnv')
+                , M.size (typeSynonyms checkEnv'), M.size (typeClassDictionaries checkEnv'), M.size (typeClasses checkEnv')
+                ]
+              pure checkEnv'
+            foldM (\e (_, exts) -> externsEnv e exts) env missing
           env <- C.readMVar (bpEnv buildPlan)
+          checkEnv <- C.readMVar (bpCheckEnv buildPlan)
           idx <- C.takeMVar (bpIndex buildPlan)
           C.putMVar (bpIndex buildPlan) (idx + 1)
 
@@ -346,7 +352,7 @@ make' MakeOptions{..} ma@MakeActions{..} ms = do
                     -- Force the externs and warnings to avoid retaining excess module
                     -- data after the module is finished compiling.
                     extsAndWarnings <- evaluate . force <=< listen $ do
-                      rebuildModuleWithIndex ma env externs m (Just (idx, cnt))
+                      rebuildModuleWithIndex ma env checkEnv (Just (S.fromList deps)) externs m (Just (idx, cnt))
                     liftBase $ traceMarkerIO $ T.unpack (runModuleName moduleName) <> " end"
                     return extsAndWarnings
                   let diff = diffExterns exts <$> (snd <$> prevResult) <*> depsDiffs

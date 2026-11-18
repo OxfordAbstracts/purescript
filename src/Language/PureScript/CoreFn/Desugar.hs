@@ -5,7 +5,6 @@ import Protolude (ordNub, orEmpty)
 
 import Control.Arrow (second)
 
-import Data.Function (on)
 import Data.Maybe (mapMaybe)
 import Data.Tuple (swap)
 import Data.List.NonEmpty qualified as NEL
@@ -21,7 +20,7 @@ import Language.PureScript.CoreFn.Expr (Bind(..), CaseAlternative(..), Expr(..),
 import Language.PureScript.CoreFn.Meta (ConstructorType(..), Meta(..))
 import Language.PureScript.CoreFn.Module (Module(..))
 import Language.PureScript.Crash (internalError)
-import Language.PureScript.Environment (DataDeclType(..), Environment(..), NameKind(..), isDictTypeName, lookupConstructor, lookupValue)
+import Language.PureScript.Environment (DataDeclType(..), Environment(..), NameKind(..), TypeKind(..), isDictTypeName, lookupConstructor, lookupValue)
 import Language.PureScript.Label (Label(..))
 import Language.PureScript.Names (pattern ByNullSourcePos, Ident(..), ModuleName, ProperName(..), ProperNameType(..), Qualified(..), QualifiedBy(..), getQual)
 import Language.PureScript.PSString (PSString)
@@ -202,20 +201,19 @@ moduleToCoreFn env (A.Module modSS coms mn decls (Just exps)) =
     case lookupConstructor env ctor of
       (Newtype, _, _, _) -> IsNewtype
       dc@(Data, _, _, fields) ->
-        let constructorType = if numConstructors (ctor, dc) == 1 then ProductType else SumType
+        let constructorType = if knownConstructorCount ctor dc == 1 then ProductType else SumType
         in IsConstructor constructorType fields
-    where
 
-    numConstructors
-      :: (Qualified (ProperName 'ConstructorName), (DataDeclType, ProperName 'TypeName, SourceType, [Ident]))
-      -> Int
-    numConstructors ty = length $ filter (((==) `on` typeConstructor) ty) $ M.toList $ dataConstructors env
-
-    typeConstructor
-      :: (Qualified (ProperName 'ConstructorName), (DataDeclType, ProperName 'TypeName, SourceType, [Ident]))
-      -> (ModuleName, ProperName 'TypeName)
-    typeConstructor (Qualified (ByModuleName mn') _, (_, tyCtor, _, _)) = (mn', tyCtor)
-    typeConstructor _ = internalError "Invalid argument to typeConstructor"
+  knownConstructorCount
+    :: Qualified (ProperName 'ConstructorName)
+    -> (DataDeclType, ProperName 'TypeName, SourceType, [Ident])
+    -> Int
+  knownConstructorCount (Qualified qb@(ByModuleName _) _) (_, tyCtor, _, _) =
+    case M.lookup (Qualified qb tyCtor) (types env) of
+      Just (_, DataType _ _ ctors) ->
+        length . take 2 $ filter (\(ctor, _) -> M.member (Qualified qb ctor) (dataConstructors env)) ctors
+      _ -> internalError "knownConstructorCount: unknown data type"
+  knownConstructorCount _ _ = internalError "Invalid argument to knownConstructorCount"
 
 -- | Find module names from qualified references to values. This is used to
 -- ensure instances are imported from any module that is referenced by the

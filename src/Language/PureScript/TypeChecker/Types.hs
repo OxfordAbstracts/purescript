@@ -37,7 +37,8 @@ import Control.Monad.Writer.Class (MonadWriter(..))
 import Data.Bifunctor (bimap)
 import Data.Either (partitionEithers)
 import Data.Functor (($>))
-import Data.List (transpose, (\\), partition, delete)
+import Data.Function (on)
+import Data.List (transpose, (\\), partition, deleteBy)
 import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import Data.Traversable (for)
@@ -525,7 +526,7 @@ infer' (TypedValue checkType val ty) = do
 infer' (Hole name) = do
   ty <- freshTypeWithKind kindType
   ctx <- getLocalContext
-  env <- getEnv
+  env <- getVisibleEnv
   tell . errorMessage $ HoleInferredType name ty ctx . Just $ TSBefore env
   return $ TypedValue' True (Hole name) ty
 infer' (PositionedValue pos c val) = warnAndRethrowWithPositionTC pos $ do
@@ -942,7 +943,7 @@ checkProperties expr ps row lax = convert <$> go ps (toRowPair <$> ts') r' where
         return $ (p, TypedValue' True v' ty) : ps''
       Just ty -> do
         v' <- check v ty
-        ps'' <- go ps' (delete (Label p, ty) ts) r
+        ps'' <- go ps' (deleteBy ((==) `on` fst) (Label p, ty) ts) r
         return $ (p, v') : ps''
   go _ _ _ = throwError . errorMessage $ ExprDoesNotHaveType expr (srcTypeApp tyRecord row)
 
