@@ -34,6 +34,7 @@ import Data.Text.IO qualified as TIO
 import Data.Text.Encoding qualified as TE
 import Data.Time.Clock (UTCTime)
 import Data.Version (showVersion)
+import Debug.Trace (traceMarkerIO)
 import Language.JavaScript.Parser qualified as JS
 import Language.PureScript.AST (SourcePos(..), Module)
 import Language.PureScript.Bundle qualified as Bundle
@@ -295,6 +296,7 @@ buildMakeActions outputDir filePathMap foreigns usePrefix =
   codegen ast m docs exts = do
     let mn = CF.moduleName m
     lift $ writeCborFile (outputFilename mn externsFileName) exts
+    liftIO $ traceMarkerIO $ T.unpack (runModuleName mn) <> " iface"
     ideCache <- lift $ asks optionsIdeCache
     when ideCache $ lift $ sqliteExtern outputDir ast exts
     codegenTargets <- lift $ asks optionsCodegenTargets
