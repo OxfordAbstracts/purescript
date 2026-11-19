@@ -103,7 +103,7 @@ inlineCommonValues expander = everywhere convert
   intOp ss op x y = Binary ss BitwiseOr (Binary ss op x y) (NumericLiteral ss (Left 0))
 
 inlineCommonOperators :: (AST -> AST) -> AST -> AST
-inlineCommonOperators expander = everywhereTopDown $ applyAll $
+inlineCommonOperators expander = everywhereTopDown . onSingleArgument . applyAll $
   [ binary C.P_semiringNumber C.P_add Add
   , binary C.P_semiringNumber C.P_mul Multiply
 
@@ -159,12 +159,32 @@ inlineCommonOperators expander = everywhereTopDown $ applyAll $
   , unary'  C.P_complement BitwiseNot
 
   , inlineNonClassFunction (isModFnWithDict C.P_unsafeIndex) $ flip (Indexer Nothing)
-  ] ++
-  [ fn | i <- [0..10], fn <- [ mkFn i, runFn i ] ] ++
-  [ fn | i <- [0..10], fn <- [ mkEffFn C.P_mkEffFn i, runEffFn C.P_runEffFn i ] ] ++
-  [ fn | i <- [0..10], fn <- [ mkEffFn C.P_mkEffectFn i, runEffFn C.P_runEffectFn i ] ] ++
-  [ fn | i <- [0..10], fn <- [ mkEffFn C.P_mkSTFn i, runEffFn C.P_runSTFn i ] ]
+  , inlineUncurried
+  ]
   where
+  onSingleArgument f js@(App _ _ [_]) = f js
+  onSingleArgument _ js = js
+
+  inlineUncurried js
+    | hasUncurriedHead (maxArity + 1) js = uncurriedRules js
+    | otherwise = js
+
+  hasUncurriedHead _ (ModuleAccessor _ mn _) = mn `elem`
+    [ C.M_Data_Function_Uncurried
+    , C.M_Effect_Uncurried
+    , C.M_Control_Monad_Eff_Uncurried
+    , C.M_Control_Monad_ST_Uncurried
+    ]
+  hasUncurriedHead n (App _ f [_]) | n > 0 = hasUncurriedHead (n - 1) f
+  hasUncurriedHead _ _ = False
+
+  maxArity = 10 :: Int
+  uncurriedRules = applyAll $
+    [ fn | i <- [0..maxArity], fn <- [ mkFn i, runFn i ] ] ++
+    [ fn | i <- [0..maxArity], fn <- [ mkEffFn C.P_mkEffFn i, runEffFn C.P_runEffFn i ] ] ++
+    [ fn | i <- [0..maxArity], fn <- [ mkEffFn C.P_mkEffectFn i, runEffFn C.P_runEffectFn i ] ] ++
+    [ fn | i <- [0..maxArity], fn <- [ mkEffFn C.P_mkSTFn i, runEffFn C.P_runSTFn i ] ]
+
   binary :: (ModuleName, PSString) -> (ModuleName, PSString) -> BinaryOperator -> AST -> AST
   binary dict fn op = convert where
     convert :: AST -> AST
