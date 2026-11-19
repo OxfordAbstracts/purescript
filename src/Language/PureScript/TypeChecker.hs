@@ -480,28 +480,25 @@ typeCheckAll moduleName = traverse go
     -> TypeCheckM ()
   checkOverlappingInstance ss ch dictName vars className typeClass tys' nonOrphanModules = do
     for_ nonOrphanModules $ \m -> do
-      dicts <- M.toList <$> lookupTypeClassDictionariesForClass (ByModuleName m) className
-
-      for_ dicts $ \(Qualified mn' ident, dictNel) -> do
-        for_ dictNel $ \dict -> do
-          -- ignore instances in the same instance chain
-          if ch == tcdChain dict ||
-            instancesAreApart (typeClassCoveringSets typeClass) tys' (tcdInstanceTypes dict)
-          then return ()
-          else do
-            let this = if isPlainIdent dictName then Right dictName else Left $ srcInstanceType ss vars className tys'
-            let that = Qualified mn' . maybeToLeft ident $ tcdDescription dict
-            throwError . errorMessage $
-              OverlappingInstances className
-                                    tys'
-                                    [that, Qualified (ByModuleName moduleName) this]
+      dicts <- lookupTypeClassDictionariesForClass (ByModuleName m) className
+      let conflicts =
+            [ (name, dict)
+            | (name, ds) <- M.toAscList dicts
+            , dict <- NEL.toList ds
+            , ch /= tcdChain dict
+            , not (instancesAreApart (typeClassCoveringSets typeClass) tys' (tcdInstanceTypes dict))
+            ]
+      for_ (listToMaybe conflicts) $ \(Qualified mn' ident, dict) -> do
+        let this = if isPlainIdent dictName then Right dictName else Left $ srcInstanceType ss vars className tys'
+        let that = Qualified mn' . maybeToLeft ident $ tcdDescription dict
+        throwError . errorMessage $ OverlappingInstances className tys' [that, Qualified (ByModuleName moduleName) this]
 
   instancesAreApart
     :: S.Set (S.Set Int)
     -> [SourceType]
     -> [SourceType]
     -> Bool
-  instancesAreApart sets lhs rhs = all (any typesApart . S.toList) (S.toList sets)
+  instancesAreApart sets lhs rhs = all (any typesApart) sets
     where
       typesApart :: Int -> Bool
       typesApart i = typeHeadsApart (lhs !! i) (rhs !! i)
