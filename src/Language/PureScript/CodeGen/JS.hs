@@ -61,7 +61,7 @@ moduleToJs (Module _ coms mn _ imps exps reExps foreigns decls) foreignInclude =
     let imps' = ordNub $ map snd imps
     let mnLookup = renameImports usedNames imps'
     (jsDecls, Any needRuntimeLazy) <- runWriterT $ mapM (moduleBindToJs mn) decls
-    optimized <- fmap (fmap (fmap annotatePure)) . optimize (map identToJs exps) $ if needRuntimeLazy then [runtimeLazy] : jsDecls else jsDecls
+    optimized <- fmap (fmap (fmap annotatePure)) . optimize (T.unpack (runModuleName mn)) (map identToJs exps) $ if needRuntimeLazy then [runtimeLazy] : jsDecls else jsDecls
     F.traverse_ (F.traverse_ checkIntegers) optimized
     comments <- not <$> asks optionsNoComments
     let header = if comments then coms else []

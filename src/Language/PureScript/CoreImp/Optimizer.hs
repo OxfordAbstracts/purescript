@@ -21,53 +21,76 @@ module Language.PureScript.CoreImp.Optimizer (optimize) where
 
 import Prelude
 
+import Control.Monad ((>=>))
+import Control.Monad.State.Strict (StateT, modify', runStateT)
+import Control.Monad.Trans.Class (lift)
 import Data.Map qualified as M
 import Data.Text (Text)
+import Debug.Trace (traceEvent)
 
 import Control.Monad.Supply.Class (MonadSupply)
-import Language.PureScript.CoreImp.AST (AST(..), InitializerEffects(..), everywhere)
+import Language.PureScript.CoreImp.AST (AST(..), InitializerEffects(..), everything, everywhere)
 import Language.PureScript.CoreImp.Optimizer.Blocks (collapseNestedBlocks, collapseNestedIfs)
-import Language.PureScript.CoreImp.Optimizer.Common (applyAll)
 import Language.PureScript.CoreImp.Optimizer.Inliner (etaConvert, evaluateIifes, inlineCommonOperators, inlineCommonValues, inlineFnComposition, inlineFnIdentity, inlineUnsafeCoerce, inlineUnsafePartial, inlineVariables, unThunk)
 import Language.PureScript.CoreImp.Optimizer.MagicDo (inlineST, magicDoEff, magicDoEffect, magicDoST)
 import Language.PureScript.CoreImp.Optimizer.TCO (tco)
 import Language.PureScript.CoreImp.Optimizer.Unused (removeCodeAfterReturnStatements, removeUndefinedApp, removeUnusedEffectFreeVars)
 
--- | Apply a series of optimizer passes to simplified JavaScript code
-optimize :: forall m. MonadSupply m => [Text] -> [[AST]] -> m [[AST]]
-optimize exps jsDecls = removeUnusedEffectFreeVars exps <$> traverse (traverse go) jsDecls
-  where
-    go :: AST -> m AST
-    go js = do
-      js' <- untilFixedPoint (inlineFnComposition expander . inlineFnIdentity expander . inlineUnsafeCoerce . inlineUnsafePartial . tidyUp . applyAll
-        [ inlineCommonValues expander
-        , inlineCommonOperators expander
-        ]) js
-      untilFixedPoint (return . tidyUp) . tco . inlineST
-        =<< untilFixedPoint (return . magicDoST expander)
-        =<< untilFixedPoint (return . magicDoEff expander)
-        =<< untilFixedPoint (return . magicDoEffect expander) js'
+data PassCount = PassCount !Int !Int !Int
 
-    tidyUp :: AST -> AST
-    tidyUp = applyAll
-      [ collapseNestedBlocks
-      , collapseNestedIfs
-      , removeCodeAfterReturnStatements
-      , removeUndefinedApp
-      , unThunk
-      , etaConvert
-      , evaluateIifes
-      , inlineVariables
-      ]
+type Passes m = StateT (M.Map String PassCount) m
+
+-- | Apply a series of optimizer passes to simplified JavaScript code
+optimize :: forall m. MonadSupply m => String -> [Text] -> [[AST]] -> m [[AST]]
+optimize modName exps jsDecls = do
+  (result, counts) <- runStateT (traverse (traverse go) jsDecls) M.empty
+  let rows = [ unwords [name, show calls, show changed, show nodes]
+             | (name, PassCount calls changed nodes) <- M.toAscList counts ]
+  traceEvent (unwords ("jsopt" : modName : rows)) $ pure $ removeUnusedEffectFreeVars exps result
+  where
+    go :: AST -> Passes m AST
+    go = fixed "inline.loop" inliners
+      >=> fixed "magic.Effect" (pure . magicDoEffect expander)
+      >=> fixed "magic.Eff" (pure . magicDoEff expander)
+      >=> fixed "magic.ST" (pure . magicDoST expander)
+      >=> pass "inlineST" inlineST
+      >=> pass "tco" tco
+      >=> fixed "late.loop" (tidy "late.")
+
+    inliners = pass "operators" (inlineCommonOperators expander)
+      >=> pass "values" (inlineCommonValues expander)
+      >=> tidy "early."
+      >=> pass "unsafePartial" inlineUnsafePartial
+      >=> pass "unsafeCoerce" inlineUnsafeCoerce
+      >=> pass "identity" (inlineFnIdentity expander)
+      >=> (fmap fst . observed "composition" (lift . inlineFnComposition expander))
+
+    tidy phase = pass (phase <> "inlineVars") inlineVariables
+      >=> pass (phase <> "iifes") evaluateIifes
+      >=> pass (phase <> "eta") etaConvert
+      >=> pass (phase <> "unThunk") unThunk
+      >=> pass (phase <> "undefined") removeUndefinedApp
+      >=> pass (phase <> "afterReturn") removeCodeAfterReturnStatements
+      >=> pass (phase <> "ifs") collapseNestedIfs
+      >=> pass (phase <> "blocks") collapseNestedBlocks
+
+    pass name f = fmap fst . observed name (pure . f)
+
+    fixed name f = loop where
+      loop a = do
+        (b, changed) <- observed name f a
+        if changed then loop b else pure b
 
     expander = buildExpander (concat jsDecls)
 
-untilFixedPoint :: (Monad m, Eq a) => (a -> m a) -> a -> m a
-untilFixedPoint f = go
-  where
-  go a = do
-   a' <- f a
-   if a' == a then return a' else go a'
+observed :: Monad m => String -> (AST -> Passes m AST) -> AST -> Passes m (AST, Bool)
+observed name f a = do
+  b <- f a
+  let changed = b /= a
+      count = PassCount 1 (fromEnum changed) (everything (+) (const 1) a)
+      add (PassCount x y z) (PassCount i j k) = PassCount (x + i) (y + j) (z + k)
+  modify' $ M.insertWith add name count
+  pure (b, changed)
 
 -- |
 -- Take all top-level ASTs and return a function for expanding top-level
