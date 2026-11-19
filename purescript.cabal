@@ -166,7 +166,6 @@ common defaults
     base >=4.19.2.0 && <4.20,
     blaze-html >=0.9.2.0 && <0.10,
     bower-json >=1.1.0.0 && <1.2,
-    boxes >=0.1.5 && <0.2,
     bytestring >=0.12.1.0 && <0.13,
     Cabal >=3.10.3.0 && <3.11,
     cborg >=0.2.10.0 && <0.3,
@@ -402,6 +401,7 @@ library
     Language.PureScript.TypeClassDictionaries
     Language.PureScript.Types
     System.IO.UTF8
+    Text.PrettyPrint.Boxes
   other-modules:
     Data.Text.PureScript
     Data.InternedName
