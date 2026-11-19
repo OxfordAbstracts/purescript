@@ -188,8 +188,13 @@ unifyRows r1 r2 = sequence_ matches *> uncurry unifyTails rest where
 -- Replace type wildcards with unknowns
 --
 replaceTypeWildcards :: SourceType -> TypeCheckM SourceType
-replaceTypeWildcards = everywhereOnTypesM replace
+replaceTypeWildcards ty
+  | hasWildcards ty = everywhereOnTypesM replace ty
+  | otherwise = pure ty
   where
+  hasWildcards = everythingOnTypes (||) $ \case
+    TypeWildcard{} -> True
+    _ -> False
   replace (TypeWildcard ann wdata) = do
     t <- freshType
     ctx <- getLocalContext
