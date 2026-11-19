@@ -1,0 +1,16 @@
+--- StockWrite.hs
++++ FastWrite.hs
+@@ -25,3 +25,3 @@
+ --
+-module StockWrite
++module FastWrite
+   ( toBuilder          -- :: Encoding -> B.Builder
+@@ -129,2 +129,8 @@
+                                      (BI.BufferRange op ope0)
++          TkString x vs'
++            | let !n = T.lengthWord8 x
++            , n <= ope0 `minusPtr` op - bound -> do
++                p <- PI.runB stringLenMP (fromIntegral n) op
++                T.unsafeCopyToPtr x p
++                go vs' (p `plusPtr` n)
+           TkString        x vs' -> BI.runBuilderWith
