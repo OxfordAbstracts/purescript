@@ -15,6 +15,8 @@ import Control.Arrow qualified as A
 import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
+import Data.Text.Lazy qualified as TL
+import Data.Text.Lazy.Builder qualified as TB
 import Data.List.NonEmpty qualified as NEL (toList)
 
 import Language.PureScript.AST (SourceSpan(..))
@@ -23,7 +25,7 @@ import Language.PureScript.CoreImp.AST (AST(..), BinaryOperator(..), CIComments(
 import Language.PureScript.CoreImp.Module (Export(..), Import(..), Module(..))
 import Language.PureScript.Comments (Comment(..))
 import Language.PureScript.Crash (internalError)
-import Language.PureScript.Pretty.Common (Emit(..), PrinterState(..), SMap, StrPos(..), addMapping', currentIndent, intercalate, parensPos, runPlainString, withIndent)
+import Language.PureScript.Pretty.Common (Emit(..), PrinterState(..), SMap, StrPos(..), addMapping', currentIndent, intercalate, parensPos, withIndent)
 import Language.PureScript.PSString (PSString, decodeString, prettyPrintStringJS)
 
 -- TODO (Christoph): Get rid of T.unpack / pack
@@ -264,7 +266,7 @@ prettyPrintJSWithSourceMaps js =
   in (s, mp)
 
 prettyPrintJS :: Module -> Text
-prettyPrintJS = maybe (internalError "Incomplete pattern") runPlainString . flip evalStateT (PrinterState 0) . prettyModule
+prettyPrintJS = maybe (internalError "Incomplete pattern") (TL.toStrict . TB.toLazyText) . flip evalStateT (PrinterState 0) . prettyModule
 
 -- | Generate an indented, pretty-printed string representing a JavaScript expression
 prettyPrintJS' :: (Emit gen) => AST -> StateT PrinterState Maybe gen

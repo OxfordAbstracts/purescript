@@ -10,6 +10,7 @@ import Control.Monad.State (StateT, modify, get)
 import Data.List (elemIndices, intersperse)
 import Data.Text (Text)
 import Data.Text qualified as T
+import Data.Text.Lazy.Builder qualified as TB
 
 import Language.PureScript.AST (SourcePos(..), SourceSpan(..), nullSourceSpan)
 import Language.PureScript.CST.Lexer (isUnquotedKey)
@@ -82,6 +83,10 @@ runPlainString (PlainString s) = s
 
 instance Emit PlainString where
   emit = PlainString
+  addMapping _ = mempty
+
+instance Emit TB.Builder where
+  emit = TB.fromText
   addMapping _ = mempty
 
 addMapping' :: (Emit gen) => Maybe SourceSpan -> gen
