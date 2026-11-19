@@ -25,7 +25,7 @@ import Data.Foldable (for_, fold, toList)
 import Data.Function (on)
 import Data.Functor (($>), (<&>))
 import Data.List (delete, findIndices, minimumBy, nubBy, sortOn, tails)
-import Data.Maybe (catMaybes, fromMaybe, listToMaybe, mapMaybe)
+import Data.Maybe (catMaybes, fromMaybe, isNothing, listToMaybe, mapMaybe)
 import Data.Map qualified as M
 import Data.Set qualified as S
 import Data.Traversable (for)
@@ -276,7 +276,7 @@ entails SolverOptions{..} constraint context hints =
                   chain :: NonEmpty TypeClassDict <-
                            NEL.groupBy ((==) `on` tcdChain) $
                            sortOn (tcdChain &&& tcdIndex)
-                           dicts
+                           (filter (not . provablyApart typeClassDependencies tys'') dicts)
                   -- process instances in a chain in index order
                   let found = for (tails1 chain) $ \(tcd :| tl) ->
                                 -- Make sure the type unifies with the type in the type instance definition
@@ -736,6 +736,26 @@ entails SolverOptions{..} constraint context hints =
         (canMakeProgress, cst) = case rest of
             REmptyKinded _ _ -> (True, Nothing)
             _ -> (not (null fixed), Just [ srcConstraint C.RowLacks kinds [srcTypeLevelString sym, rest] Nothing ])
+
+-- | An instance outside any chain whose argument, in a position no functional
+-- dependency determines, has a different head type constructor than the
+-- wanted type can never be selected: 'matches' reports it 'Apart', and outside
+-- a chain an 'Apart' instance only continues the search.
+provablyApart :: [FunctionalDependency] -> [SourceType] -> TypeClassDict -> Bool
+provablyApart deps tys TypeClassDictionaryInScope{..} =
+  isNothing tcdChain && or (zipWith3 apartAt [0 :: Int ..] tys tcdInstanceTypes)
+  where
+  determined = foldMap (S.fromList . fdDetermined) deps
+  apartAt i wanted instanceType =
+    S.notMember i determined && case (headConstructor wanted, headConstructor instanceType) of
+      (Just c1, Just c2) -> c1 /= c2
+      _ -> False
+  headConstructor = \case
+    TypeConstructor _ c -> Just c
+    TypeApp _ f _ -> headConstructor f
+    KindApp _ f _ -> headConstructor f
+    KindedType _ t _ -> headConstructor t
+    _ -> Nothing
 
 -- Check if an instance matches our list of types, allowing for types
 -- to be solved via functional dependencies. If the types match, we return a
