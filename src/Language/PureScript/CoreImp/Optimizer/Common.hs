@@ -39,10 +39,24 @@ isReassigned var1 = everything (||) check
   check _ = False
 
 isRebound :: AST -> AST -> Bool
-isRebound js d = any (\v -> isReassigned v d || isUpdated v d) (everything (++) variablesOf js)
+isRebound js d = any (\v -> isReassigned v d || isUpdated v d) (variablesIn js)
+
+variablesIn :: AST -> [Text]
+variablesIn = everything (++) variablesOf
   where
   variablesOf (Var _ var) = [var]
   variablesOf _ = []
+
+isAnyReassignedOrUpdated :: [Text] -> AST -> Bool
+isAnyReassignedOrUpdated vars = everything (||) check
+  where
+  check :: AST -> Bool
+  check (Function _ _ args _) = any (`elem` args) vars
+  check (VariableIntroduction _ arg _) = arg `elem` vars
+  check (Assignment _ target _) = targetVariable target `elem` vars
+  check (For _ arg _ _ _) = arg `elem` vars
+  check (ForIn _ arg _ _) = arg `elem` vars
+  check _ = False
 
 targetVariable :: AST -> Text
 targetVariable (Var _ var) = var
