@@ -348,6 +348,7 @@ library
     Language.PureScript.Make.IdeCache
     Language.PureScript.Make.ExternsDiff
     Language.PureScript.Make.Monad
+    Language.PureScript.Make.Scheduler
     Language.PureScript.ModuleDependencies
     Language.PureScript.Names
     Language.PureScript.Options

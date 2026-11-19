@@ -39,7 +39,7 @@ import Language.PureScript.Environment (Environment(..), initEnvironment)
 import Language.PureScript.Errors (MultipleErrors(..), SimpleErrorMessage(..), addHint, defaultPPEOptions, errorMessage', errorMessage'', prettyPrintMultipleErrors)
 import Language.PureScript.Externs (ExternsFile, applyExternsFileToEnvironment, moduleToExternsFile)
 import Language.PureScript.Linter (Name(..), lint, lintImports)
-import Language.PureScript.ModuleDependencies (DependencyDepth(..), moduleSignature, sortModules)
+import Language.PureScript.ModuleDependencies (DependencyDepth(..), ModuleSignature(..), moduleSignature, sortModules)
 import Language.PureScript.Names (ModuleName(..), isBuiltinModuleName, runModuleName)
 import Language.PureScript.Renamer (renameInModule)
 import Language.PureScript.Sugar (Env, collapseBindingGroups, createBindingGroups, desugar, desugarCaseGuards, externsEnv, primEnv)
@@ -49,6 +49,7 @@ import Language.PureScript.Make.BuildPlan qualified as BuildPlan
 import Language.PureScript.Make.ExternsDiff (checkDiffs, emptyDiff, diffExterns)
 import Language.PureScript.Make.Cache qualified as Cache
 import Language.PureScript.Make.Actions as Actions
+import Language.PureScript.Make.Scheduler (Priority, Scheduler, acquire, criticalPathPriorities, newScheduler, release)
 import Language.PureScript.Make.Monad as Monad
     ( Make(..),
       writeTextFile,
@@ -70,8 +71,9 @@ import Language.PureScript.Make.Monad as Monad
       getCurrentTime,
       copyFile )
 import Language.PureScript.CoreFn qualified as CF
-import System.Directory (doesFileExist)
+import System.Directory (doesFileExist, getFileSize)
 import System.FilePath (replaceExtension)
+import System.IO.Error (tryIOError)
 import Language.PureScript.TypeChecker.Monad (liftTypeCheckM)
 
 -- | Rebuild a single module.
@@ -205,18 +207,24 @@ make' MakeOptions{..} ma@MakeActions{..} ms = do
   -- by the Haskell runtime.
   capabilities <- getNumCapabilities
   let concurrency = max 1 capabilities
-  lock <- C.newQSem concurrency
+  scheduler <- liftIO $ newScheduler concurrency
 
   let sortedModuleNames = getModuleName . CST.resPartial <$> sorted
   let moduleRanks = M.fromList (zip sortedModuleNames [0 :: Int ..])
   let graphMap = M.fromList graph
   let toBeRebuilt = filter (BuildPlan.needsRebuild buildPlan . getModuleName . CST.resPartial) sorted
   let totalModuleCount = length toBeRebuilt
+  let sourcePath = spanName . getModuleSourceSpan . CST.resPartial
+  sourceSizes <- liftIO $ M.fromList <$> traverse (\m -> (getModuleName (CST.resPartial m),) <$> sourceSize (sourcePath m)) toBeRebuilt
+  let priorities = criticalPathPriorities
+        [ (sigModuleName, map fst sigImports, M.findWithDefault 0 sigModuleName sourceSizes)
+        | ModuleSignature{..} <- moduleSignature . CST.resPartial <$> sorted
+        ]
   for_ toBeRebuilt $ \m -> fork $ do
     let moduleName = getModuleName . CST.resPartial $ m
     let deps = fromMaybe (internalError "make: module not found in dependency graph.") (M.lookup moduleName graphMap)
-    buildModule lock buildPlan moduleName totalModuleCount
-      (spanName . getModuleSourceSpan . CST.resPartial $ m)
+    buildModule scheduler (M.findWithDefault 0 moduleName priorities) buildPlan moduleName totalModuleCount
+      (sourcePath m)
       (fst $ CST.resFull m)
       (fmap importPrim . snd $ CST.resFull m)
       (sortOn (moduleRanks M.!) deps)
@@ -289,8 +297,11 @@ make' MakeOptions{..} ma@MakeActions{..} ms = do
       [] -> Nothing
       xss -> Just xss
 
-  buildModule :: QSem -> BuildPlan -> ModuleName -> Int -> FilePath -> [CST.ParserWarning] -> Either (NEL.NonEmpty CST.ParserError) Module -> [ModuleName] -> m ()
-  buildModule lock buildPlan moduleName cnt fp pwarnings mres deps = do
+  sourceSize :: FilePath -> IO Priority
+  sourceSize path = either (const 0) fromIntegral <$> tryIOError (getFileSize path)
+
+  buildModule :: Scheduler -> Priority -> BuildPlan -> ModuleName -> Int -> FilePath -> [CST.ParserWarning] -> Either (NEL.NonEmpty CST.ParserError) Module -> [ModuleName] -> m ()
+  buildModule scheduler priority buildPlan moduleName cnt fp pwarnings mres deps = do
     result <- flip catchError (return . BuildJobFailed) $ do
       -- We need to wait for dependencies to be built, before checking if the current
       -- module should be rebuilt, so the first thing to do is to wait on the
@@ -299,13 +310,17 @@ make' MakeOptions{..} ma@MakeActions{..} ms = do
       let pwarnings' = CST.toMultipleWarnings fp pwarnings
       tell pwarnings'
       m <- CST.unwrapParserError fp mres
+      let nextIndex = do
+            idx <- C.takeMVar (bpIndex buildPlan)
+            C.putMVar (bpIndex buildPlan) (idx + 1)
+            pure (idx, cnt)
 
       case mexterns of
         Just (_, depsDiffExterns) -> do
           let externs = fst <$> depsDiffExterns
           let prevResult = BuildPlan.getPrevResult buildPlan moduleName
           let depsDiffs = traverse snd depsDiffExterns
-          let maySkipBuild moduleIndex
+          let maySkipBuild
                 -- We may skip built only for up-to-date modules.
                 | Just (status, exts) <- prevResult
                 , isUpToDate status
@@ -317,7 +332,8 @@ make' MakeOptions{..} ma@MakeActions{..} ms = do
                   -- on any of exiting codegen targets, it will run the build process.
                   updated <- updateOutputTimestamp moduleName
                   if updated then do
-                    progress $ SkippingModule moduleName moduleIndex
+                    moduleIndex <- nextIndex
+                    progress $ SkippingModule moduleName (Just moduleIndex)
                     pure $ Just (exts, MultipleErrors [], Just (emptyDiff moduleName))
                   else
                     pure Nothing
@@ -336,26 +352,25 @@ make' MakeOptions{..} ma@MakeActions{..} ms = do
             foldM (\e (_, exts) -> externsEnv e exts) env missing
           env <- C.readMVar (bpEnv buildPlan)
           checkEnv <- C.readMVar (bpCheckEnv buildPlan)
-          idx <- C.takeMVar (bpIndex buildPlan)
-          C.putMVar (bpIndex buildPlan) (idx + 1)
 
           (exts, warnings, diff) <- do
             let doBuild = do
                 -- Bracket all of the per-module work behind the semaphore, including
                 -- forcing the result. This is done to limit concurrency and keep
                 -- memory usage down; see comments above.
-                  (exts, warnings) <- bracket_ (C.waitQSem lock) (C.signalQSem lock) $ do
+                  (exts, warnings) <- bracket_ (liftBase $ acquire scheduler priority) (liftBase $ release scheduler) $ do
+                    moduleIndex <- nextIndex
                     -- Eventlog markers for profiling; see debug/eventlog.js
                     liftBase $ traceMarkerIO $ T.unpack (runModuleName moduleName) <> " start"
                     -- Force the externs and warnings to avoid retaining excess module
                     -- data after the module is finished compiling.
                     extsAndWarnings <- evaluate . force <=< listen $ do
-                      rebuildModuleWithIndex ma env checkEnv (Just (S.fromList deps)) externs m (Just (idx, cnt))
+                      rebuildModuleWithIndex ma env checkEnv (Just (S.fromList deps)) externs m (Just moduleIndex)
                     liftBase $ traceMarkerIO $ T.unpack (runModuleName moduleName) <> " end"
                     return extsAndWarnings
                   let diff = diffExterns exts <$> (snd <$> prevResult) <*> depsDiffs
                   pure (exts, warnings, diff)
-            maySkipBuild (Just (idx, cnt)) >>= maybe doBuild pure
+            maySkipBuild >>= maybe doBuild pure
           return $ BuildJobSucceeded (pwarnings' <> warnings) exts diff
 
         -- If we got Nothing for deps externs, that means one of the deps failed
