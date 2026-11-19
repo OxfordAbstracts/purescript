@@ -113,7 +113,8 @@ data Type a
   deriving (Show, Generic, Functor, Foldable, Traversable)
 
 instance NFData a => NFData (Type a)
-instance Serialise a => Serialise (Type a)
+instance Serialise a => Serialise (Type a) where
+  {-# SPECIALIZE instance Serialise (Type SourceAnn) #-}
 
 srcTUnknown :: Int -> SourceType
 srcTUnknown = TUnknown NullSourceAnn
