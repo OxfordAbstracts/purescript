@@ -576,12 +576,14 @@ typeCheckModule modulesExports (Module ss coms mn decls (Just exps)) =
     modify (\s -> s { checkCurrentModule = Just mn, checkCurrentModuleImports = imports })
     decls'' <- typeCheckAll mn $ ignoreWildcardsUnderCompleteTypeSignatures <$> decls'
     checkSuperClassesAreExported <- getSuperClassExportCheck
+    env <- getEnv
+    let instanceHeads = [(cls, instanceTypesFor env cls) | cls <- [Libs.Generic, Libs.Newtype]]
     for_ exps $ \e -> do
       checkTypesAreExported e
       checkClassMembersAreExported e
       checkClassesAreExported e
       checkSuperClassesAreExported e
-      checkDataConstructorsAreExported e
+      checkDataConstructorsAreExported instanceHeads e
     return $ Module ss coms mn (map toImportDecl imports ++ decls'') (Just exps)
   where
 
@@ -639,6 +641,8 @@ typeCheckModule modulesExports (Module ss coms mn decls (Just exps)) =
         fromMaybe S.empty (M.lookup qname classesToSuperClasses)
 
     pure $ checkSuperClassExport superClassesFor transitiveSuperClassesFor
+  moduleTypeExports = S.fromList [name | TypeRef _ name _ <- exps]
+  moduleValueExports = S.fromList [name | ValueRef _ name <- exps]
   moduleClassExports :: S.Set (Qualified (ProperName 'ClassName))
   moduleClassExports = S.fromList $ mapMaybe (\case
      TypeClassRef _ name -> Just (qualify' name)
@@ -693,11 +697,10 @@ typeCheckModule modulesExports (Module ss coms mn decls (Just exps)) =
     [] -> return ()
     hidden -> throwError . errorMessage' (declRefSourceSpan dr) $ TransitiveExportError dr (nubBy nubEq hidden)
     where
-    exported e = any (exports e) exps
-    exports (TypeRef _ pn1 _) (TypeRef _ pn2 _) = pn1 == pn2
-    exports (ValueRef _ id1) (ValueRef _ id2) = id1 == id2
-    exports (TypeClassRef _ pn1) (TypeClassRef _ pn2) = pn1 == pn2
-    exports _ _ = False
+    exported (TypeRef _ name _) = S.member name moduleTypeExports
+    exported (ValueRef _ name) = S.member name moduleValueExports
+    exported (TypeClassRef _ name) = S.member (qualify' name) moduleClassExports
+    exported _ = False
     -- We avoid Eq for `nub`bing as the dctor part of `TypeRef` evaluates to
     -- `error` for the values generated here (we don't need them anyway)
     nubEq (TypeRef _ pn1 _) (TypeRef _ pn2 _) = pn1 == pn2
@@ -747,18 +750,21 @@ typeCheckModule modulesExports (Module ss coms mn decls (Just exps)) =
     extractMemberName _ = internalError "Unexpected declaration in typeclass member list"
   checkClassMembersAreExported _ = return ()
 
+  instanceTypesFor env cls = S.fromList
+    [ name
+    | dicts <- toList (M.lookup (ByModuleName mn) (typeClassDictionaries env) >>= M.lookup cls)
+    , ds <- M.elems dicts
+    , d <- NEL.toList ds
+    , t : _ <- [tcdInstanceTypes d]
+    , (TypeConstructor _ name, _, _) <- [unapplyTypes t]
+    ]
+
   -- If a type is exported without data constructors, we warn on `Generic` or `Newtype` instances.
   -- On the other hand if any data constructors are exported, we require all of them to be exported.
-  checkDataConstructorsAreExported :: DeclarationRef -> TypeCheckM ()
-  checkDataConstructorsAreExported dr@(TypeRef ss' name (fromMaybe [] -> exportedDataConstructorsNames))
-    | null exportedDataConstructorsNames = for_
-      [ Libs.Generic
-      , Libs.Newtype
-      ] $ \className -> do
-        env <- getEnv
-        let dicts = foldMap (foldMap NEL.toList) $
-              M.lookup (ByModuleName mn) (typeClassDictionaries env) >>= M.lookup className
-        when (any isDictOfTypeRef dicts) $
+  checkDataConstructorsAreExported :: [(Qualified (ProperName 'ClassName), S.Set (Qualified (ProperName 'TypeName)))] -> DeclarationRef -> TypeCheckM ()
+  checkDataConstructorsAreExported instanceHeads dr@(TypeRef ss' name (fromMaybe [] -> exportedDataConstructorsNames))
+    | null exportedDataConstructorsNames = for_ instanceHeads $ \(className, heads) ->
+        when (S.member (qualify' name) heads) $
           tell . errorMessage' ss' $ HiddenConstructors dr className
     | otherwise = do
       env <- getEnv
@@ -768,13 +774,7 @@ typeCheckModule modulesExports (Module ss coms mn decls (Just exps)) =
       unless (null missingDataConstructorsNames) $
         throwError . errorMessage' ss' $ TransitiveDctorExportError dr missingDataConstructorsNames
       where
-      isDictOfTypeRef :: TypeClassDictionaryInScope a -> Bool
-      isDictOfTypeRef dict
-        | (TypeConstructor _ qualTyName, _, _) : _ <- unapplyTypes <$> tcdInstanceTypes dict
-        , qualTyName == Qualified (ByModuleName mn) name
-        = True
-      isDictOfTypeRef _ = False
       getDataConstructorNames :: TypeKind -> Maybe [ProperName 'ConstructorName]
       getDataConstructorNames (DataType _ _ constructors) = Just $ fst <$> constructors
       getDataConstructorNames _ = Nothing
-  checkDataConstructorsAreExported _ = return ()
+  checkDataConstructorsAreExported _ _ = return ()
