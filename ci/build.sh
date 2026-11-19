@@ -13,7 +13,7 @@ set -ex
 # - CI_RELEASE / CI_PRERELEASE
 #
 #   If either is "true", passes the RELEASE flag to the compiler.
-# - CI_LINUX_BUNDLE
+# - CI_FORK_BUNDLE
 #
 #   Builds optimized fork binaries without marking them as official releases.
 #   Otherwise, non-release builds use --fast to speed builds up.
@@ -34,7 +34,7 @@ STACK_OPTS="--test"
 if [ "$CI_RELEASE" = "true" -o "$CI_PRERELEASE" = "true" ]
 then
   STACK_OPTS="$STACK_OPTS --flag=purescript:RELEASE"
-elif [ "${CI_LINUX_BUNDLE:-}" != "true" ]
+elif [ "${CI_FORK_BUNDLE:-}" != "true" ]
 then
   STACK_OPTS="$STACK_OPTS --fast"
 fi

@@ -2,7 +2,7 @@ name: "CI"
 
 on:
   push:
-    branches: ["master"]
+    branches: ["master", "perf/hill-climb"]
   pull_request:
     paths:
       - .github/workflows/**/*.yml
@@ -44,7 +44,7 @@ concurrency:
   # want a release build to be canceled by a prerelease build either. (GitHub
   # Actions is either too cheap to give us `if` expressions or too lazy to
   # document them, but we have untyped boolean operators to fall back on.)
-  group: "${{ github.event_name != 'push' && github.run_id || 'continuous-deployment' }}"
+  group: "${{ github.event_name != 'push' && github.run_id || format('continuous-deployment-{0}', github.ref) }}"
   cancel-in-progress: true
 
 jobs:
@@ -74,7 +74,7 @@ jobs:
         - "${{ contains(matrix.os, 'arm') && '/opt:/__e/node24:ro,rshared' || ' ' }}"
     env:
       CI_STATIC: "${{ startsWith(matrix.os, 'ubuntu') }}"
-      CI_LINUX_BUNDLE: "${{ github.repository == 'OxfordAbstracts/purescript' && github.event_name == 'push' && github.ref == 'refs/heads/master' && startsWith(matrix.os, 'ubuntu') }}"
+      CI_FORK_BUNDLE: "${{ github.repository == 'OxfordAbstracts/purescript' && github.event_name == 'push' && (github.ref == 'refs/heads/master' && startsWith(matrix.os, 'ubuntu') || github.ref == 'refs/heads/perf/hill-climb' && !startsWith(matrix.os, 'windows')) }}"
 
     outputs:
       do-not-prerelease: "${{ steps.build.outputs.do-not-prerelease }}"
@@ -157,8 +157,8 @@ jobs:
         run: |
           apk add perl-utils
         
-      - name: "(Release/prerelease/master Linux only) Create bundle"
-        if: "${{ env.CI_RELEASE == 'true' || env.CI_LINUX_BUNDLE == 'true' || env.CI_PRERELEASE == 'true' && steps.build.outputs.do-not-prerelease != 'true' }}"
+      - name: "(Release/prerelease/fork preview only) Create bundle"
+        if: "${{ env.CI_RELEASE == 'true' || env.CI_FORK_BUNDLE == 'true' || env.CI_PRERELEASE == 'true' && steps.build.outputs.do-not-prerelease != 'true' }}"
         run: |
           os_name="${{ runner.os }}"
           os_arch="${{ runner.arch }}"
@@ -193,8 +193,8 @@ jobs:
             "$bundle_dir/purescript/purs" --version
           fi
 
-      - name: "(Master build/prerelease only) Upload bundle"
-        if: "${{ env.CI_LINUX_BUNDLE == 'true' || env.CI_PRERELEASE == 'true' && steps.build.outputs.do-not-prerelease != 'true' }}"
+      - name: "(Fork preview/prerelease only) Upload bundle"
+        if: "${{ env.CI_FORK_BUNDLE == 'true' || env.CI_PRERELEASE == 'true' && steps.build.outputs.do-not-prerelease != 'true' }}"
         uses: "actions/upload-artifact@v4.6.0"
         with:
           name: "${{ runner.os }}-${{ runner.arch }}-bundle"
@@ -267,22 +267,22 @@ jobs:
   make-fork-prerelease:
     runs-on: ubuntu-latest
     needs: ["build"]
-    if: "${{ github.repository == 'OxfordAbstracts/purescript' && github.event_name == 'push' && github.ref == 'refs/heads/master' }}"
+    if: "${{ github.repository == 'OxfordAbstracts/purescript' && github.event_name == 'push' && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/perf/hill-climb') }}"
     permissions:
       contents: write
       actions: read
     steps:
       - uses: "actions/download-artifact@v4"
         with:
-          pattern: "Linux-*-bundle"
+          pattern: "*-bundle"
           merge-multiple: true
           path: bundle
       - uses: "ncipollo/release-action@v1.10.0"
         with:
           tag: "fork-preview-${{ github.run_id }}"
           commit: "${{ github.sha }}"
-          name: "Fork preview ${{ github.run_number }}"
+          name: "Fork preview ${{ github.run_number }} (${{ github.ref_name }})"
           artifacts: "bundle/*"
           artifactErrorsFailBuild: true
           prerelease: true
-          body: "Linux x64 and arm64 compiler bundles built from ${{ github.sha }}. Development builds; not an upstream PureScript release. Verify the matching .sha file after downloading."
+          body: "Compiler bundles built from ${{ github.ref_name }} at ${{ github.sha }}. Development builds; not an upstream PureScript release. Verify the matching .sha file after downloading."
