@@ -103,10 +103,7 @@ infix 4 %%<~
 newtype PluralityMap k = PluralityMap { getPluralityMap :: M.Map k Bool }
 
 instance Ord k => Semigroup (PluralityMap k) where
-  PluralityMap l <> PluralityMap r =
-    let
-      l' = M.mapWithKey (\k -> (|| k `M.member` r)) l
-    in PluralityMap $ l' `M.union` r
+  PluralityMap l <> PluralityMap r = PluralityMap (M.unionWith (\_ _ -> True) l r)
 
 instance Ord k => Monoid (PluralityMap k) where
   mempty = PluralityMap M.empty
