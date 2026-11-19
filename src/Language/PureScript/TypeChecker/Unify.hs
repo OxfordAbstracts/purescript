@@ -16,7 +16,7 @@ module Language.PureScript.TypeChecker.Unify
 
 import Prelude
 
-import Control.Monad (forM_, void)
+import Control.Monad (forM_, when)
 import Control.Monad.Error.Class (MonadError(..))
 import Control.Monad.State.Class (MonadState(..), gets, modify, state)
 import Control.Monad.Writer.Class (MonadWriter(..))
@@ -94,10 +94,10 @@ substituteType sub
 -- | Make sure that an unknown does not occur in a type
 occursCheck :: Int -> SourceType -> TypeCheckM ()
 occursCheck _ TUnknown{} = return ()
-occursCheck u t = void $ everywhereOnTypesM go t
+occursCheck u t = when (everythingOnTypes (||) occurs t) $ throwError (errorMessage (InfiniteType t))
   where
-  go (TUnknown _ u') | u == u' = throwError . errorMessage . InfiniteType $ t
-  go other = return other
+  occurs (TUnknown _ u') = u == u'
+  occurs _ = False
 
 -- | Compute a list of all unknowns appearing in a type
 unknownsInType :: Type a -> [(a, Int)]
