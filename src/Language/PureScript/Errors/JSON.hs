@@ -7,6 +7,7 @@ import Prelude
 import Data.Aeson.TH qualified as A
 import Data.List.NonEmpty qualified as NEL
 import Data.Text (Text)
+import Data.Text qualified as T
 import Language.PureScript.AST.SourcePos qualified as P
 import Language.PureScript.Errors qualified as P
 import Language.PureScript.Names qualified as P
@@ -54,7 +55,7 @@ toJSONError verbose level files e =
             (P.renderBox (P.prettyPrintSingleError (P.PPEOptions Nothing verbose level False mempty files) (P.stripModuleAndSpan e)))
             (P.errorCode e)
             (P.errorDocUri e)
-            (P.spanName <$> fmap NEL.head spans)
+            (T.unpack . P.spanName <$> fmap NEL.head spans)
             (P.runModuleName <$> P.errorModule e)
             (toSuggestion e)
             (maybe [] NEL.toList spans)

@@ -13,8 +13,8 @@ newtype InternedName = InternedName InternedText
   deriving stock (Show)
   deriving newtype (Eq, Ord)
 
-internName :: String -> InternedName
-internName name = InternedName $ intern $ T.pack name
+internName :: Text -> InternedName
+internName name = InternedName $ intern name
 
 uninternName :: InternedName -> String
 uninternName (InternedName name) = T.unpack $ unintern name

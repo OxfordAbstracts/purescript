@@ -216,7 +216,7 @@ make' MakeOptions{..} ma@MakeActions{..} ms = do
     let moduleName = getModuleName . CST.resPartial $ m
     let deps = fromMaybe (internalError "make: module not found in dependency graph.") (M.lookup moduleName graphMap)
     buildModule lock buildPlan moduleName totalModuleCount
-      (spanName . getModuleSourceSpan . CST.resPartial $ m)
+      (T.unpack . spanName . getModuleSourceSpan . CST.resPartial $ m)
       (fst $ CST.resFull m)
       (fmap importPrim . snd $ CST.resFull m)
       (sortOn (moduleRanks M.!) deps)

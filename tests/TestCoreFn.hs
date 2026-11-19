@@ -3,6 +3,7 @@
 module TestCoreFn (spec) where
 
 import Prelude
+import Data.Text qualified as T
 
 import Data.Aeson (Result(..), Value)
 import Data.Aeson.Types (parse)
@@ -36,8 +37,9 @@ isSuccess _           = False
 spec :: Spec
 spec = context "CoreFnFromJson" $ do
   let mn = ModuleName "Example.Main"
+      mp :: FilePath
       mp = "src/Example/Main.purs"
-      ss = SourceSpan mp (SourcePos 0 0) (SourcePos 0 0)
+      ss = SourceSpan (T.pack mp) (SourcePos 0 0) (SourcePos 0 0)
       ann = ssAnn ss
 
   specify "should parse version" $ do

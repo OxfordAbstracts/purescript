@@ -4,6 +4,7 @@ module Language.PureScript.AST.Declarations.ChainId
   ) where
 
 import Prelude
+import Data.Text (Text)
 import Language.PureScript.AST.SourcePos qualified as Pos
 import Data.InternedName (InternedName, internName)
 import Control.DeepSeq (NFData)
@@ -18,5 +19,5 @@ import Data.Aeson (ToJSON, FromJSON)
 newtype ChainId = ChainId (InternedName, Pos.SourcePos)
   deriving (Eq, Ord, Show, NFData, Serialise, ToJSON, FromJSON)
 
-mkChainId :: String -> Pos.SourcePos -> ChainId
+mkChainId :: Text -> Pos.SourcePos -> ChainId
 mkChainId fileName startingSourcePos = ChainId (internName fileName, startingSourcePos)
