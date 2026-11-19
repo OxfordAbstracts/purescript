@@ -308,8 +308,7 @@ make' MakeOptions{..} ma@MakeActions{..} ms = do
       -- MVars for the module's dependencies.
       mexterns <- fmap unzip . sequence <$> traverse (getResult buildPlan) deps
       let pwarnings' = CST.toMultipleWarnings fp pwarnings
-      tell pwarnings'
-      m <- CST.unwrapParserError fp mres
+      let parse = tell pwarnings' *> CST.unwrapParserError fp mres
       let nextIndex = do
             idx <- C.takeMVar (bpIndex buildPlan)
             C.putMVar (bpIndex buildPlan) (idx + 1)
@@ -320,7 +319,7 @@ make' MakeOptions{..} ma@MakeActions{..} ms = do
           let externs = fst <$> depsDiffExterns
           let prevResult = BuildPlan.getPrevResult buildPlan moduleName
           let depsDiffs = traverse snd depsDiffExterns
-          let maySkipBuild
+          let maySkipBuild m
                 -- We may skip built only for up-to-date modules.
                 | Just (status, exts) <- prevResult
                 , isUpToDate status
@@ -354,7 +353,7 @@ make' MakeOptions{..} ma@MakeActions{..} ms = do
           checkEnv <- C.readMVar (bpCheckEnv buildPlan)
 
           (exts, warnings, diff) <- do
-            let doBuild = do
+            let doBuild getModule = do
                 -- Bracket all of the per-module work behind the semaphore, including
                 -- forcing the result. This is done to limit concurrency and keep
                 -- memory usage down; see comments above.
@@ -362,6 +361,7 @@ make' MakeOptions{..} ma@MakeActions{..} ms = do
                     moduleIndex <- nextIndex
                     -- Eventlog markers for profiling; see debug/eventlog.js
                     liftBase $ traceMarkerIO $ T.unpack (runModuleName moduleName) <> " start"
+                    m <- getModule
                     -- Force the externs and warnings to avoid retaining excess module
                     -- data after the module is finished compiling.
                     extsAndWarnings <- evaluate . force <=< listen $ do
@@ -370,18 +370,24 @@ make' MakeOptions{..} ma@MakeActions{..} ms = do
                     return extsAndWarnings
                   let diff = diffExterns exts <$> (snd <$> prevResult) <*> depsDiffs
                   pure (exts, warnings, diff)
-            maySkipBuild >>= maybe doBuild pure
+            if any (isUpToDate . fst) prevResult
+              then do
+                m <- parse
+                maySkipBuild m >>= maybe (doBuild (pure m)) pure
+              else doBuild parse
           return $ BuildJobSucceeded (pwarnings' <> warnings) exts diff
 
         -- If we got Nothing for deps externs, that means one of the deps failed
         -- to compile. Though if we have a previous built result we will keep to
         -- avoid potentially unnecessary recompilation next time.
-        Nothing -> return $
-          case BuildPlan.getPrevResult buildPlan moduleName of
-            Just (_, exts) ->
-              BuildJobSucceeded (MultipleErrors []) exts (Just (emptyDiff moduleName))
-            Nothing ->
-              BuildJobSkipped
+        Nothing -> do
+          _ <- parse
+          return $
+            case BuildPlan.getPrevResult buildPlan moduleName of
+              Just (_, exts) ->
+                BuildJobSucceeded (MultipleErrors []) exts (Just (emptyDiff moduleName))
+              Nothing ->
+                BuildJobSkipped
 
     BuildPlan.markComplete buildPlan moduleName result
 
