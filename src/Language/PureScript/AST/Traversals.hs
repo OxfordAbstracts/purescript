@@ -22,7 +22,7 @@ import Language.PureScript.AST.Declarations (CaseAlternative(..), DataConstructo
 import Language.PureScript.AST.Literals (Literal(..))
 import Language.PureScript.Names (pattern ByNullSourcePos, Ident)
 import Language.PureScript.Traversals (sndM, sndM', thirdM)
-import Language.PureScript.TypeClassDictionaries (TypeClassDictionaryInScope(..))
+import Language.PureScript.TypeClassDictionaries (TypeClassDictionaryInScope(..), instancesByClass, moduleInstances)
 import Language.PureScript.Types (Constraint(..), SourceType, mapConstraintArgs)
 
 guardedExprM :: Applicative m
@@ -717,5 +717,5 @@ overTypes f = let (_, f', _) = everywhereOnValues id g id in f'
       hints
   g other = other
   updateDict fn dict = dict { tcdInstanceTypes = fn (tcdInstanceTypes dict) }
-  updateScope = fmap . fmap . fmap . fmap $ updateDict $ fmap f
-  updateCtx = M.alter updateScope ByNullSourcePos
+  updateScope = fmap . fmap . fmap $ updateDict $ fmap f
+  updateCtx = M.adjust (moduleInstances . updateScope . instancesByClass) ByNullSourcePos

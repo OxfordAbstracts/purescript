@@ -46,7 +46,7 @@ import Language.PureScript.TypeChecker.Kinds (elaborateKind, unifyKinds')
 import Language.PureScript.TypeChecker.Monad (CheckState(..), withErrorMessageHint, TypeCheckM)
 import Language.PureScript.TypeChecker.Synonyms (replaceAllTypeSynonyms)
 import Language.PureScript.TypeChecker.Unify (freshTypeWithKind, substituteType, unifyTypes)
-import Language.PureScript.TypeClassDictionaries (NamedDict, TypeClassDictionaryInScope(..), superclassName)
+import Language.PureScript.TypeClassDictionaries (InstanceContext, NamedDict, TypeClassDictionaryInScope(..), headConstructor, instancesByClass, instancesByHead, singletonInstance, superclassName)
 import Language.PureScript.Types
 import Language.PureScript.Label (Label(..))
 import Language.PureScript.PSString (PSString, mkString, decodeString)
@@ -92,13 +92,8 @@ namedInstanceIdentifier _ = Nothing
 -- | Description of a type class dictionary with instance evidence
 type TypeClassDict = TypeClassDictionaryInScope Evidence
 
--- | The 'InstanceContext' tracks those constraints which can be satisfied.
-type InstanceContext = M.Map QualifiedBy
-                         (M.Map (Qualified (ProperName 'ClassName))
-                           (M.Map (Qualified Ident) (NonEmpty NamedDict)))
-
 findDicts :: InstanceContext -> Qualified (ProperName 'ClassName) -> QualifiedBy -> [TypeClassDict]
-findDicts ctx cn = fmap (fmap NamedInstance) . foldMap NEL.toList . foldMap M.elems . (M.lookup cn <=< flip M.lookup ctx)
+findDicts ctx cn = fmap (fmap NamedInstance) . foldMap NEL.toList . foldMap M.elems . (M.lookup cn . instancesByClass <=< flip M.lookup ctx)
 
 -- | A type substitution which makes an instance head match a list of types.
 --
@@ -107,7 +102,7 @@ findDicts ctx cn = fmap (fmap NamedInstance) . foldMap NEL.toList . foldMap M.el
 type Matching a = M.Map Text a
 
 combineContexts :: InstanceContext -> InstanceContext -> InstanceContext
-combineContexts = M.unionWith (M.unionWith (M.unionWith (<>)))
+combineContexts = M.unionWith (<>)
 
 -- | Replace type class dictionary placeholders with inferred type class dictionaries
 replaceTypeClassDictionaries
@@ -228,7 +223,19 @@ entails SolverOptions{..} constraint context hints =
     forClassName _ _ C.RowLacks kinds args | Just dicts <- solveLacks kinds args = dicts
     forClassName _ _ C.RowCons kinds args | Just dicts <- solveRowCons kinds args = dicts
     forClassName _ _ C.RowToList kinds args | Just dicts <- solveRowToList kinds args = dicts
-    forClassName _ ctx cn@(Qualified (ByModuleName mn) _) _ tys = concatMap (findDicts ctx cn) (ordNub (ByNullSourcePos : ByModuleName mn : map ByModuleName (mapMaybe ctorModules tys)))
+    forClassName env ctx cn@(Qualified (ByModuleName mn) _) _ tys = concatMap candidates (ordNub (ByNullSourcePos : ByModuleName mn : map ByModuleName (mapMaybe ctorModules tys)))
+      where
+      wantedHead = do
+        t <- listToMaybe tys
+        c <- headConstructor t
+        cls <- M.lookup cn (typeClasses env)
+        guard (all (notElem 0 . fdDetermined) (typeClassDependencies cls))
+        pure c
+      candidates scope@ByModuleName{}
+        | Just c <- wantedHead = do
+            heads <- toList (M.lookup scope ctx >>= M.lookup cn . instancesByHead)
+            fmap NamedInstance <$> (M.findWithDefault [] (Just c) heads ++ M.findWithDefault [] Nothing heads)
+      candidates scope = findDicts ctx cn scope
     forClassName _ _ _ _ _ = internalError "forClassName: expected qualified class name"
 
     ctorModules :: SourceType -> Maybe ModuleName
@@ -750,12 +757,6 @@ provablyApart deps tys TypeClassDictionaryInScope{..} =
     S.notMember i determined && case (headConstructor wanted, headConstructor instanceType) of
       (Just c1, Just c2) -> c1 /= c2
       _ -> False
-  headConstructor = \case
-    TypeConstructor _ c -> Just c
-    TypeApp _ f _ -> headConstructor f
-    KindApp _ f _ -> headConstructor f
-    KindedType _ t _ -> headConstructor t
-    _ -> Nothing
 
 -- Check if an instance matches our list of types, allowing for types
 -- to be solved via functional dependencies. If the types match, we return a
@@ -914,8 +915,7 @@ newDictionaries path name (Constraint _ className instanceKinds instanceTy _) = 
     return (TypeClassDictionaryInScope Nothing 0 name path className [] instanceKinds instanceTy Nothing Nothing : supDicts)
 
 mkContext :: [NamedDict] -> InstanceContext
-mkContext = foldr combineContexts M.empty . map fromDict where
-  fromDict d = M.singleton ByNullSourcePos (M.singleton (tcdClassName d) (M.singleton (tcdValue d) (pure d)))
+mkContext = foldr (combineContexts . singletonInstance) M.empty
 
 -- | Check all pairs of values in a list match a predicate
 pairwiseAll :: Monoid m => (a -> a -> m) -> [a] -> m

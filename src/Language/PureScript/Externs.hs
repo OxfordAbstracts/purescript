@@ -23,7 +23,6 @@ import Control.DeepSeq (NFData)
 import Control.Monad (join)
 import Data.Maybe (fromMaybe, mapMaybe, maybeToList)
 import Data.List (foldl', find)
-import Data.Foldable (fold)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Version (showVersion)
@@ -36,7 +35,7 @@ import Language.PureScript.AST.Declarations.ChainId (ChainId)
 import Language.PureScript.Crash (internalError)
 import Language.PureScript.Environment (DataDeclType, Environment(..), FunctionalDependency, NameKind(..), NameVisibility(..), TypeClassData(..), TypeKind(..), dictTypeName, makeTypeClassData)
 import Language.PureScript.Names (Ident, ModuleName, OpName, OpNameType(..), ProperName, ProperNameType(..), Qualified(..), QualifiedBy(..), coerceProperName, isPlainIdent)
-import Language.PureScript.TypeClassDictionaries (NamedDict, TypeClassDictionaryInScope(..))
+import Language.PureScript.TypeClassDictionaries (NamedDict, TypeClassDictionaryInScope(..), instancesByClass, singletonInstance)
 import Language.PureScript.Types (SourceConstraint, SourceType, srcInstanceType)
 
 import Paths_purescript as Paths
@@ -188,16 +187,10 @@ applyExternsFileToEnvironment ExternsFile{..} = flip (foldl' applyDecl) efDeclar
   applyDecl env (EDValue ident ty) = env { names = M.insert (Qualified (ByModuleName efModuleName) ident) (ty, External, Defined) (names env) }
   applyDecl env (EDClass pn args members cs deps tcIsEmpty) = env { typeClasses = M.insert (qual pn) (makeTypeClassData args members cs deps tcIsEmpty) (typeClasses env) }
   applyDecl env (EDInstance className ident vars kinds tys cs ch idx ns ss) =
-    env { typeClassDictionaries =
-            updateMap
-              (updateMap (M.insertWith (<>) (qual ident) (pure dict)) className)
-              (ByModuleName efModuleName) (typeClassDictionaries env) }
+    env { typeClassDictionaries = M.unionWith (<>) (singletonInstance dict) (typeClassDictionaries env) }
     where
     dict :: NamedDict
     dict = TypeClassDictionaryInScope ch idx (qual ident) [] className vars kinds tys cs instTy
-
-    updateMap :: (Ord k, Monoid a) => (a -> a) -> k -> M.Map k a -> M.Map k a
-    updateMap f = M.alter (Just . f . fold)
 
     instTy :: Maybe SourceType
     instTy = case ns of
@@ -271,7 +264,7 @@ moduleToExternsFile (Module ss _ mn ds (Just exps)) env renamedIdents = ExternsF
   toExternsDeclaration (TypeInstanceRef ss' ident ns)
     = [ EDInstance tcdClassName (lookupRenamedIdent ident) tcdForAll tcdInstanceKinds tcdInstanceTypes tcdDependencies tcdChain tcdIndex ns ss'
       | m1 <- maybeToList (M.lookup (ByModuleName mn) (typeClassDictionaries env))
-      , m2 <- M.elems m1
+      , m2 <- M.elems (instancesByClass m1)
       , nel <- maybeToList (M.lookup (Qualified (ByModuleName mn) ident) m2)
       , TypeClassDictionaryInScope{..} <- NEL.toList nel
       ]

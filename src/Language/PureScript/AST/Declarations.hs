@@ -14,7 +14,6 @@ import Control.DeepSeq (NFData)
 import Data.Functor.Identity (Identity(..))
 
 import Data.Aeson.TH (Options(..), SumEncoding(..), defaultOptions, deriveJSON)
-import Data.Map qualified as M
 import Data.Text (Text)
 import Data.List.NonEmpty qualified as NEL
 import GHC.Generics (Generic)
@@ -29,7 +28,7 @@ import Language.PureScript.PSString (PSString)
 import Language.PureScript.Label (Label)
 import Language.PureScript.Names (pattern ByNullSourcePos, Ident(..), ModuleName(..), Name(..), OpName, OpNameType(..), ProperName, ProperNameType(..), Qualified(..), QualifiedBy(..), toMaybeModuleName)
 import Language.PureScript.Roles (Role)
-import Language.PureScript.TypeClassDictionaries (NamedDict)
+import Language.PureScript.TypeClassDictionaries (InstanceContext)
 import Language.PureScript.Comments (Comment)
 import Language.PureScript.Environment (DataDeclType, Environment, FunctionalDependency, NameKind)
 import Language.PureScript.Constants.Prim qualified as C
@@ -739,9 +738,7 @@ data Expr
   -- at superclass implementations when searching for a dictionary, the type class name and
   -- instance type, and the type class dictionaries in scope.
   --
-  | TypeClassDictionary SourceConstraint
-                        (M.Map QualifiedBy (M.Map (Qualified (ProperName 'ClassName)) (M.Map (Qualified Ident) (NEL.NonEmpty NamedDict))))
-                        [ErrorMessageHint]
+  | TypeClassDictionary SourceConstraint InstanceContext [ErrorMessageHint]
   -- |
   -- A placeholder for a superclass dictionary to be turned into a TypeClassDictionary during typechecking
   --

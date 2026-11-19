@@ -26,7 +26,7 @@ import Language.PureScript.Errors (Context, ErrorMessageHint, ExportSource, Expr
 import Language.PureScript.Names (Ident(..), ModuleName, ProperName(..), ProperNameType(..), Qualified(..), QualifiedBy(..), coerceProperName, disqualify, runIdent, runModuleName, showQualified, toMaybeModuleName)
 import Language.PureScript.Pretty.Types (prettyPrintType)
 import Language.PureScript.Pretty.Values (prettyPrintValue)
-import Language.PureScript.TypeClassDictionaries (NamedDict, TypeClassDictionaryInScope(..))
+import Language.PureScript.TypeClassDictionaries (ClassInstances, InstanceContext, NamedDict, TypeClassDictionaryInScope(..), instancesByClass, singletonInstance)
 import Language.PureScript.Types (Constraint(..), SourceType, Type(..), srcKindedType, srcTypeVar)
 import Text.PrettyPrint.Boxes (render)
 import Control.Monad.Supply (SupplyT (unSupplyT))
@@ -227,28 +227,22 @@ withTypeClassDictionaries
 withTypeClassDictionaries entries action = do
   orig <- get
 
-  let mentries =
-        M.fromListWith (M.unionWith (M.unionWith (<>)))
-          [ (qb, M.singleton className (M.singleton tcdValue (pure entry)))
-          | entry@TypeClassDictionaryInScope{ tcdValue = tcdValue@(Qualified qb _), tcdClassName = className }
-              <- entries
-          ]
+  let mentries = foldl' (flip (M.unionWith (<>) . singletonInstance)) M.empty entries
 
-  modify $ \st -> st { checkEnv = (checkEnv st) { typeClassDictionaries = M.unionWith (M.unionWith (M.unionWith (<>))) (typeClassDictionaries . checkEnv $ st) mentries } }
+  modify $ \st -> st { checkEnv = (checkEnv st) { typeClassDictionaries = M.unionWith (<>) (typeClassDictionaries . checkEnv $ st) mentries } }
   a <- action
   modify $ \st -> st { checkEnv = (checkEnv st) { typeClassDictionaries = typeClassDictionaries . checkEnv $ orig } }
   return a
 
 -- | Get the currently available map of type class dictionaries
-getTypeClassDictionaries
-  :: TypeCheckM (M.Map QualifiedBy (M.Map (Qualified (ProperName 'ClassName)) (M.Map (Qualified Ident) (NEL.NonEmpty NamedDict))))
+getTypeClassDictionaries :: TypeCheckM InstanceContext
 getTypeClassDictionaries = gets $ typeClassDictionaries . checkEnv
 
 -- | Lookup type class dictionaries in a module.
 lookupTypeClassDictionaries
   :: QualifiedBy
-  -> TypeCheckM (M.Map (Qualified (ProperName 'ClassName)) (M.Map (Qualified Ident) (NEL.NonEmpty NamedDict)))
-lookupTypeClassDictionaries mn = gets $ fromMaybe M.empty . M.lookup mn . typeClassDictionaries . checkEnv
+  -> TypeCheckM ClassInstances
+lookupTypeClassDictionaries mn = gets $ maybe M.empty instancesByClass . M.lookup mn . typeClassDictionaries . checkEnv
 
 -- | Lookup type class dictionaries in a module.
 lookupTypeClassDictionariesForClass
@@ -486,7 +480,7 @@ debugTypeClassDictionaries = go . typeClassDictionaries
   where
   go tcds = do
     (mbModuleName, classes) <- M.toList tcds
-    (className, instances) <- M.toList classes
+    (className, instances) <- M.toList (instancesByClass classes)
     (ident, dicts) <- M.toList instances
     let
       moduleName = maybe "" (\m -> "[" <> runModuleName m <> "] ") (toMaybeModuleName mbModuleName)

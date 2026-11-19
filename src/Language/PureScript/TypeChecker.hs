@@ -44,7 +44,7 @@ import Language.PureScript.TypeChecker.Roles as T
 import Language.PureScript.TypeChecker.Synonyms as T
 import Language.PureScript.TypeChecker.Types as T
 import Language.PureScript.TypeChecker.Unify (varIfUnknown)
-import Language.PureScript.TypeClassDictionaries (NamedDict, TypeClassDictionaryInScope(..))
+import Language.PureScript.TypeClassDictionaries (TypeClassDictionaryInScope(..), instancesByClass, singletonInstance)
 import Language.PureScript.Types (Constraint(..), SourceConstraint, SourceType, Type(..), containsForAll, eqType, everythingOnTypes, overConstraintArgs, srcInstanceType, unapplyTypes)
 
 addDataType
@@ -172,14 +172,6 @@ addTypeClass _ qualifiedClassName args implies dependencies ds kind = do
 
     toPair (TypeDeclaration (TypeDeclarationData _ ident ty)) = (ident, ty)
     toPair _ = internalError "Invalid declaration in TypeClassDeclaration"
-
-addTypeClassDictionaries
-  :: QualifiedBy
-  -> M.Map (Qualified (ProperName 'ClassName)) (M.Map (Qualified Ident) (NEL.NonEmpty NamedDict))
-  -> TypeCheckM ()
-addTypeClassDictionaries mn entries =
-  modify $ \st -> st { checkEnv = (checkEnv st) { typeClassDictionaries = insertState st } }
-  where insertState st = M.insertWith (M.unionWith (M.unionWith (<>))) mn entries (typeClassDictionaries . checkEnv $ st)
 
 checkDuplicateTypeArguments
   :: [Text]
@@ -377,7 +369,7 @@ typeCheckAll moduleName = traverse go
     rethrow (addHint (ErrorInInstance className tys) . addHint (positionedError ss)) $ do
       env <- getEnv
       let qualifiedDictName = Qualified (ByModuleName moduleName) dictName
-      for_ (M.lookup (ByModuleName moduleName) (typeClassDictionaries env)) $ traverse_ $ \dictionaries ->
+      for_ (instancesByClass <$> M.lookup (ByModuleName moduleName) (typeClassDictionaries env)) $ traverse_ $ \dictionaries ->
         guardWith (errorMessage (DuplicateInstance dictName ss)) $
           not (M.member qualifiedDictName dictionaries)
       case M.lookup className (typeClasses env) of
@@ -396,7 +388,8 @@ typeCheckAll moduleName = traverse go
           let dict =
                 TypeClassDictionaryInScope chainId idx qualifiedDictName [] className vars kinds' tys'' (Just deps'') $
                   if isPlainIdent dictName then Nothing else Just $ srcInstanceType ss vars className tys''
-          addTypeClassDictionaries (ByModuleName moduleName) . M.singleton className $ M.singleton (tcdValue dict) (pure dict)
+          current <- getEnv
+          putEnv current { typeClassDictionaries = M.unionWith (<>) (singletonInstance dict) (typeClassDictionaries current) }
           return d
 
   checkInstanceArity :: Ident -> Qualified (ProperName 'ClassName) -> TypeClassData -> [SourceType] -> TypeCheckM ()
@@ -749,7 +742,7 @@ typeCheckModule modulesExports (Module ss coms mn decls (Just exps)) =
 
   instanceTypesFor env cls = S.fromList
     [ name
-    | dicts <- toList (M.lookup (ByModuleName mn) (typeClassDictionaries env) >>= M.lookup cls)
+    | dicts <- toList (M.lookup (ByModuleName mn) (typeClassDictionaries env) >>= M.lookup cls . instancesByClass)
     , ds <- M.elems dicts
     , d <- NEL.toList ds
     , t : _ <- [tcdInstanceTypes d]

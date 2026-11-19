@@ -30,7 +30,7 @@ import Language.PureScript.Sugar.TypeClasses (superClassDictionaryNames)
 import Language.PureScript.TypeChecker.Entailment (InstanceContext, findDicts)
 import Language.PureScript.TypeChecker.Monad (getEnv, getTypeClassDictionaries, unsafeCheckCurrentModule, TypeCheckM)
 import Language.PureScript.TypeChecker.Synonyms (replaceAllTypeSynonyms)
-import Language.PureScript.TypeClassDictionaries (TypeClassDictionaryInScope(..))
+import Language.PureScript.TypeClassDictionaries (TypeClassDictionaryInScope(..), instancesByClass)
 import Language.PureScript.Types (Constraint(..), pattern REmptyKinded, SourceType, Type(..), completeBinderList, eqType, everythingOnTypes, replaceAllTypeVars, srcTypeVar, usedTypeVariables)
 
 -- | Extract the name of the newtype appearing in the last type argument of
@@ -175,7 +175,7 @@ deriveNewtypeInstance className tys (UnwrappedTypeConstructor mn tyConNm dkargs 
             = elem nt
             . (toList . extractNewtypeName mn' . tcdInstanceTypes
                 <=< foldMap toList . M.elems
-                <=< toList . (M.lookup su <=< M.lookup (ByModuleName mn')))
+                <=< toList . (M.lookup su . instancesByClass <=< M.lookup (ByModuleName mn')))
             $ dicts
       in lookIn suModule || lookIn newtypeModule
 
