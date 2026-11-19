@@ -770,18 +770,19 @@ matches deps TypeClassDictionaryInScope{..} tys =
        then if any ((==) Apart . fst) matched then Apart else Unknown
        else -- Verify that any repeated type variables are unifiable
             let determinedSet = foldMap (S.fromList . fdDetermined) deps
-                solved = map snd . filter ((`S.notMember` determinedSet) . fst) $ zipWith (\(_, ts) i -> (i, ts)) matched [0..]
+                solved = [snd m | (i, m) <- zip [0..] matched, S.notMember i determinedSet]
             in verifySubstitution (M.unionsWith (++) solved)
   where
     -- Find the closure of a set of functional dependencies.
     covers :: [(Matched (), subst)] -> Bool
-    covers ms = finalSet == S.fromList [0..length ms - 1]
+    covers ms
+      | null deps = all exact ms
+      | otherwise = all (\(i, m) -> S.member i inferred || exact m) indexed
       where
-        initialSet :: S.Set Int
-        initialSet = S.fromList . map snd . filter ((==) (Match ()) . fst . fst) $ zip ms [0..]
-
-        finalSet :: S.Set Int
-        finalSet = untilFixedPoint applyAll initialSet
+        exact = (== Match ()) . fst
+        indexed = zip [0..] ms
+        inputs = foldMap (S.fromList . fdDeterminers) deps
+        inferred = untilFixedPoint applyAll $ S.fromList [i | (i, m) <- indexed, S.member i inputs, exact m]
 
         untilFixedPoint :: Eq a => (a -> a) -> a -> a
         untilFixedPoint f = go
