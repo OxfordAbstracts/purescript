@@ -21,12 +21,13 @@ module Language.PureScript.CoreImp.Optimizer (optimize) where
 
 import Prelude
 
+import Data.Map qualified as M
 import Data.Text (Text)
 
 import Control.Monad.Supply.Class (MonadSupply)
-import Language.PureScript.CoreImp.AST (AST(..), InitializerEffects(..))
+import Language.PureScript.CoreImp.AST (AST(..), InitializerEffects(..), everywhere)
 import Language.PureScript.CoreImp.Optimizer.Blocks (collapseNestedBlocks, collapseNestedIfs)
-import Language.PureScript.CoreImp.Optimizer.Common (applyAll, replaceIdents)
+import Language.PureScript.CoreImp.Optimizer.Common (applyAll)
 import Language.PureScript.CoreImp.Optimizer.Inliner (etaConvert, evaluateIifes, inlineCommonOperators, inlineCommonValues, inlineFnComposition, inlineFnIdentity, inlineUnsafeCoerce, inlineUnsafePartial, inlineVariables, unThunk)
 import Language.PureScript.CoreImp.Optimizer.MagicDo (inlineST, magicDoEff, magicDoEffect, magicDoST)
 import Language.PureScript.CoreImp.Optimizer.TCO (tco)
@@ -78,8 +79,11 @@ untilFixedPoint f = go
 -- level and not worrying about any inner scopes.
 --
 buildExpander :: [AST] -> AST -> AST
-buildExpander = replaceIdents . foldr go []
+buildExpander asts
+  | M.null vars = id
+  | otherwise = everywhere replace
   where
-  go = \case
-    VariableIntroduction _ name (Just (NoEffects, e)) -> ((name, e) :)
-    _ -> id
+  vars = M.fromListWith (\_ firstBound -> firstBound)
+    [ (name, e) | VariableIntroduction _ name (Just (NoEffects, e)) <- asts ]
+  replace v@(Var _ var) = M.findWithDefault v var vars
+  replace other = other
