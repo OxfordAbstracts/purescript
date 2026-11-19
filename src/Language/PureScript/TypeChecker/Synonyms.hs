@@ -19,7 +19,7 @@ import Language.PureScript.Environment (Environment(..), TypeKind)
 import Language.PureScript.Errors (MultipleErrors, SimpleErrorMessage(..), SourceSpan, errorMessage')
 import Language.PureScript.Names (ProperName, ProperNameType(..), Qualified)
 import Language.PureScript.TypeChecker.Monad (getEnv, TypeCheckM)
-import Language.PureScript.Types (SourceType, Type(..), completeBinderList, everywhereOnTypesTopDownM, getAnnForType, replaceAllTypeVars)
+import Language.PureScript.Types (SourceType, Type(..), completeBinderList, everythingOnTypes, everywhereOnTypesTopDownM, getAnnForType, replaceAllTypeVars)
 
 -- | Type synonym information (arguments with kinds, aliased type), indexed by name
 type SynonymMap = M.Map (Qualified (ProperName 'TypeName)) ([(Text, Maybe SourceType)], SourceType)
@@ -31,8 +31,15 @@ replaceAllTypeSynonyms'
   -> KindMap
   -> SourceType
   -> Either MultipleErrors SourceType
-replaceAllTypeSynonyms' syns kinds = everywhereOnTypesTopDownM try
+replaceAllTypeSynonyms' syns kinds ty
+  | mentionsSynonym ty = everywhereOnTypesTopDownM try ty
+  | otherwise = Right ty
   where
+  mentionsSynonym :: SourceType -> Bool
+  mentionsSynonym = everythingOnTypes (||) $ \case
+    TypeConstructor _ ctor -> M.member ctor syns
+    _ -> False
+
   try :: SourceType -> Either MultipleErrors SourceType
   try t = fromMaybe t <$> go (fst $ getAnnForType t) 0 [] [] t
 
