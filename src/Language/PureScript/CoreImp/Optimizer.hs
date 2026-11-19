@@ -25,7 +25,7 @@ import Data.Map qualified as M
 import Data.Text (Text)
 
 import Control.Monad.Supply.Class (MonadSupply)
-import Language.PureScript.CoreImp.AST (AST(..), InitializerEffects(..), everywhere)
+import Language.PureScript.CoreImp.AST (AST(..), InitializerEffects(..), everything, everywhere)
 import Language.PureScript.CoreImp.Optimizer.Blocks (collapseNestedBlocks, collapseNestedIfs)
 import Language.PureScript.CoreImp.Optimizer.Common (applyAll)
 import Language.PureScript.CoreImp.Optimizer.Inliner (etaConvert, evaluateIifes, inlineCommonOperators, inlineCommonValues, inlineFnComposition, inlineFnIdentity, inlineUnsafeCoerce, inlineUnsafePartial, inlineVariables, unThunk)
@@ -39,14 +39,23 @@ optimize exps jsDecls = removeUnusedEffectFreeVars exps <$> traverse (traverse g
   where
     go :: AST -> m AST
     go js = do
-      js' <- untilFixedPoint (inlineFnComposition expander . inlineFnIdentity expander . inlineUnsafeCoerce . inlineUnsafePartial . tidyUp . applyAll
-        [ inlineCommonValues expander
-        , inlineCommonOperators expander
-        ]) js
-      untilFixedPoint (return . tidyUp) . tco . inlineST
+      (js', lastInput, lastOutput) <- inlineToFixedPoint js
+      let tidyAgain a | a == lastInput && not (everything (||) isFloatingZero a) = lastOutput
+                      | otherwise = tidyUp a
+      untilFixedPoint (return . tidyAgain) . tco . inlineST
         =<< untilFixedPoint (return . magicDoST expander)
         =<< untilFixedPoint (return . magicDoEff expander)
         =<< untilFixedPoint (return . magicDoEffect expander) js'
+
+    isFloatingZero (NumericLiteral _ (Right n)) = n == 0
+    isFloatingZero _ = False
+
+    inlineToFixedPoint :: AST -> m (AST, AST, AST)
+    inlineToFixedPoint a = do
+      let before = inlineCommonValues expander $ inlineCommonOperators expander a
+          after = tidyUp before
+      b <- inlineFnComposition expander . inlineFnIdentity expander . inlineUnsafeCoerce . inlineUnsafePartial $ after
+      if b == a then pure (b, before, after) else inlineToFixedPoint b
 
     tidyUp :: AST -> AST
     tidyUp = applyAll
