@@ -115,16 +115,27 @@ replaceTypeClassDictionaries
    Bool
   -> Expr
   -> TypeCheckM (Expr, [(Ident, InstanceContext, SourceConstraint)])
-replaceTypeClassDictionaries shouldGeneralize expr = flip evalStateT M.empty $ do
+replaceTypeClassDictionaries shouldGeneralize expr
+  | not (hasDictionaries expr) = return (expr, [])
+  | otherwise = flip evalStateT M.empty $ do
     -- Loop, deferring any unsolved constraints, until there are no more
     -- constraints which can be solved, then make a generalization pass.
     let loop e = do
           (e', solved) <- deferPass e
-          if getAny solved
-            then loop e'
-            else return e'
-    loop expr >>= generalizePass
+          if not (hasDictionaries e')
+            then return (e', [])
+            else if getAny solved
+              then loop e'
+              else generalizePass e'
+    loop expr
   where
+    hasDictionaries :: Expr -> Bool
+    hasDictionaries = hasDictionary
+      where
+      (_, hasDictionary, _, _, _) = everythingOnValues (||) (const False) isDictionary (const False) (const False) (const False)
+      isDictionary TypeClassDictionary{} = True
+      isDictionary _ = False
+
     -- This pass solves constraints where possible, deferring constraints if not.
     deferPass :: Expr -> StateT InstanceContext TypeCheckM (Expr, Any)
     deferPass = fmap (second fst) . runWriterT . f where
