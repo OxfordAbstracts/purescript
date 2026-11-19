@@ -32,8 +32,13 @@ newSkolemConstant = do
 
 -- | Introduce skolem scope at every occurrence of a ForAll
 introduceSkolemScope :: MonadState CheckState m => Type a -> m (Type a)
-introduceSkolemScope = everywhereOnTypesM go
+introduceSkolemScope t
+  | hasUnscopedForAll t = everywhereOnTypesM go t
+  | otherwise = pure t
   where
+  hasUnscopedForAll = everythingOnTypes (||) $ \case
+    ForAll _ _ _ _ _ Nothing -> True
+    _ -> False
   go (ForAll ann vis ident mbK ty Nothing) = ForAll ann vis ident mbK ty <$> (Just <$> newSkolemScope)
   go other = return other
 
