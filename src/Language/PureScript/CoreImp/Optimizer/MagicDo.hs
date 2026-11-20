@@ -7,7 +7,7 @@ import Protolude (ordNub)
 
 import Data.Maybe (fromJust, isJust)
 
-import Language.PureScript.CoreImp.AST (AST(..), InitializerEffects(..), UnaryOperator(..), everything, everywhere)
+import Language.PureScript.CoreImp.AST (AST(..), InitializerEffects(..), UnaryOperator(..), anywhere, everything, everywhere)
 import Language.PureScript.CoreImp.Optimizer.Common (pattern Ref)
 import Language.PureScript.Names (ModuleName)
 import Language.PureScript.PSString (mkString)
@@ -91,8 +91,12 @@ magicDo effectModule C.EffectDictionaries{..} expander = convert
 
 -- | Inline functions in the ST module
 inlineST :: AST -> AST
-inlineST = everywhere convertBlock
+inlineST root
+  | anywhere isRun root = everywhere convertBlock root
+  | otherwise = root
   where
+  isRun (App _ (Ref C.P_run) [_]) = True
+  isRun _ = False
   -- Look for run blocks and inline the STRefs there.
   -- If all STRefs are used in the scope of the same run, only using { read, write, modify } then
   -- we can be more aggressive about inlining, and actually turn STRefs into local variables.

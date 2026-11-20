@@ -7,15 +7,19 @@ import Control.Applicative (empty)
 import Control.Monad (guard)
 import Control.Monad.State (State, evalState, gets, modify)
 import Data.Functor (($>))
+import Data.Maybe (fromMaybe, isJust)
 import Data.Set qualified as S
 import Data.Text (Text, pack)
-import Language.PureScript.CoreImp.AST (AST(..), InitializerEffects(..), UnaryOperator(..), everything, everywhereTopDownM)
+import Language.PureScript.CoreImp.AST (AST(..), InitializerEffects(..), UnaryOperator(..), anywhere, everything, everywhereTopDownM)
 import Language.PureScript.AST.SourcePos (SourceSpan)
 import Safe (headDef, tailSafe)
 
 -- | Eliminate tail calls
 tco :: AST -> AST
-tco = flip evalState 0 . everywhereTopDownM convert where
+tco root
+  | anywhere (isJust . tailRecursiveLoop) root = evalState (everywhereTopDownM convert root) 0
+  | otherwise = root
+  where
   tcoVar :: Text -> Text
   tcoVar arg = "$tco_var_" <> arg
 
@@ -33,9 +37,12 @@ tco = flip evalState 0 . everywhereTopDownM convert where
   tcoResult = "$tco_result"
 
   convert :: AST -> State Int AST
-  convert (VariableIntroduction ss name (Just (p, fn@Function {})))
+  convert js' = fromMaybe (pure js') (tailRecursiveLoop js')
+
+  tailRecursiveLoop :: AST -> Maybe (State Int AST)
+  tailRecursiveLoop (VariableIntroduction ss name (Just (p, fn@Function {})))
       | Just trFns <- findTailRecursiveFns name arity body'
-      = VariableIntroduction ss name . Just . (p,) . replace <$> toLoop trFns name arity outerArgs innerArgs body'
+      = Just $ VariableIntroduction ss name . Just . (p,) . replace <$> toLoop trFns name arity outerArgs innerArgs body'
     where
       innerArgs = headDef [] argss
       outerArgs = concat . reverse $ tailSafe argss
@@ -43,7 +50,7 @@ tco = flip evalState 0 . everywhereTopDownM convert where
         -- this is the number of calls, not the number of arguments, if there's
         -- ever a practical difference.
       (argss, body', replace) = topCollectAllFunctionArgs [] id fn
-  convert js = pure js
+  tailRecursiveLoop _ = Nothing
 
   rewriteFunctionsWith :: ([Text] -> [Text]) -> [[Text]] -> (AST -> AST) -> AST -> ([[Text]], AST, AST -> AST)
   rewriteFunctionsWith argMapper = collectAllFunctionArgs
