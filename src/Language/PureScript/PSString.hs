@@ -12,20 +12,25 @@ module Language.PureScript.PSString
 import Prelude
 import GHC.Generics (Generic)
 import Codec.Serialise (Serialise)
+import Codec.Serialise qualified as Serialise
+import Codec.Serialise.Decoding (decodeListLenOf, decodeWord)
+import Codec.Serialise.Encoding (encodeListLen, encodeWord)
 import Control.DeepSeq (NFData)
+import Control.Monad (unless)
 import Control.Exception (try, evaluate)
 import Control.Applicative ((<|>))
 import Data.Char qualified as Char
-import Data.Bits (shiftR)
+import Data.Bits (shiftL, shiftR, (.|.))
+import Data.ByteString.Short (ShortByteString)
+import Data.ByteString.Short qualified as SBS
 import Data.Either (fromRight)
 import Data.List (unfoldr)
 import Data.Scientific (toBoundedInteger)
 import Data.String (IsString(..))
 import Data.ByteString (ByteString)
-import Data.ByteString qualified as BS
 import Data.Text (Text)
 import Data.Text qualified as T
-import Data.Text.Encoding (decodeUtf16BE)
+import Data.Text.Encoding (decodeUtf16BE, encodeUtf16BE)
 import Data.Text.Encoding.Error (UnicodeException)
 import Data.Vector qualified as V
 import Data.Word (Word16, Word8)
@@ -48,11 +53,30 @@ import Data.Aeson.Types qualified as A
 -- strings where that would be safe (i.e. when there are no lone surrogates),
 -- and arrays of UTF-16 code units (integers) otherwise.
 --
-newtype PSString = PSString { toUTF16CodeUnits :: [Word16] }
-  deriving (Eq, Ord, Semigroup, Monoid, Generic)
+newtype PSString = PSString ShortByteString
+  deriving (Eq, Ord, Semigroup, Monoid, Generic, NFData)
 
-instance NFData PSString
-instance Serialise PSString
+instance Serialise PSString where
+  encode s = encodeListLen 2 <> encodeWord 0 <> Serialise.encode (toUTF16CodeUnits s)
+  decode = do
+    decodeListLenOf 2
+    tag <- decodeWord
+    unless (tag == 0) $ fail "unexpected tag for PSString"
+    fromCodeUnits <$> Serialise.decode
+
+toUTF16CodeUnits :: PSString -> [Word16]
+toUTF16CodeUnits (PSString s) = go 0
+  where
+  n = SBS.length s
+  go i
+    | i >= n = []
+    | otherwise = (fromIntegral (SBS.index s i) `shiftL` 8 .|. fromIntegral (SBS.index s (i + 1))) : go (i + 2)
+
+fromCodeUnits :: [Word16] -> PSString
+fromCodeUnits = PSString . SBS.pack . concatMap unpair
+
+unpair :: Word16 -> [Word8]
+unpair w = [fromIntegral (w `shiftR` 8), fromIntegral w]
 
 instance Show PSString where
   show = show . codePoints
@@ -97,16 +121,8 @@ decodeStringEither = unfoldr decode . toUTF16CodeUnits
 -- Nothing) if the argument contains lone surrogates.
 --
 decodeString :: PSString -> Maybe Text
-decodeString = hush . decodeEither . BS.pack . concatMap unpair . toUTF16CodeUnits
+decodeString (PSString s) = hush . decodeEither $ SBS.fromShort s
   where
-  unpair w = [highByte w, lowByte w]
-
-  lowByte :: Word16 -> Word8
-  lowByte = fromIntegral
-
-  highByte :: Word16 -> Word8
-  highByte = fromIntegral . (`shiftR` 8)
-
   -- Based on a similar function from Data.Text.Encoding for utf8. This is a
   -- safe usage of unsafePerformIO because there are no side effects after
   -- handling any thrown UnicodeExceptions.
@@ -116,7 +132,7 @@ decodeString = hush . decodeEither . BS.pack . concatMap unpair . toUTF16CodeUni
   hush = either (const Nothing) Just
 
 instance IsString PSString where
-  fromString a = PSString $ concatMap encodeUTF16 a
+  fromString a = fromCodeUnits $ concatMap encodeUTF16 a
     where
     surrogates :: Char -> (Word16, Word16)
     surrogates c = (toWord (h + 0xD800), toWord (l + 0xDC00))
@@ -138,7 +154,7 @@ instance A.FromJSON PSString where
     where
     jsonString = fromString <$> A.parseJSON a
 
-    arrayOfCodeUnits = PSString <$> parseArrayOfCodeUnits a
+    arrayOfCodeUnits = fromCodeUnits <$> parseArrayOfCodeUnits a
 
     parseArrayOfCodeUnits :: A.Value -> A.Parser [Word16]
     parseArrayOfCodeUnits = A.withArray "array of UTF-16 code units" (traverse parseCodeUnit . V.toList)
@@ -237,4 +253,4 @@ toInt :: Word16 -> Int
 toInt = fromIntegral
 
 mkString :: Text -> PSString
-mkString = fromString . T.unpack
+mkString = PSString . SBS.toShort . encodeUtf16BE
