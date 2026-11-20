@@ -1,3 +1,4 @@
+{-# LANGUAGE MagicHash, UnboxedTuples #-}
 module Language.PureScript.PSString
   ( PSString
   , toUTF16CodeUnits
@@ -14,15 +15,22 @@ import GHC.Generics (Generic)
 import Codec.Serialise (Serialise)
 import Codec.Serialise qualified as Serialise
 import Codec.Serialise.Decoding (decodeListLenOf, decodeWord)
-import Codec.Serialise.Encoding (encodeListLen, encodeWord)
+import Codec.Serialise.Encoding (Encoding, encodeBreak, encodeListLen, encodeListLenIndef, encodeWord, encodeWord16)
 import Control.DeepSeq (NFData)
-import Control.Monad (unless)
+import Control.Monad (foldM_, unless, zipWithM_)
+import Control.Monad.ST (ST, runST)
+import Data.Array.Byte (ByteArray(..))
 import Control.Exception (try, evaluate)
 import Control.Applicative ((<|>))
 import Data.Char qualified as Char
 import Data.Bits (shiftL, shiftR, (.|.))
 import Data.ByteString.Short (ShortByteString)
 import Data.ByteString.Short qualified as SBS
+import Data.ByteString.Short.Internal (ShortByteString(..), unsafeIndex)
+import Data.List (foldl')
+import GHC.Exts (Int(..), MutableByteArray#, newByteArray#, unsafeFreezeByteArray#, writeWord8Array#, (*#), (+#))
+import GHC.ST (ST(..))
+import GHC.Word (Word8(..))
 import Data.Either (fromRight)
 import Data.List (unfoldr)
 import Data.Scientific (toBoundedInteger)
@@ -30,7 +38,8 @@ import Data.String (IsString(..))
 import Data.ByteString (ByteString)
 import Data.Text (Text)
 import Data.Text qualified as T
-import Data.Text.Encoding (decodeUtf16BE, encodeUtf16BE)
+import Data.Text.Unsafe (Iter(..), iter, lengthWord8)
+import Data.Text.Encoding (decodeUtf16BE)
 import Data.Text.Encoding.Error (UnicodeException)
 import Data.Vector qualified as V
 import Data.Word (Word16, Word8)
@@ -57,26 +66,68 @@ newtype PSString = PSString ShortByteString
   deriving (Eq, Ord, Semigroup, Monoid, Generic, NFData)
 
 instance Serialise PSString where
-  encode s = encodeListLen 2 <> encodeWord 0 <> Serialise.encode (toUTF16CodeUnits s)
+  encode s = encodeListLen 2 <> encodeWord 0 <> encodeUnits s
   decode = do
     decodeListLenOf 2
     tag <- decodeWord
     unless (tag == 0) $ fail "unexpected tag for PSString"
     fromCodeUnits <$> Serialise.decode
 
-toUTF16CodeUnits :: PSString -> [Word16]
-toUTF16CodeUnits (PSString s) = go 0
+encodeUnits :: PSString -> Encoding
+encodeUnits s
+  | n == 0 = encodeListLen 0
+  | otherwise = encodeListLenIndef <> go 0
   where
-  n = SBS.length s
+  n = unitCount s
   go i
-    | i >= n = []
-    | otherwise = (fromIntegral (SBS.index s i) `shiftL` 8 .|. fromIntegral (SBS.index s (i + 1))) : go (i + 2)
+    | i >= n = encodeBreak
+    | otherwise = encodeWord16 (unitAt s i) <> go (i + 1)
+
+unitCount :: PSString -> Int
+unitCount (PSString s) = SBS.length s `div` 2
+
+unitAt :: PSString -> Int -> Word16
+unitAt (PSString s) i = fromIntegral (unsafeIndex s (2 * i)) `shiftL` 8 .|. fromIntegral (unsafeIndex s (2 * i + 1))
+
+toUTF16CodeUnits :: PSString -> [Word16]
+toUTF16CodeUnits s = map (unitAt s) [0 .. unitCount s - 1]
+
+data Units s = Units (MutableByteArray# s)
+
+createUnits :: Int -> (forall s. Units s -> ST s ()) -> PSString
+createUnits (I# n) fill = runST $ ST $ \s0 ->
+  case newByteArray# (n *# 2#) s0 of
+    (# s1, m #) -> case fill (Units m) of
+      ST f -> case f s1 of
+        (# s2, () #) -> case unsafeFreezeByteArray# m s2 of
+          (# s3, a #) -> (# s3, PSString (ShortByteString (ByteArray a)) #)
+
+writeUnit :: Units s -> Int -> Word16 -> ST s ()
+writeUnit (Units m) (I# i) w = ST $ \s ->
+  case writeWord8Array# m (i *# 2#) hi s of
+    s' -> (# writeWord8Array# m (i *# 2# +# 1#) lo s', () #)
+  where
+  !(W8# hi) = fromIntegral (w `shiftR` 8)
+  !(W8# lo) = fromIntegral w
+
+charUnits :: Char -> Int
+charUnits c = if fromEnum c > 0xFFFF then 2 else 1
+
+writeChar :: Units s -> Int -> Char -> ST s Int
+writeChar u i c
+  | n > 0xFFFF = do
+      writeUnit u i (toWord (h + 0xD800))
+      writeUnit u (i + 1) (toWord (l + 0xDC00))
+      pure (i + 2)
+  | otherwise = do
+      writeUnit u i (toWord n)
+      pure (i + 1)
+  where
+  n = fromEnum c
+  (h, l) = divMod (n - 0x10000) 0x400
 
 fromCodeUnits :: [Word16] -> PSString
-fromCodeUnits = PSString . SBS.pack . concatMap unpair
-
-unpair :: Word16 -> [Word8]
-unpair w = [fromIntegral (w `shiftR` 8), fromIntegral w]
+fromCodeUnits us = createUnits (length us) (\u -> zipWithM_ (writeUnit u) [0 ..] us)
 
 instance Show PSString where
   show = show . codePoints
@@ -132,16 +183,7 @@ decodeString (PSString s) = hush . decodeEither $ SBS.fromShort s
   hush = either (const Nothing) Just
 
 instance IsString PSString where
-  fromString a = fromCodeUnits $ concatMap encodeUTF16 a
-    where
-    surrogates :: Char -> (Word16, Word16)
-    surrogates c = (toWord (h + 0xD800), toWord (l + 0xDC00))
-      where (h, l) = divMod (fromEnum c - 0x10000) 0x400
-
-    encodeUTF16 :: Char -> [Word16]
-    encodeUTF16 c | fromEnum c > 0xFFFF = [high, low]
-      where (high, low) = surrogates c
-    encodeUTF16 c = [toWord $ fromEnum c]
+  fromString a = createUnits (foldl' (\k c -> k + charUnits c) 0 a) (\u -> foldM_ (writeChar u) 0 a)
 
 instance A.ToJSON PSString where
   toJSON str =
@@ -253,4 +295,13 @@ toInt :: Word16 -> Int
 toInt = fromIntegral
 
 mkString :: Text -> PSString
-mkString = PSString . SBS.toShort . encodeUtf16BE
+mkString t = createUnits (T.foldl' (\k c -> k + charUnits c) 0 t) (\u -> go u 0 0)
+  where
+  end = lengthWord8 t
+  go :: Units s -> Int -> Int -> ST s ()
+  go u i j
+    | j >= end = pure ()
+    | otherwise = do
+        let Iter c d = iter t j
+        i' <- writeChar u i c
+        go u i' (j + d)
