@@ -22,7 +22,6 @@ import Control.Monad.Trans.Control (MonadBaseControl(..))
 import Control.Monad.Trans.State (runStateT)
 import Control.Monad.Writer.Class (MonadWriter(..), censor)
 import Control.Monad.Writer.Strict (runWriterT)
-import Control.Parallel.Strategies (parListChunk, rdeepseq, withStrategy)
 import Data.Function (on)
 import Data.Foldable (fold, for_, traverse_)
 import Data.List (foldl', sortOn)
@@ -214,15 +213,14 @@ make' MakeOptions{..} ma@MakeActions{..} ms = do
   let toBeRebuilt = filter (BuildPlan.needsRebuild buildPlan . getModuleName . CST.resPartial) sorted
   _ <- liftBase . evaluate $ M.size moduleRanks + M.size graphMap
   totalModuleCount <- liftBase . evaluate $ length toBeRebuilt
-  let moduleDeps m = sortOn (moduleRanks M.!) . fromMaybe (internalError "make: module not found in dependency graph.") $ M.lookup (getModuleName (CST.resPartial m)) graphMap
-  rebuildDeps <- liftBase . evaluate . force . withStrategy (parListChunk 64 rdeepseq) $ map moduleDeps toBeRebuilt
-  for_ (zip toBeRebuilt rebuildDeps) $ \(m, deps) -> fork $ do
+  for_ toBeRebuilt $ \m -> fork $ do
     let moduleName = getModuleName . CST.resPartial $ m
+    let deps = fromMaybe (internalError "make: module not found in dependency graph.") (M.lookup moduleName graphMap)
     buildModule lock buildPlan moduleName totalModuleCount
       (T.unpack . spanName . getModuleSourceSpan . CST.resPartial $ m)
       (fst $ CST.resFull m)
       (fmap importPrim . snd $ CST.resFull m)
-      deps
+      (sortOn (moduleRanks M.!) deps)
 
       -- Prevent hanging on other modules when there is an internal error
       -- (the exception is thrown, but other threads waiting on MVars are released)
