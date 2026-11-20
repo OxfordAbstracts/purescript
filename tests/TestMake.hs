@@ -17,6 +17,7 @@ import Control.Monad.IO.Class (liftIO)
 import Control.Concurrent.MVar (readMVar, newMVar, modifyMVar_)
 import Data.Time.Calendar (fromGregorian)
 import Data.Time.Clock (UTCTime(..), secondsToDiffTime)
+import Data.ByteString qualified as BS
 import Data.Text qualified as T
 import Data.Set (Set)
 import Data.Set qualified as Set
@@ -25,7 +26,7 @@ import Data.Version (showVersion)
 
 import Paths_purescript qualified as Paths
 import System.FilePath ((</>))
-import System.Directory (createDirectory, doesFileExist, removeDirectoryRecursive, removeFile, setModificationTime)
+import System.Directory (createDirectory, doesFileExist, getModificationTime, removeDirectoryRecursive, removeFile, setModificationTime)
 import System.Environment (setEnv, unsetEnv)
 import System.IO.Error (isDoesNotExistError)
 import System.IO.UTF8 (readUTF8FilesT, readUTF8FileT, writeUTF8FileT)
@@ -185,6 +186,27 @@ spec = do
 
       compile batch1 `shouldReturn` moduleNames []
       compile batch2 `shouldReturn` moduleNames []
+
+    it "recompiles a module whose externs file is truncated" $ do
+      let mAPath = modulePath "A"
+          mBPath = modulePath "B"
+          externsPath = modulesDir </> "A" </> P.externsFileName
+          truncateExterns = do
+            mtime <- getModificationTime externsPath
+            bytes <- BS.readFile externsPath
+            BS.writeFile externsPath (BS.take (BS.length bytes `div` 2) bytes)
+            setModificationTime externsPath mtime
+
+      writeFile mAPath timestampA "module A where\nfoo = 0\n"
+      writeFile mBPath timestampB "module B where\nimport A (foo)\nbar = foo\n"
+      compile [mAPath, mBPath] `shouldReturn` moduleNames ["A", "B"]
+
+      truncateExterns
+      compile [mAPath, mBPath] `shouldReturn` moduleNames ["A"]
+
+      truncateExterns
+      writeFile mBPath timestampC "module B where\nimport A (foo)\nbaz = foo\n"
+      compile [mAPath, mBPath] `shouldReturn` moduleNames ["A", "B"]
 
     it "recompiles if a module fails to compile" $ do
       let mPath = sourcesDir </> "Module.purs"

@@ -15,6 +15,7 @@ import Prelude
 
 import Control.Concurrent.Async.Lifted qualified as A
 import Control.Concurrent.Lifted qualified as C
+import Control.Exception (evaluate)
 import Control.Monad.Base (liftBase)
 import Control.Monad (foldM, guard)
 import Control.Monad.Trans.Control (MonadBaseControl(..))
@@ -77,7 +78,7 @@ newtype BuildJob = BuildJob
   }
 
 data BuildJobResult
-  = BuildJobSucceeded !MultipleErrors !ExternsFile (Maybe ExternsDiff)
+  = BuildJobSucceeded !MultipleErrors ExternsFile (Maybe ExternsDiff)
   -- ^ Succeeded, with warnings and externs, also holds externs diff with
   -- previous build result if any (lazily evaluated).
   --
@@ -227,6 +228,12 @@ construct Options{..} MakeActions{..} cacheDb (sorted, graph) = do
 
   let prebuilt = M.mapMaybe id prebuiltLoad
   let previous = M.mapMaybe id prevLoad
+
+  let changed = M.keysSet $ M.filter (maybe True (not . isUpToDate . fst)) rebuildMap
+  let changedDeps = transitiveDepsOf (S.toList changed)
+  liftBase $ A.mapConcurrently_ evaluate $
+    M.elems (pbExternsFile <$> M.restrictKeys prebuilt changedDeps)
+      <> M.elems (pbExternsFile . snd <$> M.restrictKeys previous (changedDeps <> changed))
 
   -- If for some reason (wrong version, files corruption, etc) prebuilt
   -- externs loading fails, those modules should be rebuilt too.
