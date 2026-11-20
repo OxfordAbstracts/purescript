@@ -15,7 +15,7 @@ import Protolude (ordNub, headMay, headDef)
 
 import Control.Arrow (second, (&&&))
 import Control.Monad.Error.Class (MonadError(..))
-import Control.Monad.State (MonadState(..), MonadTrans(..), StateT(..), evalStateT, execStateT, gets, modify)
+import Control.Monad.State (MonadState(..), MonadTrans(..), State, StateT(..), evalState, evalStateT, execStateT, gets, modify)
 import Control.Monad (foldM, guard, join, zipWithM, zipWithM_, (<=<))
 import Control.Monad.Writer (MonadWriter(..), WriterT(..))
 import Data.Monoid (Any(..))
@@ -34,7 +34,7 @@ import Data.Text qualified as T
 import Data.List.NonEmpty (NonEmpty(..))
 import Data.List.NonEmpty qualified as NEL
 
-import Language.PureScript.AST (Binder(..), ErrorMessageHint(..), Expr(..), Literal(..), pattern NullSourceSpan, everywhereOnValuesTopDownM, nullSourceSpan, everythingOnValues)
+import Language.PureScript.AST (Binder(..), ErrorMessageHint(..), Expr(..), Literal(..), pattern NullSourceSpan, everywhereOnValuesM, everywhereOnValuesTopDownM, nullSourceSpan, everythingOnValues)
 import Language.PureScript.AST.Declarations (UnknownsHint(..))
 import Language.PureScript.Crash (internalError)
 import Language.PureScript.Environment (Environment(..), FunctionalDependency(..), TypeClassData(..), dictTypeName, kindRow, tyBoolean, tyInt, tyString)
@@ -133,15 +133,33 @@ replaceTypeClassDictionaries shouldGeneralize expr
 
     -- This pass solves constraints where possible, deferring constraints if not.
     deferPass :: Expr -> StateT InstanceContext TypeCheckM (Expr, Any)
-    deferPass = fmap (second fst) . runWriterT . f where
-      f :: Expr -> WriterT (Any, [(Ident, InstanceContext, SourceConstraint)]) (StateT InstanceContext TypeCheckM) Expr
-      (_, f, _) = everywhereOnValuesTopDownM return (go True) return
+    deferPass = fmap (second fst) . solvePass True
 
     -- This pass generalizes any remaining constraints
     generalizePass :: Expr -> StateT InstanceContext TypeCheckM (Expr, [(Ident, InstanceContext, SourceConstraint)])
-    generalizePass = fmap (second snd) . runWriterT . f where
-      f :: Expr -> WriterT (Any, [(Ident, InstanceContext, SourceConstraint)]) (StateT InstanceContext TypeCheckM) Expr
-      (_, f, _) = everywhereOnValuesTopDownM return (go False) return
+    generalizePass = fmap (second snd) . solvePass False
+
+    solvePass :: Bool -> Expr -> StateT InstanceContext TypeCheckM (Expr, (Any, [(Ident, InstanceContext, SourceConstraint)]))
+    solvePass deferErrors expr' = runWriterT $ do
+      solved <- traverse solveDictionary (dictionariesIn expr' [])
+      pure (evalState (fillDictionaries expr') solved)
+      where
+      solveDictionary :: Expr -> WriterT (Any, [(Ident, InstanceContext, SourceConstraint)]) (StateT InstanceContext TypeCheckM) Expr
+      (_, solveDictionary, _) = everywhereOnValuesTopDownM return (go deferErrors) return
+
+    dictionariesIn :: Expr -> [Expr] -> [Expr]
+    (_, dictionariesIn, _, _, _) = everythingOnValues (.) (const id) collectDictionary (const id) (const id) (const id)
+      where
+      collectDictionary dict@TypeClassDictionary{} = (dict :)
+      collectDictionary _ = id
+
+    fillDictionaries :: Expr -> State [Expr] Expr
+    (_, fillDictionaries, _) = everywhereOnValuesM return fillDictionary return
+      where
+      fillDictionary TypeClassDictionary{} = state $ \case
+        next : rest -> (next, rest)
+        [] -> internalError "replaceTypeClassDictionaries: fewer solutions than dictionaries"
+      fillDictionary other = pure other
 
     go :: Bool -> Expr -> WriterT (Any, [(Ident, InstanceContext, SourceConstraint)]) (StateT InstanceContext TypeCheckM) Expr
     go deferErrors (TypeClassDictionary constraint context hints) =
