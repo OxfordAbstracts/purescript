@@ -24,7 +24,7 @@ import Control.Monad.Writer.Class (MonadWriter(..), censor)
 import Control.Monad.Writer.Strict (runWriterT)
 import Control.Parallel.Strategies (parListChunk, rdeepseq, withStrategy)
 import Data.Function (on)
-import Data.Foldable (fold, for_)
+import Data.Foldable (fold, for_, traverse_)
 import Data.List (foldl', sortOn)
 import Data.List.NonEmpty qualified as NEL
 import Data.Maybe (fromMaybe, mapMaybe)
@@ -327,24 +327,24 @@ make' MakeOptions{..} ma@MakeActions{..} ms = do
                     pure Nothing
                 | otherwise = pure Nothing
 
-          -- We need to ensure that all dependencies have been included in Env.
-          C.modifyMVar_ (bpEnv buildPlan) $ \env -> do
-            let missing = filter (\(dep, _) -> not (M.member dep env)) (zip deps externs)
-            C.modifyMVar_ (bpCheckEnv buildPlan) $ \checkEnv -> do
-              let checkEnv' = foldl' (flip applyExternsFileToEnvironment) checkEnv (map snd missing)
-              _ <- evaluate $ sum
-                [ M.size (names checkEnv'), M.size (types checkEnv'), M.size (dataConstructors checkEnv')
-                , M.size (typeSynonyms checkEnv'), M.size (typeClassDictionaries checkEnv'), M.size (typeClasses checkEnv')
-                ]
-              pure checkEnv'
-            foldM (\e (_, exts) -> externsEnv e exts) env missing
-          env <- C.readMVar (bpEnv buildPlan)
-          checkEnv <- C.readMVar (bpCheckEnv buildPlan)
           idx <- C.takeMVar (bpIndex buildPlan)
           C.putMVar (bpIndex buildPlan) (idx + 1)
 
           (exts, warnings, diff) <- do
             let doBuild = do
+                  traverse_ evaluate externs
+                  C.modifyMVar_ (bpEnv buildPlan) $ \env -> do
+                    let missing = filter (\(dep, _) -> not (M.member dep env)) (zip deps externs)
+                    C.modifyMVar_ (bpCheckEnv buildPlan) $ \checkEnv -> do
+                      let checkEnv' = foldl' (flip applyExternsFileToEnvironment) checkEnv (map snd missing)
+                      _ <- evaluate $ sum
+                        [ M.size (names checkEnv'), M.size (types checkEnv'), M.size (dataConstructors checkEnv')
+                        , M.size (typeSynonyms checkEnv'), M.size (typeClassDictionaries checkEnv'), M.size (typeClasses checkEnv')
+                        ]
+                      pure checkEnv'
+                    foldM (\e (_, exts) -> externsEnv e exts) env missing
+                  env <- C.readMVar (bpEnv buildPlan)
+                  checkEnv <- C.readMVar (bpCheckEnv buildPlan)
                 -- Bracket all of the per-module work behind the semaphore, including
                 -- forcing the result. This is done to limit concurrency and keep
                 -- memory usage down; see comments above.
