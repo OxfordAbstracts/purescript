@@ -326,6 +326,37 @@ checkKind'
   -> SourceType
   -> TypeCheckM SourceType
 checkKind' requireSynonymsToExpand ty kind2 = do
+  leafKind <- constantLeafKind ty
+  case leafKind of
+    Just kind1 -> do
+      kind2' <- apply kind2
+      if eqType kind1 kind2' then pure ty else checkKindWithHints requireSynonymsToExpand ty kind2
+    Nothing ->
+      checkKindWithHints requireSynonymsToExpand ty kind2
+
+constantLeafKind :: SourceType -> TypeCheckM (Maybe SourceType)
+constantLeafKind = \case
+  TypeConstructor _ v -> do
+    env <- getEnv
+    case M.lookup v (E.types env) of
+      _ | M.member v (E.typeSynonyms env) -> pure Nothing
+      Just (kind, E.LocalTypeVariable) -> constructorKind <$> apply kind
+      Just (kind, _) -> pure $ constructorKind kind
+      Nothing -> pure Nothing
+  TypeLevelString _ _ -> pure $ Just E.kindSymbol
+  TypeLevelInt _ _ -> pure $ Just E.tyInt
+  _ -> pure Nothing
+  where
+  constructorKind kind@TypeConstructor{} = Just kind
+  constructorKind _ = Nothing
+
+checkKindWithHints
+  :: HasCallStack
+  => Bool
+  -> SourceType
+  -> SourceType
+  -> TypeCheckM SourceType
+checkKindWithHints requireSynonymsToExpand ty kind2 = do
   withErrorMessageHint (ErrorCheckingKind ty kind2)
     . rethrowWithPosition (fst $ getAnnForType ty) $ do
         (ty', kind1) <- inferKind ty
