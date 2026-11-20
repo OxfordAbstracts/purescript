@@ -7,7 +7,7 @@ import Protolude (ordNub)
 
 import Data.Maybe (fromJust, isJust)
 
-import Language.PureScript.CoreImp.AST (AST(..), InitializerEffects(..), UnaryOperator(..), everything, everywhere, everywhereTopDown)
+import Language.PureScript.CoreImp.AST (AST(..), InitializerEffects(..), UnaryOperator(..), everything, everywhere)
 import Language.PureScript.CoreImp.Optimizer.Common (pattern Ref)
 import Language.PureScript.Names (ModuleName)
 import Language.PureScript.PSString (mkString)
@@ -27,46 +27,46 @@ import Language.PureScript.Constants.Libs qualified as C
 --    var x = m1();
 --    ...
 --  }
-magicDoEff :: (AST -> AST) -> AST -> AST
+magicDoEff :: (AST -> AST) -> AST -> Maybe AST
 magicDoEff = magicDo C.M_Control_Monad_Eff C.effDictionaries
 
-magicDoEffect :: (AST -> AST) -> AST -> AST
+magicDoEffect :: (AST -> AST) -> AST -> Maybe AST
 magicDoEffect = magicDo C.M_Effect C.effectDictionaries
 
-magicDoST :: (AST -> AST) -> AST -> AST
+magicDoST :: (AST -> AST) -> AST -> Maybe AST
 magicDoST = magicDo C.M_Control_Monad_ST_Internal C.stDictionaries
 
-magicDo :: ModuleName -> C.EffectDictionaries -> (AST -> AST) -> AST -> AST
-magicDo effectModule C.EffectDictionaries{..} expander = everywhereTopDown convert
+magicDo :: ModuleName -> C.EffectDictionaries -> (AST -> AST) -> AST -> Maybe AST
+magicDo effectModule C.EffectDictionaries{..} expander = convert
   where
   -- The name of the function block which is added to denote a do block
   fnName = "__do"
   -- Desugar monomorphic calls to >>= and return for the Eff monad
-  convert :: AST -> AST
+  convert :: AST -> Maybe AST
   -- Desugar pure
-  convert (App _ (App _ pure' [val]) []) | isPure pure' = val
+  convert (App _ (App _ pure' [val]) []) | isPure pure' = Just val
   -- Desugar discard
   convert (App _ (App _ bind [m]) [Function s1 Nothing [] (Block s2 js)]) | isDiscard bind =
-    Function s1 (Just fnName) [] $ Block s2 (App s2 m [] : map applyReturns js )
+    Just $ Function s1 (Just fnName) [] $ Block s2 (App s2 m [] : map applyReturns js )
   -- Desugar bind to wildcard
   convert (App _ (App _ bind [m]) [Function s1 Nothing [] (Block s2 js)])
     | isBind bind =
-    Function s1 (Just fnName) [] $ Block s2 (App s2 m [] : map applyReturns js )
+    Just $ Function s1 (Just fnName) [] $ Block s2 (App s2 m [] : map applyReturns js )
   -- Desugar bind
   convert (App _ (App _ bind [m]) [Function s1 Nothing [arg] (Block s2 js)]) | isBind bind =
-    Function s1 (Just fnName) [] $ Block s2 (VariableIntroduction s2 arg (Just (UnknownEffects, App s2 m [])) : map applyReturns js)
+    Just $ Function s1 (Just fnName) [] $ Block s2 (VariableIntroduction s2 arg (Just (UnknownEffects, App s2 m [])) : map applyReturns js)
   -- Desugar untilE
   convert (App s1 (App _ f [arg]) []) | isEffFunc edUntil f =
-    App s1 (Function s1 Nothing [] (Block s1 [ While s1 (Unary s1 Not (App s1 arg [])) (Block s1 []), Return s1 $ ObjectLiteral s1 []])) []
+    Just $ App s1 (Function s1 Nothing [] (Block s1 [ While s1 (Unary s1 Not (App s1 arg [])) (Block s1 []), Return s1 $ ObjectLiteral s1 []])) []
   -- Desugar whileE
   convert (App _ (App _ (App s1 f [arg1]) [arg2]) []) | isEffFunc edWhile f =
-    App s1 (Function s1 Nothing [] (Block s1 [ While s1 (App s1 arg1 []) (Block s1 [ App s1 arg2 [] ]), Return s1 $ ObjectLiteral s1 []])) []
+    Just $ App s1 (Function s1 Nothing [] (Block s1 [ While s1 (App s1 arg1 []) (Block s1 [ App s1 arg2 [] ]), Return s1 $ ObjectLiteral s1 []])) []
   -- Inline __do returns
-  convert (Return _ (App _ (Function _ (Just ident) [] body) [])) | ident == fnName = body
+  convert (Return _ (App _ (Function _ (Just ident) [] body) [])) | ident == fnName = Just body
   -- Inline double applications
   convert (App _ (App s1 (Function s2 Nothing [] (Block ss body)) []) []) =
-    App s1 (Function s2 Nothing [] (Block ss (applyReturns `fmap` body))) []
-  convert other = other
+    Just $ App s1 (Function s2 Nothing [] (Block ss (applyReturns `fmap` body))) []
+  convert _ = Nothing
   -- Check if an expression represents a monomorphic call to >>= for the Eff monad
   isBind (expander -> App _ (Ref C.P_bind) [Ref dict]) = (effectModule, edBindDict) == dict
   isBind _ = False

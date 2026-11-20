@@ -12,28 +12,23 @@ import Data.Monoid (Any(..))
 import Data.Set qualified as S
 import Data.Text (Text)
 
-import Language.PureScript.CoreImp.AST (AST(..), InitializerEffects(..), everything, everywhere)
-import Language.PureScript.CoreImp.Optimizer.Common (removeFromBlock)
+import Language.PureScript.CoreImp.AST (AST(..), InitializerEffects(..), everything)
 import Language.PureScript.Constants.Prim qualified as C
 
-removeCodeAfterReturnStatements :: AST -> AST
-removeCodeAfterReturnStatements = everywhere (removeFromBlock go)
+removeCodeAfterReturnStatements :: AST -> Maybe AST
+removeCodeAfterReturnStatements (Block ss jss) =
+  case break isReturn jss of
+    (body, ret : _ : _) -> Just $ Block ss (body ++ [ret])
+    _ -> Nothing
   where
-  go :: [AST] -> [AST]
-  go jss =
-    case break isReturn jss of
-      (_, []) -> jss
-      (body, ret : _ ) -> body ++ [ret]
-
   isReturn (Return _ _) = True
   isReturn (ReturnNoResult _) = True
   isReturn _ = False
+removeCodeAfterReturnStatements _ = Nothing
 
-removeUndefinedApp :: AST -> AST
-removeUndefinedApp = everywhere convert
-  where
-  convert (App ss fn [Var _ C.S_undefined]) = App ss fn []
-  convert js = js
+removeUndefinedApp :: AST -> Maybe AST
+removeUndefinedApp (App ss fn [Var _ C.S_undefined]) = Just $ App ss fn []
+removeUndefinedApp _ = Nothing
 
 removeUnusedEffectFreeVars :: [Text] -> [[AST]] -> [[AST]]
 removeUnusedEffectFreeVars exps = loop

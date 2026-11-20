@@ -226,6 +226,29 @@ everywhereTopDownM f = f >=> go where
   go (Comment com j) = Comment com <$> f' j
   go other = f other
 
+anywhere :: (AST -> Bool) -> AST -> Bool
+anywhere p = go where
+  go j = p j || case j of
+    Unary _ _ j1 -> go j1
+    Binary _ _ j1 j2 -> go j1 || go j2
+    ArrayLiteral _ js -> any go js
+    Indexer _ j1 j2 -> go j1 || go j2
+    ObjectLiteral _ js -> any (go . snd) js
+    Function _ _ _ j1 -> go j1
+    App _ j1 js -> go j1 || any go js
+    Block _ js -> any go js
+    VariableIntroduction _ _ j1 -> any (go . snd) j1
+    Assignment _ j1 j2 -> go j1 || go j2
+    While _ j1 j2 -> go j1 || go j2
+    For _ _ j1 j2 j3 -> go j1 || go j2 || go j3
+    ForIn _ _ j1 j2 -> go j1 || go j2
+    IfElse _ j1 j2 j3 -> go j1 || go j2 || any go j3
+    Return _ j1 -> go j1
+    Throw _ j1 -> go j1
+    InstanceOf _ j1 j2 -> go j1 || go j2
+    Comment _ j1 -> go j1
+    _ -> False
+
 everything :: (r -> r -> r) -> (AST -> r) -> AST -> r
 everything (<>.) f = go where
   go j@(Unary _ _ j1) = f j <>. go j1

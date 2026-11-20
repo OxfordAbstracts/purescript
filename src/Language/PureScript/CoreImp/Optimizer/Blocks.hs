@@ -6,23 +6,22 @@ module Language.PureScript.CoreImp.Optimizer.Blocks
 
 import Prelude
 
-import Language.PureScript.CoreImp.AST (AST(..), BinaryOperator(..), everywhere)
+import Language.PureScript.CoreImp.AST (AST(..), BinaryOperator(..))
 
 -- | Collapse blocks which appear nested directly below another block
-collapseNestedBlocks :: AST -> AST
-collapseNestedBlocks = everywhere collapse where
-  collapse :: AST -> AST
-  collapse (Block ss sts) = Block ss (concatMap go sts)
-  collapse js = js
-  
-  go :: AST -> [AST]
-  go (Block _ sts) = sts
-  go s = [s]
+collapseNestedBlocks :: AST -> Maybe AST
+collapseNestedBlocks (Block ss sts) | any isBlock sts = Just $ Block ss (concatMap go sts)
+  where
+  isBlock Block{} = True
+  isBlock _ = False
 
-collapseNestedIfs :: AST -> AST
-collapseNestedIfs = everywhere collapse where
-  collapse :: AST -> AST
-  collapse (IfElse _ (BooleanLiteral _ True) (Block _ [js]) _) = js
-  collapse (IfElse s1 cond1 (Block _ [IfElse s2 cond2 body Nothing]) Nothing) =
-      IfElse s1 (Binary s2 And cond1 cond2) body Nothing
-  collapse js = js
+  go :: AST -> [AST]
+  go (Block _ sts') = sts'
+  go s = [s]
+collapseNestedBlocks _ = Nothing
+
+collapseNestedIfs :: AST -> Maybe AST
+collapseNestedIfs (IfElse _ (BooleanLiteral _ True) (Block _ [js]) _) = Just js
+collapseNestedIfs (IfElse s1 cond1 (Block _ [IfElse s2 cond2 body Nothing]) Nothing) =
+  Just $ IfElse s1 (Binary s2 And cond1 cond2) body Nothing
+collapseNestedIfs _ = Nothing

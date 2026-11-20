@@ -22,10 +22,11 @@ module Language.PureScript.CoreImp.Optimizer (optimize) where
 import Prelude
 
 import Data.Map qualified as M
+import Data.Maybe (fromMaybe, isJust)
 import Data.Text (Text)
 
 import Control.Monad.Supply.Class (MonadSupply)
-import Language.PureScript.CoreImp.AST (AST(..), InitializerEffects(..), everywhere)
+import Language.PureScript.CoreImp.AST (AST(..), InitializerEffects(..), anywhere, everywhere, everywhereTopDown)
 import Language.PureScript.CoreImp.Optimizer.Blocks (collapseNestedBlocks, collapseNestedIfs)
 import Language.PureScript.CoreImp.Optimizer.Common (applyAll)
 import Language.PureScript.CoreImp.Optimizer.Inliner (etaConvert, evaluateIifes, inlineCommonOperators, inlineCommonValues, inlineFnComposition, inlineFnIdentity, inlineUnsafeCoerce, inlineUnsafePartial, inlineVariables, unThunk)
@@ -43,13 +44,19 @@ optimize exps jsDecls = removeUnusedEffectFreeVars exps <$> traverse (traverse g
         [ inlineCommonValues expander
         , inlineCommonOperators expander
         ]) js
-      untilFixedPoint (return . tidyUp) . tco . inlineST
-        =<< untilFixedPoint (return . magicDoST expander)
-        =<< untilFixedPoint (return . magicDoEff expander)
-        =<< untilFixedPoint (return . magicDoEffect expander) js'
+      untilFixedPointWhen (anyRuleApplies tidyUpRules) (return . tidyUp) . tco . inlineST
+        =<< magicDoUntilFixedPoint (magicDoST expander)
+        =<< magicDoUntilFixedPoint (magicDoEff expander)
+        =<< magicDoUntilFixedPoint (magicDoEffect expander) js'
+
+    magicDoUntilFixedPoint :: (AST -> Maybe AST) -> AST -> m AST
+    magicDoUntilFixedPoint rule = untilFixedPointWhen (anyRuleApplies [rule]) (return . everywhereTopDown (orUnchanged rule))
 
     tidyUp :: AST -> AST
-    tidyUp = applyAll
+    tidyUp = applyAll (map (everywhere . orUnchanged) tidyUpRules)
+
+    tidyUpRules :: [AST -> Maybe AST]
+    tidyUpRules =
       [ collapseNestedBlocks
       , collapseNestedIfs
       , removeCodeAfterReturnStatements
@@ -68,6 +75,21 @@ untilFixedPoint f = go
   go a = do
    a' <- f a
    if a' == a then return a' else go a'
+
+untilFixedPointWhen :: (Monad m, Eq a) => (a -> Bool) -> (a -> m a) -> a -> m a
+untilFixedPointWhen applies f = go
+  where
+  go a
+    | applies a = do
+        a' <- f a
+        if a' == a then return a' else go a'
+    | otherwise = return a
+
+orUnchanged :: (AST -> Maybe AST) -> AST -> AST
+orUnchanged rule js = fromMaybe js (rule js)
+
+anyRuleApplies :: [AST -> Maybe AST] -> AST -> Bool
+anyRuleApplies rules = anywhere (\js -> any (\rule -> isJust (rule js)) rules)
 
 -- |
 -- Take all top-level ASTs and return a function for expanding top-level

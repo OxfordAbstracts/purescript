@@ -24,7 +24,7 @@ import Data.Text qualified as T
 import Language.PureScript.Names (ModuleName)
 import Language.PureScript.PSString (PSString, mkString)
 import Language.PureScript.CoreImp.AST (AST(..), BinaryOperator(..), InitializerEffects(..), UnaryOperator(..), everywhere, everywhereTopDown, everywhereTopDownM, getSourceSpan)
-import Language.PureScript.CoreImp.Optimizer.Common (pattern Ref, applyAll, isAnyReassignedOrUpdated, isReassigned, isRebound, removeFromBlock, replaceIdent, replaceIdents, variablesIn)
+import Language.PureScript.CoreImp.Optimizer.Common (pattern Ref, applyAll, isAnyReassignedOrUpdated, isReassigned, isRebound, replaceIdent, replaceIdents, variablesIn)
 import Language.PureScript.AST (SourceSpan(..))
 import Language.PureScript.Constants.Libs qualified as C
 import Language.PureScript.Constants.Prim qualified as C
@@ -42,47 +42,46 @@ shouldInline (BooleanLiteral _ _) = True
 shouldInline (Indexer _ index val) = shouldInline index && shouldInline val
 shouldInline _ = False
 
-etaConvert :: AST -> AST
-etaConvert = everywhere convert
-  where
-  convert :: AST -> AST
-  convert (Block ss [Return _ (App _ (Function _ Nothing idents block@(Block _ body)) args)])
-    | all shouldInline args &&
-      not (any ((`isRebound` block) . Var Nothing) idents) &&
-      not (any (`isRebound` block) args)
-      = Block ss (map (replaceIdents (zip idents args)) body)
-  convert (Function _ Nothing [] (Block _ [Return _ (App _ fn [])])) = fn
-  convert js = js
+etaConvert :: AST -> Maybe AST
+etaConvert (Block ss [Return _ (App _ (Function _ Nothing idents block@(Block _ body)) args)])
+  | all shouldInline args &&
+    not (any ((`isRebound` block) . Var Nothing) idents) &&
+    not (any (`isRebound` block) args)
+    = Just $ Block ss (map (replaceIdents (zip idents args)) body)
+etaConvert (Function _ Nothing [] (Block _ [Return _ (App _ fn [])])) = Just fn
+etaConvert _ = Nothing
 
-unThunk :: AST -> AST
-unThunk = everywhere convert
-  where
-  convert :: AST -> AST
-  convert (Block ss []) = Block ss []
-  convert (Block ss jss) =
-    case last jss of
-      Return _ (App _ (Function _ Nothing [] (Block _ body)) []) -> Block ss $ init jss ++ body
-      _ -> Block ss jss
-  convert js = js
+unThunk :: AST -> Maybe AST
+unThunk (Block ss jss@(_ : _)) =
+  case last jss of
+    Return _ (App _ (Function _ Nothing [] (Block _ body)) []) -> Just $ Block ss $ init jss ++ body
+    _ -> Nothing
+unThunk _ = Nothing
 
-evaluateIifes :: AST -> AST
-evaluateIifes = everywhere convert
-  where
-  convert :: AST -> AST
-  convert (App _ (Function _ Nothing [] (Block _ [Return _ ret])) []) = ret
-  convert (App _ (Function _ Nothing idents (Block _ [Return ss ret])) [])
-    | not (any (`isReassigned` ret) idents) = replaceIdents (map (, Var ss C.S_undefined) idents) ret
-  convert js = js
+evaluateIifes :: AST -> Maybe AST
+evaluateIifes (App _ (Function _ Nothing [] (Block _ [Return _ ret])) []) = Just ret
+evaluateIifes (App _ (Function _ Nothing idents (Block _ [Return ss ret])) [])
+  | not (any (`isReassigned` ret) idents) = Just $ replaceIdents (map (, Var ss C.S_undefined) idents) ret
+evaluateIifes _ = Nothing
 
-inlineVariables :: AST -> AST
-inlineVariables = everywhere $ removeFromBlock go
+inlineVariables :: AST -> Maybe AST
+inlineVariables (Block ss sts) = Block ss <$> inlineFirst sts
   where
-  go :: [AST] -> [AST]
-  go [] = []
-  go (VariableIntroduction _ var (Just (_, js)) : sts)
-    | shouldInline js && not (any (isAnyReassignedOrUpdated (var : variablesIn js)) sts) =
-      go (map (replaceIdent var js) sts)
-  go (s:sts) = s : go sts
+  inlineFirst :: [AST] -> Maybe [AST]
+  inlineFirst [] = Nothing
+  inlineFirst (s : rest) = case inlineInto s rest of
+    Just rest' -> Just (inlineRest rest')
+    Nothing -> (s :) <$> inlineFirst rest
+
+  inlineRest :: [AST] -> [AST]
+  inlineRest rest = fromMaybe rest (inlineFirst rest)
+
+  inlineInto :: AST -> [AST] -> Maybe [AST]
+  inlineInto (VariableIntroduction _ var (Just (_, js))) rest
+    | shouldInline js && not (any (isAnyReassignedOrUpdated (var : variablesIn js)) rest) =
+      Just (map (replaceIdent var js) rest)
+  inlineInto _ _ = Nothing
+inlineVariables _ = Nothing
 
 inlineCommonValues :: (AST -> AST) -> AST -> AST
 inlineCommonValues expander = everywhere convert
