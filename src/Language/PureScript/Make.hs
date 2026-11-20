@@ -22,6 +22,7 @@ import Control.Monad.Trans.Control (MonadBaseControl(..))
 import Control.Monad.Trans.State (runStateT)
 import Control.Monad.Writer.Class (MonadWriter(..), censor)
 import Control.Monad.Writer.Strict (runWriterT)
+import Control.Parallel.Strategies (parListChunk, rdeepseq, withStrategy)
 import Data.Function (on)
 import Data.Foldable (fold, for_)
 import Data.List (foldl', sortOn)
@@ -207,19 +208,21 @@ make' MakeOptions{..} ma@MakeActions{..} ms = do
   let concurrency = max 1 capabilities
   lock <- C.newQSem concurrency
 
-  let sortedModuleNames = getModuleName . CST.resPartial <$> sorted
+  sortedModuleNames <- liftBase . evaluate . force $ getModuleName . CST.resPartial <$> sorted
   let moduleRanks = M.fromList (zip sortedModuleNames [0 :: Int ..])
   let graphMap = M.fromList graph
   let toBeRebuilt = filter (BuildPlan.needsRebuild buildPlan . getModuleName . CST.resPartial) sorted
-  let totalModuleCount = length toBeRebuilt
-  for_ toBeRebuilt $ \m -> fork $ do
+  _ <- liftBase . evaluate $ M.size moduleRanks + M.size graphMap
+  totalModuleCount <- liftBase . evaluate $ length toBeRebuilt
+  let moduleDeps m = sortOn (moduleRanks M.!) . fromMaybe (internalError "make: module not found in dependency graph.") $ M.lookup (getModuleName (CST.resPartial m)) graphMap
+  rebuildDeps <- liftBase . evaluate . force . withStrategy (parListChunk 64 rdeepseq) $ map moduleDeps toBeRebuilt
+  for_ (zip toBeRebuilt rebuildDeps) $ \(m, deps) -> fork $ do
     let moduleName = getModuleName . CST.resPartial $ m
-    let deps = fromMaybe (internalError "make: module not found in dependency graph.") (M.lookup moduleName graphMap)
     buildModule lock buildPlan moduleName totalModuleCount
       (T.unpack . spanName . getModuleSourceSpan . CST.resPartial $ m)
       (fst $ CST.resFull m)
       (fmap importPrim . snd $ CST.resFull m)
-      (sortOn (moduleRanks M.!) deps)
+      deps
 
       -- Prevent hanging on other modules when there is an internal error
       -- (the exception is thrown, but other threads waiting on MVars are released)
@@ -295,6 +298,7 @@ make' MakeOptions{..} ma@MakeActions{..} ms = do
       -- We need to wait for dependencies to be built, before checking if the current
       -- module should be rebuilt, so the first thing to do is to wait on the
       -- MVars for the module's dependencies.
+      for_ deps $ getResult buildPlan
       mexterns <- fmap unzip . sequence <$> traverse (getResult buildPlan) deps
       let pwarnings' = CST.toMultipleWarnings fp pwarnings
       tell pwarnings'
@@ -353,7 +357,7 @@ make' MakeOptions{..} ma@MakeActions{..} ms = do
                       rebuildModuleWithIndex ma env checkEnv (Just (S.fromList deps)) externs m (Just (idx, cnt))
                     liftBase $ traceMarkerIO $ T.unpack (runModuleName moduleName) <> " end"
                     return extsAndWarnings
-                  let diff = diffExterns exts <$> (snd <$> prevResult) <*> depsDiffs
+                  diff <- liftBase . evaluate $ diffExterns exts <$> (snd <$> prevResult) <*> depsDiffs
                   pure (exts, warnings, diff)
             maySkipBuild (Just (idx, cnt)) >>= maybe doBuild pure
           return $ BuildJobSucceeded (pwarnings' <> warnings) exts diff

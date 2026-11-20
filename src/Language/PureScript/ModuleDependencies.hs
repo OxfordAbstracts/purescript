@@ -9,7 +9,7 @@ module Language.PureScript.ModuleDependencies
 
 import Protolude hiding (head)
 
-import Data.Array (Array, (!), bounds, indices, listArray)
+import Data.Array (Array, (!), array, bounds, indices, listArray)
 import Data.Graph (SCC(..), graphFromEdges, stronglyConnComp)
 import Data.IntSet qualified as IS
 import Data.Set qualified as S
@@ -47,7 +47,9 @@ sortModules dependencyDepth toSig ms = do
       mns = S.fromList $ map (sigModuleName . snd) ms'
     verts <- parU ms' (toGraphNode mns)
     ms'' <- parU (stronglyConnComp verts) toModule
-    let (graph, fromVertex, toVertex) = graphFromEdges verts
+    let (graph, _, toVertex) = graphFromEdges verts
+        keys :: Array Int ModuleName
+        keys = array (bounds graph) [(v, mn) | mn <- S.toList mns, Just v <- [toVertex mn]]
         transitiveDeps :: Array Int IS.IntSet
         transitiveDeps = listArray (bounds graph) [ IS.unions [ IS.insert d (transitiveDeps ! d) | d <- graph ! v ] | v <- indices graph ]
         moduleGraph = do (_, mn, _) <- verts
@@ -55,9 +57,9 @@ sortModules dependencyDepth toSig ms = do
                              deps    = case dependencyDepth of
                                          Direct -> graph ! v
                                          Transitive -> IS.toList (transitiveDeps ! v)
-                             toKey i = case fromVertex i of (_, key, _) -> key
+                             toKey = (keys !)
                          return (mn, filter (/= mn) (map toKey deps))
-    return (fst <$> ms'', moduleGraph)
+    keys `seq` graph `seq` return (fst <$> ms'', moduleGraph)
   where
     toGraphNode :: S.Set ModuleName -> (a, ModuleSignature) -> m ((a, ModuleSignature), ModuleName, [ModuleName])
     toGraphNode mns m@(_, ModuleSignature _ mn deps) = do
