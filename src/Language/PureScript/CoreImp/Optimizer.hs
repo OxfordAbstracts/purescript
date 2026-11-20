@@ -26,7 +26,7 @@ import Data.Maybe (fromMaybe, isJust)
 import Data.Text (Text)
 
 import Control.Monad.Supply.Class (MonadSupply)
-import Language.PureScript.CoreImp.AST (AST(..), InitializerEffects(..), anywhere, everywhere, everywhereTopDown)
+import Language.PureScript.CoreImp.AST (AST(..), InitializerEffects(..), anywhere, everywhere, everywhereTopDown, everywhereTopDownM)
 import Language.PureScript.CoreImp.Optimizer.Blocks (collapseNestedBlocks, collapseNestedIfs)
 import Language.PureScript.CoreImp.Optimizer.Common (applyAll)
 import Language.PureScript.CoreImp.Optimizer.Inliner (etaConvert, evaluateIifes, inlineCommonOperators, inlineCommonValues, inlineFnComposition, inlineFnIdentity, inlineUnsafeCoerce, inlineUnsafePartial, inlineVariables, unThunk)
@@ -40,14 +40,30 @@ optimize exps jsDecls = removeUnusedEffectFreeVars exps <$> traverse (traverse g
   where
     go :: AST -> m AST
     go js = do
-      js' <- untilFixedPoint (inlineFnComposition expander . inlineFnIdentity expander . inlineUnsafeCoerce . inlineUnsafePartial . tidyUp . applyAll
-        [ inlineCommonValues expander
-        , inlineCommonOperators expander
-        ]) js
+      js' <- untilFixedPointWhen inlineApplies inline js
       untilFixedPointWhen (anyRuleApplies tidyUpRules) (return . tidyUp) . tco . inlineST
         =<< magicDoUntilFixedPoint (magicDoST expander)
         =<< magicDoUntilFixedPoint (magicDoEff expander)
         =<< magicDoUntilFixedPoint (magicDoEffect expander) js'
+
+    inline :: AST -> m AST
+    inline = everywhereTopDownM (\js -> fromMaybe (return js) (inlineFnComposition expander js))
+      . everywhereTopDown (orUnchanged (inlineFnIdentity expander))
+      . everywhereTopDown (orUnchanged inlineUnsafeCoerce)
+      . everywhereTopDown (orUnchanged inlineUnsafePartial)
+      . tidyUp
+      . everywhere (orUnchanged (inlineCommonValues expander))
+      . everywhereTopDown (orUnchanged (inlineCommonOperators expander))
+
+    inlineApplies :: AST -> Bool
+    inlineApplies = anywhere $ \js ->
+      isJust (inlineCommonOperators expander js)
+        || isJust (inlineCommonValues expander js)
+        || any (\rule -> isJust (rule js)) tidyUpRules
+        || isJust (inlineUnsafePartial js)
+        || isJust (inlineUnsafeCoerce js)
+        || isJust (inlineFnIdentity expander js)
+        || isJust (inlineFnComposition expander js :: Maybe (m AST))
 
     magicDoUntilFixedPoint :: (AST -> Maybe AST) -> AST -> m AST
     magicDoUntilFixedPoint rule = untilFixedPointWhen (anyRuleApplies [rule]) (return . everywhereTopDown (orUnchanged rule))

@@ -23,8 +23,8 @@ import Data.Text qualified as T
 
 import Language.PureScript.Names (ModuleName)
 import Language.PureScript.PSString (PSString, mkString)
-import Language.PureScript.CoreImp.AST (AST(..), BinaryOperator(..), InitializerEffects(..), UnaryOperator(..), everywhere, everywhereTopDown, everywhereTopDownM, getSourceSpan)
-import Language.PureScript.CoreImp.Optimizer.Common (pattern Ref, applyAll, isAnyReassignedOrUpdated, isReassigned, isRebound, replaceIdent, replaceIdents, variablesIn)
+import Language.PureScript.CoreImp.AST (AST(..), BinaryOperator(..), InitializerEffects(..), UnaryOperator(..), getSourceSpan)
+import Language.PureScript.CoreImp.Optimizer.Common (pattern Ref, applyRules, isAnyReassignedOrUpdated, isReassigned, isRebound, replaceIdent, replaceIdents, variablesIn)
 import Language.PureScript.AST (SourceSpan(..))
 import Language.PureScript.Constants.Libs qualified as C
 import Language.PureScript.Constants.Prim qualified as C
@@ -83,26 +83,26 @@ inlineVariables (Block ss sts) = Block ss <$> inlineFirst sts
   inlineInto _ _ = Nothing
 inlineVariables _ = Nothing
 
-inlineCommonValues :: (AST -> AST) -> AST -> AST
-inlineCommonValues expander = everywhere convert
+inlineCommonValues :: (AST -> AST) -> AST -> Maybe AST
+inlineCommonValues expander = convert
   where
-  convert :: AST -> AST
+  convert :: AST -> Maybe AST
   convert (expander -> App ss (Ref fn) [Ref dict])
-    | dict `elem` [C.P_semiringNumber, C.P_semiringInt], C.P_zero <- fn = NumericLiteral ss (Left 0)
-    | dict `elem` [C.P_semiringNumber, C.P_semiringInt], C.P_one <- fn = NumericLiteral ss (Left 1)
-    | C.P_boundedBoolean <- dict, C.P_bottom <- fn = BooleanLiteral ss False
-    | C.P_boundedBoolean <- dict, C.P_top <- fn = BooleanLiteral ss True
+    | dict `elem` [C.P_semiringNumber, C.P_semiringInt], C.P_zero <- fn = Just $ NumericLiteral ss (Left 0)
+    | dict `elem` [C.P_semiringNumber, C.P_semiringInt], C.P_one <- fn = Just $ NumericLiteral ss (Left 1)
+    | C.P_boundedBoolean <- dict, C.P_bottom <- fn = Just $ BooleanLiteral ss False
+    | C.P_boundedBoolean <- dict, C.P_top <- fn = Just $ BooleanLiteral ss True
   convert (App ss (expander -> App _ (Ref C.P_negate) [Ref C.P_ringInt]) [x])
-    = Binary ss BitwiseOr (Unary ss Negate x) (NumericLiteral ss (Left 0))
+    = Just $ Binary ss BitwiseOr (Unary ss Negate x) (NumericLiteral ss (Left 0))
   convert (App ss (App _ (expander -> App _ (Ref fn) [Ref dict]) [x]) [y])
-    | C.P_semiringInt <- dict, C.P_add <- fn = intOp ss Add x y
-    | C.P_semiringInt <- dict, C.P_mul <- fn = intOp ss Multiply x y
-    | C.P_ringInt <- dict, C.P_sub <- fn = intOp ss Subtract x y
-  convert other = other
+    | C.P_semiringInt <- dict, C.P_add <- fn = Just $ intOp ss Add x y
+    | C.P_semiringInt <- dict, C.P_mul <- fn = Just $ intOp ss Multiply x y
+    | C.P_ringInt <- dict, C.P_sub <- fn = Just $ intOp ss Subtract x y
+  convert _ = Nothing
   intOp ss op x y = Binary ss BitwiseOr (Binary ss op x y) (NumericLiteral ss (Left 0))
 
-inlineCommonOperators :: (AST -> AST) -> AST -> AST
-inlineCommonOperators expander = everywhereTopDown . onSingleArgument . applyAll $
+inlineCommonOperators :: (AST -> AST) -> AST -> Maybe AST
+inlineCommonOperators expander = onSingleArgument . applyRules $
   [ binary C.P_semiringNumber C.P_add Add
   , binary C.P_semiringNumber C.P_mul Multiply
 
@@ -162,11 +162,11 @@ inlineCommonOperators expander = everywhereTopDown . onSingleArgument . applyAll
   ]
   where
   onSingleArgument f js@(App _ _ [_]) = f js
-  onSingleArgument _ js = js
+  onSingleArgument _ _ = Nothing
 
   inlineUncurried js
     | hasUncurriedHead (maxArity + 1) js = uncurriedRules js
-    | otherwise = js
+    | otherwise = Nothing
 
   hasUncurriedHead _ (ModuleAccessor _ mn _) = mn `elem`
     [ C.M_Data_Function_Uncurried
@@ -178,54 +178,54 @@ inlineCommonOperators expander = everywhereTopDown . onSingleArgument . applyAll
   hasUncurriedHead _ _ = False
 
   maxArity = 10 :: Int
-  uncurriedRules = applyAll $
+  uncurriedRules = applyRules $
     [ fn | i <- [0..maxArity], fn <- [ mkFn i, runFn i ] ] ++
     [ fn | i <- [0..maxArity], fn <- [ mkEffFn C.P_mkEffFn i, runEffFn C.P_runEffFn i ] ] ++
     [ fn | i <- [0..maxArity], fn <- [ mkEffFn C.P_mkEffectFn i, runEffFn C.P_runEffectFn i ] ] ++
     [ fn | i <- [0..maxArity], fn <- [ mkEffFn C.P_mkSTFn i, runEffFn C.P_runSTFn i ] ]
 
-  binary :: (ModuleName, PSString) -> (ModuleName, PSString) -> BinaryOperator -> AST -> AST
+  binary :: (ModuleName, PSString) -> (ModuleName, PSString) -> BinaryOperator -> AST -> Maybe AST
   binary dict fn op = convert where
-    convert :: AST -> AST
-    convert (App ss (App _ (expander -> App _ (Ref fn') [Ref dict']) [x]) [y]) | dict == dict', fn == fn' = Binary ss op x y
-    convert other = other
-  binary' :: (ModuleName, PSString) -> BinaryOperator -> AST -> AST
+    convert :: AST -> Maybe AST
+    convert (App ss (App _ (expander -> App _ (Ref fn') [Ref dict']) [x]) [y]) | dict == dict', fn == fn' = Just $ Binary ss op x y
+    convert _ = Nothing
+  binary' :: (ModuleName, PSString) -> BinaryOperator -> AST -> Maybe AST
   binary' fn op = convert where
-    convert :: AST -> AST
-    convert (App ss (App _ (Ref fn') [x]) [y]) | fn == fn' = Binary ss op x y
-    convert other = other
-  unary :: (ModuleName, PSString) -> (ModuleName, PSString) -> UnaryOperator -> AST -> AST
+    convert :: AST -> Maybe AST
+    convert (App ss (App _ (Ref fn') [x]) [y]) | fn == fn' = Just $ Binary ss op x y
+    convert _ = Nothing
+  unary :: (ModuleName, PSString) -> (ModuleName, PSString) -> UnaryOperator -> AST -> Maybe AST
   unary dict fn op = convert where
-    convert :: AST -> AST
-    convert (App ss (expander -> App _ (Ref fn') [Ref dict']) [x]) | dict == dict', fn == fn' = Unary ss op x
-    convert other = other
-  unary' :: (ModuleName, PSString) -> UnaryOperator -> AST -> AST
+    convert :: AST -> Maybe AST
+    convert (App ss (expander -> App _ (Ref fn') [Ref dict']) [x]) | dict == dict', fn == fn' = Just $ Unary ss op x
+    convert _ = Nothing
+  unary' :: (ModuleName, PSString) -> UnaryOperator -> AST -> Maybe AST
   unary' fn op = convert where
-    convert :: AST -> AST
-    convert (App ss (Ref fn') [x]) | fn == fn' = Unary ss op x
-    convert other = other
+    convert :: AST -> Maybe AST
+    convert (App ss (Ref fn') [x]) | fn == fn' = Just $ Unary ss op x
+    convert _ = Nothing
 
-  mkFn :: Int -> AST -> AST
+  mkFn :: Int -> AST -> Maybe AST
   mkFn = mkFn' C.P_mkFn $ \ss1 ss2 ss3 args js ->
     Function ss1 Nothing args (Block ss2 [Return ss3 js])
 
-  mkEffFn :: (ModuleName, PSString) -> Int -> AST -> AST
+  mkEffFn :: (ModuleName, PSString) -> Int -> AST -> Maybe AST
   mkEffFn mkFn_ = mkFn' mkFn_ $ \ss1 ss2 ss3 args js ->
     Function ss1 Nothing args (Block ss2 [Return ss3 (App ss3 js [])])
 
-  mkFn' :: (ModuleName, PSString) -> (Maybe SourceSpan -> Maybe SourceSpan -> Maybe SourceSpan -> [Text] -> AST -> AST) -> Int -> AST -> AST
+  mkFn' :: (ModuleName, PSString) -> (Maybe SourceSpan -> Maybe SourceSpan -> Maybe SourceSpan -> [Text] -> AST -> AST) -> Int -> AST -> Maybe AST
   mkFn' mkFn_ res 0 = convert where
-    convert :: AST -> AST
+    convert :: AST -> Maybe AST
     convert (App _ (Ref mkFnN) [Function s1 Nothing [_] (Block s2 [Return s3 js])]) | isNFn mkFn_ 0 mkFnN =
-      res s1 s2 s3 [] js
-    convert other = other
+      Just $ res s1 s2 s3 [] js
+    convert _ = Nothing
   mkFn' mkFn_ res n = convert where
-    convert :: AST -> AST
-    convert orig@(App ss (Ref mkFnN) [fn]) | isNFn mkFn_ n mkFnN =
+    convert :: AST -> Maybe AST
+    convert (App ss (Ref mkFnN) [fn]) | isNFn mkFn_ n mkFnN =
       case collectArgs n [] fn of
-        Just (args, [Return ss' ret]) -> res ss ss ss' args ret
-        _ -> orig
-    convert other = other
+        Just (args, [Return ss' ret]) -> Just $ res ss ss ss' args ret
+        _ -> Nothing
+    convert _ = Nothing
     collectArgs :: Int -> [Text] -> AST -> Maybe ([Text], [AST])
     collectArgs 1 acc (Function _ Nothing [oneArg] (Block _ js)) | length acc == n - 1 = Just (reverse (oneArg : acc), js)
     collectArgs m acc (Function _ Nothing [oneArg] (Block _ [Return _ ret])) = collectArgs (m - 1) (oneArg : acc) ret
@@ -234,17 +234,17 @@ inlineCommonOperators expander = everywhereTopDown . onSingleArgument . applyAll
   isNFn :: (ModuleName, PSString) -> Int -> (ModuleName, PSString) -> Bool
   isNFn prefix n fn = fmap (<> mkString (T.pack $ show n)) prefix == fn
 
-  runFn :: Int -> AST -> AST
+  runFn :: Int -> AST -> Maybe AST
   runFn = runFn' C.P_runFn App
 
-  runEffFn :: (ModuleName, PSString) -> Int -> AST -> AST
+  runEffFn :: (ModuleName, PSString) -> Int -> AST -> Maybe AST
   runEffFn runFn_ = runFn' runFn_ $ \ss fn acc ->
     Function ss Nothing [] (Block ss [Return ss (App ss fn acc)])
 
-  runFn' :: (ModuleName, PSString) -> (Maybe SourceSpan -> AST -> [AST] -> AST) -> Int -> AST -> AST
+  runFn' :: (ModuleName, PSString) -> (Maybe SourceSpan -> AST -> [AST] -> AST) -> Int -> AST -> Maybe AST
   runFn' runFn_ res n = convert where
-    convert :: AST -> AST
-    convert js = fromMaybe js $ go n [] js
+    convert :: AST -> Maybe AST
+    convert = go n []
 
     go :: Int -> [AST] -> AST -> Maybe AST
     go 0 acc (App ss (Ref runFnN) [fn]) | isNFn runFn_ n runFnN && length acc == n =
@@ -252,11 +252,11 @@ inlineCommonOperators expander = everywhereTopDown . onSingleArgument . applyAll
     go m acc (App _ lhs [arg]) = go (m - 1) (arg : acc) lhs
     go _ _   _ = Nothing
 
-  inlineNonClassFunction :: (AST -> Bool) -> (AST -> AST -> AST) -> AST -> AST
+  inlineNonClassFunction :: (AST -> Bool) -> (AST -> AST -> AST) -> AST -> Maybe AST
   inlineNonClassFunction p f = convert where
-    convert :: AST -> AST
-    convert (App _ (App _ op' [x]) [y]) | p op' = f x y
-    convert other = other
+    convert :: AST -> Maybe AST
+    convert (App _ (App _ op' [x]) [y]) | p op' = Just $ f x y
+    convert _ = Nothing
 
   isModFnWithDict :: (ModuleName, PSString) -> AST -> Bool
   isModFnWithDict fn (App _ (Ref fn') [Var _ _]) = fn == fn'
@@ -264,16 +264,16 @@ inlineCommonOperators expander = everywhereTopDown . onSingleArgument . applyAll
 
 -- (f <<< g $ x) = f (g x)
 -- (f <<< g)     = \x -> f (g x)
-inlineFnComposition :: forall m. MonadSupply m => (AST -> AST) -> AST -> m AST
-inlineFnComposition expander = everywhereTopDownM convert
+inlineFnComposition :: forall m. MonadSupply m => (AST -> AST) -> AST -> Maybe (m AST)
+inlineFnComposition expander = convert
   where
-  convert :: AST -> m AST
+  convert :: AST -> Maybe (m AST)
   convert (App s1 (App s2 (App _ (expander -> App _ (Ref fn) [Ref C.P_semigroupoidFn]) [x]) [y]) [z])
-    | C.P_compose <- fn = return $ App s1 x [App s2 y [z]]
-    | C.P_composeFlipped <- fn = return $ App s2 y [App s1 x [z]]
+    | C.P_compose <- fn = Just . return $ App s1 x [App s2 y [z]]
+    | C.P_composeFlipped <- fn = Just . return $ App s2 y [App s1 x [z]]
   convert app@(App ss (App _ (expander -> App _ (Ref fn) [Ref C.P_semigroupoidFn]) _) _)
-    | fn `elem` [C.P_compose, C.P_composeFlipped] = mkApps ss <$> goApps app <*> freshName
-  convert other = return other
+    | fn `elem` [C.P_compose, C.P_composeFlipped] = Just $ mkApps ss <$> goApps app <*> freshName
+  convert _ = Nothing
 
   mkApps :: Maybe SourceSpan -> [Either AST (Text, AST)] -> Text -> AST
   mkApps ss fns a = App ss (Function ss Nothing [] (Block ss $ vars <> [Return Nothing comp])) []
@@ -292,22 +292,17 @@ inlineFnComposition expander = everywhereTopDownM convert
   goApps app@App {} = pure . Right . (,app) <$> freshName
   goApps other = pure [Left other]
 
-inlineFnIdentity :: (AST -> AST) -> AST -> AST
-inlineFnIdentity expander = everywhereTopDown convert
+inlineFnIdentity :: (AST -> AST) -> AST -> Maybe AST
+inlineFnIdentity expander = convert
   where
-  convert :: AST -> AST
-  convert (App _ (expander -> App _ (Ref C.P_identity) [Ref C.P_categoryFn]) [x]) = x
-  convert other = other
+  convert :: AST -> Maybe AST
+  convert (App _ (expander -> App _ (Ref C.P_identity) [Ref C.P_categoryFn]) [x]) = Just x
+  convert _ = Nothing
 
-inlineUnsafeCoerce :: AST -> AST
-inlineUnsafeCoerce = everywhereTopDown convert where
-  convert (App _ (Ref C.P_unsafeCoerce) [ comp ]) = comp
-  convert other = other
+inlineUnsafeCoerce :: AST -> Maybe AST
+inlineUnsafeCoerce (App _ (Ref C.P_unsafeCoerce) [ comp ]) = Just comp
+inlineUnsafeCoerce _ = Nothing
 
-inlineUnsafePartial :: AST -> AST
-inlineUnsafePartial = everywhereTopDown convert where
-  convert (App ss (Ref C.P_unsafePartial) [ comp ])
-    -- Apply to undefined here, the application should be optimized away
-    -- if it is safe to do so
-    = App ss comp [ Var ss C.S_undefined ]
-  convert other = other
+inlineUnsafePartial :: AST -> Maybe AST
+inlineUnsafePartial (App ss (Ref C.P_unsafePartial) [ comp ]) = Just $ App ss comp [ Var ss C.S_undefined ]
+inlineUnsafePartial _ = Nothing

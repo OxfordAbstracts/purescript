@@ -15,6 +15,13 @@ import Language.PureScript.PSString (PSString)
 applyAll :: [a -> a] -> a -> a
 applyAll = foldl' (.) id
 
+applyRules :: [a -> Maybe a] -> a -> Maybe a
+applyRules rules a = case foldr applyRule (False, a) rules of
+  (True, a') -> Just a'
+  (False, _) -> Nothing
+  where
+  applyRule rule (changed, a') = maybe (changed, a') (True,) (rule a')
+
 replaceIdent :: Text -> AST -> AST -> AST
 replaceIdent var1 js = everywhere replace
   where
