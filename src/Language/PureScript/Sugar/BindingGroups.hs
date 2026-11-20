@@ -74,9 +74,9 @@ createBindingGroups moduleName = mapM f <=< handleDecls
         typeSyns = declTypeName <$> filter isTypeSynonymDecl ds
         nonTypeSynKindSigs = kindSigs \\ typeSyns
         allDecls = kindDecls ++ dataDecls ++ roleDecls
-        allProperNames = declTypeName . fst <$> allDecls
+        allProperNames = S.fromList $ declTypeName . fst <$> allDecls
         mkVert (d, vty) =
-          let names = usedTypeNames moduleName d `intersect` allProperNames
+          let names = filter (`S.member` allProperNames) $ usedTypeNames moduleName d
               name = declTypeName d
               -- If a dependency of a kind signature has a kind signature, than that's all we need to
               -- depend on, except in the case that we are using a type synonym. In order to expand
@@ -111,10 +111,11 @@ createBindingGroups moduleName = mapM f <=< handleDecls
       -- and get checked before those that do, while preserving reverse topological sorting.
       makeValueDeclarationKey = (,) <$> exprHasNoTypeHole . valdeclExpression <*> valdeclIdent
       valueDeclarationKeys = makeValueDeclarationKey <$> values
+      valueDeclarationKeySet = S.fromList valueDeclarationKeys
 
       valueDeclarationInfo = M.fromList $ swap <$> valueDeclarationKeys
       findDeclarationInfo i = (M.findWithDefault False i valueDeclarationInfo, i)
-      computeValueDependencies = (`intersect` valueDeclarationKeys) . fmap findDeclarationInfo . usedIdents moduleName
+      computeValueDependencies = filter (`S.member` valueDeclarationKeySet) . fmap findDeclarationInfo . usedIdents moduleName
 
       makeValueDeclarationVert = (,,) <$> id <*> makeValueDeclarationKey <*> computeValueDependencies
       valueDeclarationVerts = makeValueDeclarationVert <$> values
