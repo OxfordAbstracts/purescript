@@ -138,7 +138,7 @@ everywhereOnValuesTopDownM f g h = (f' <=< f, g' <=< g, h' <=< h)
   f' (TypeClassDeclaration sa name args implies deps ds) = TypeClassDeclaration sa name args implies deps <$> traverse (f' <=< f) ds
   f' (TypeInstanceDeclaration sa na ch idx name cs className args ds) = TypeInstanceDeclaration sa na ch idx name cs className args <$> traverseTypeInstanceBody (traverse (f' <=< f)) ds
   f' (BoundValueDeclaration sa b expr) = BoundValueDeclaration sa <$> (h' <=< h) b <*> (g' <=< g) expr
-  f' other = f other
+  f' other = pure other
 
   g' :: Expr -> m Expr
   g' (Literal ss l) = Literal ss <$> litM (g >=> g') l
@@ -159,7 +159,7 @@ everywhereOnValuesTopDownM f g h = (f' <=< f, g' <=< g, h' <=< h)
   g' (Do m es) = Do m <$> traverse handleDoNotationElement es
   g' (Ado m es v) = Ado m <$> traverse handleDoNotationElement es <*> (g v >>= g')
   g' (PositionedValue pos com v) = PositionedValue pos com <$> (g v >>= g')
-  g' other = g other
+  g' other = pure other
 
   h' :: Binder -> m Binder
   h' (LiteralBinder ss l) = LiteralBinder ss <$> litM (h >=> h') l
@@ -169,7 +169,7 @@ everywhereOnValuesTopDownM f g h = (f' <=< f, g' <=< g, h' <=< h)
   h' (NamedBinder ss name b) = NamedBinder ss name <$> (h b >>= h')
   h' (PositionedBinder pos com b) = PositionedBinder pos com <$> (h b >>= h')
   h' (TypedBinder t b) = TypedBinder t <$> (h b >>= h')
-  h' other = h other
+  h' other = pure other
 
   handleCaseAlternative :: CaseAlternative -> m CaseAlternative
   handleCaseAlternative (CaseAlternative bs val) =
