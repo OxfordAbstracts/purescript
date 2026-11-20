@@ -136,11 +136,12 @@ data CheckState = CheckState
   -- We have to keep track of them so that we don't emit unused import warnings.
   , checkUndefinedNames :: S.Set (Qualified Ident)
   , checkVisibleModules :: Maybe (S.Set ModuleName)
+  , checkInstancesByFirstHead :: M.Map (Qualified (ProperName 'ClassName)) (Int, M.Map (Maybe (Qualified (ProperName 'TypeName))) (S.Set (Qualified Ident)))
   }
 
 -- | Create an empty @CheckState@
 emptyCheckState :: Environment -> CheckState
-emptyCheckState env = CheckState env 0 0 0 Nothing [] emptySubstitution [] mempty mempty Nothing
+emptyCheckState env = CheckState env 0 0 0 Nothing [] emptySubstitution [] mempty mempty Nothing M.empty
 
 -- | Unification variables
 type Unknown = Int

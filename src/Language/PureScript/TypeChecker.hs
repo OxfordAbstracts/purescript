@@ -16,7 +16,7 @@ import Control.Monad.Error.Class (MonadError(..))
 import Control.Monad.State.Class (modify, gets)
 import Control.Monad.Writer.Class (tell)
 
-import Data.Foldable (for_, traverse_, toList)
+import Data.Foldable (fold, for_, traverse_, toList)
 import Data.List (nubBy, (\\), sort, group)
 import Data.Maybe (fromMaybe, listToMaybe, mapMaybe)
 import Data.Either (partitionEithers)
@@ -44,7 +44,7 @@ import Language.PureScript.TypeChecker.Roles as T
 import Language.PureScript.TypeChecker.Synonyms as T
 import Language.PureScript.TypeChecker.Types as T
 import Language.PureScript.TypeChecker.Unify (varIfUnknown)
-import Language.PureScript.TypeClassDictionaries (TypeClassDictionaryInScope(..), instancesByClass, singletonInstance)
+import Language.PureScript.TypeClassDictionaries (TypeClassDictionaryInScope(..), headConstructor, instancesByClass, singletonInstance)
 import Language.PureScript.Types (Constraint(..), SourceConstraint, SourceType, Type(..), containsForAll, eqType, everythingOnTypes, overConstraintArgs, srcInstanceType, unapplyTypes)
 
 addDataType
@@ -390,6 +390,9 @@ typeCheckAll moduleName = traverse go
                   if isPlainIdent dictName then Nothing else Just $ srcInstanceType ss vars className tys''
           current <- getEnv
           putEnv current { typeClassDictionaries = M.unionWith (<>) (singletonInstance dict) (typeClassDictionaries current) }
+          let indexed = (1, M.singleton (firstHead tys'') (S.singleton qualifiedDictName))
+              merge (n, heads) (n', heads') = (n + n', M.unionWith S.union heads heads')
+          modify $ \st -> st { checkInstancesByFirstHead = M.insertWith merge className indexed (checkInstancesByFirstHead st) }
           return d
 
   checkInstanceArity :: Ident -> Qualified (ProperName 'ClassName) -> TypeClassData -> [SourceType] -> TypeCheckM ()
@@ -474,9 +477,17 @@ typeCheckAll moduleName = traverse go
   checkOverlappingInstance ss ch dictName vars className typeClass tys' nonOrphanModules = do
     for_ nonOrphanModules $ \m -> do
       dicts <- lookupTypeClassDictionariesForClass (ByModuleName m) className
-      let conflicts =
+      indexed <- gets (M.lookup className . checkInstancesByFirstHead)
+      let candidates = case (indexed, firstHead tys') of
+            (Just (n, heads), Just h)
+              | m == moduleName
+              , n == M.size dicts
+              , all (S.member 0) (typeClassCoveringSets typeClass)
+              -> M.restrictKeys dicts (fold (M.lookup Nothing heads) <> fold (M.lookup (Just h) heads))
+            _ -> dicts
+          conflicts =
             [ (name, dict)
-            | (name, ds) <- M.toAscList dicts
+            | (name, ds) <- M.toAscList candidates
             , dict <- NEL.toList ds
             , ch /= tcdChain dict
             , not (instancesAreApart (typeClassCoveringSets typeClass) tys' (tcdInstanceTypes dict))
@@ -485,6 +496,9 @@ typeCheckAll moduleName = traverse go
         let this = if isPlainIdent dictName then Right dictName else Left $ srcInstanceType ss vars className tys'
         let that = Qualified mn' . maybeToLeft ident $ tcdDescription dict
         throwError . errorMessage $ OverlappingInstances className tys' [that, Qualified (ByModuleName moduleName) this]
+
+  firstHead :: [SourceType] -> Maybe (Qualified (ProperName 'TypeName))
+  firstHead tys = headConstructor =<< headMay tys
 
   instancesAreApart
     :: S.Set (S.Set Int)
