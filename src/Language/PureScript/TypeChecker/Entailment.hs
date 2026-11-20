@@ -13,10 +13,10 @@ module Language.PureScript.TypeChecker.Entailment
 import Prelude
 import Protolude (ordNub, headMay, headDef)
 
-import Control.Arrow (second, (&&&))
+import Control.Arrow (second, (&&&), (***))
 import Control.Monad.Error.Class (MonadError(..))
-import Control.Monad.State (MonadState(..), MonadTrans(..), StateT(..), evalStateT, execStateT, gets, modify)
-import Control.Monad (foldM, guard, join, zipWithM, zipWithM_, (<=<))
+import Control.Monad.State (MonadState(..), MonadTrans(..), StateT(..), evalStateT, execStateT, gets, modify, modify')
+import Control.Monad (foldM, guard, join, when, zipWithM, zipWithM_, (<=<))
 import Control.Monad.Writer (MonadWriter(..), WriterT(..))
 import Data.Monoid (Any(..))
 
@@ -103,6 +103,54 @@ type Matching a = M.Map Text a
 
 combineContexts :: InstanceContext -> InstanceContext -> InstanceContext
 combineContexts = M.unionWith (<>)
+
+type SolverM = WriterT (Any, [(Ident, InstanceContext, SourceConstraint)]) (StateT (InstanceContext, SolveCache) TypeCheckM)
+
+data SolveCache = SolveCache
+  { solvedGround :: M.Map (Qualified (ProperName 'ClassName), [SourceType], [SourceType], Maybe ConstraintData) SolvedGround
+  , solveTaint :: !Int
+  }
+
+data SolvedGround = SolvedGround
+  { groundDict :: Expr
+  , groundDictDepth :: Maybe Int
+  , groundCounters :: !(Int, Int, Int)
+  }
+
+freshCounters :: CheckState -> (Int, Int, Int)
+freshCounters st = (checkNextType st, checkNextSkolem st, checkNextSkolemScope st)
+
+advanceCounters :: (Int, Int, Int) -> CheckState -> CheckState
+advanceCounters (t, s, sc) st = st
+  { checkNextType = checkNextType st + t
+  , checkNextSkolem = checkNextSkolem st + s
+  , checkNextSkolemScope = checkNextSkolemScope st + sc
+  }
+
+taintSolveCache :: SolveCache -> SolveCache
+taintSolveCache c = c { solveTaint = solveTaint c + 1 }
+
+modifySolveCache :: (SolveCache -> SolveCache) -> SolverM ()
+modifySolveCache f = lift . modify' $ \(ctx, c) -> let c' = f c in c' `seq` (ctx, c')
+
+solvedDictDepth :: Expr -> Maybe Int
+solvedDictDepth = \case
+  TypeClassDictionary{} -> Nothing
+  App f a -> (\x y -> 1 + max x y) <$> solvedDictDepth f <*> solvedDictDepth a
+  Abs _ e -> (1 +) <$> solvedDictDepth e
+  Accessor _ e -> (1 +) <$> solvedDictDepth e
+  Unused e -> (1 +) <$> solvedDictDepth e
+  _ -> Just 1
+
+isApplied :: Expr -> Bool
+isApplied = \case
+  Var{} -> False
+  _ -> True
+
+hasUnknowns :: SourceType -> Bool
+hasUnknowns = everythingOnTypes (||) $ \case
+  TUnknown{} -> True
+  _ -> False
 
 -- | Replace type class dictionary placeholders with inferred type class dictionaries
 replaceTypeClassDictionaries
@@ -195,7 +243,7 @@ entails
   -- ^ Error message hints to apply to any instance errors
   -> WriterT (Any, [(Ident, InstanceContext, SourceConstraint)]) (StateT InstanceContext TypeCheckM) Expr
 entails SolverOptions{..} constraint context hints =
-  overConstraintArgsAll (lift . lift . traverse replaceAllTypeSynonyms) constraint >>= solve
+  overConstraintArgsAll (lift . lift . traverse replaceAllTypeSynonyms) constraint >>= runSolver . solve
   where
     forClassNameM :: Environment -> InstanceContext -> Qualified (ProperName 'ClassName) -> [SourceType] -> [SourceType] -> TypeCheckM [TypeClassDict]
     forClassNameM env ctx cn@C.Coercible kinds args =
@@ -249,20 +297,52 @@ entails SolverOptions{..} constraint context hints =
     valUndefined :: Expr
     valUndefined = Var nullSourceSpan C.I_undefined
 
-    solve :: SourceConstraint -> WriterT (Any, [(Ident, InstanceContext, SourceConstraint)]) (StateT InstanceContext TypeCheckM) Expr
+    runSolver :: SolverM Expr -> WriterT (Any, [(Ident, InstanceContext, SourceConstraint)]) (StateT InstanceContext TypeCheckM) Expr
+    runSolver m = WriterT . StateT $ \ctx -> do
+      ((a, w), (ctx', _)) <- runStateT (runWriterT m) (ctx, SolveCache M.empty 0)
+      pure ((a, w), ctx')
+
+    solve :: SourceConstraint -> SolverM Expr
     solve = go 0 hints
       where
-        go :: Int -> [ErrorMessageHint] -> SourceConstraint -> WriterT (Any, [(Ident, InstanceContext, SourceConstraint)]) (StateT InstanceContext TypeCheckM) Expr
+        go :: Int -> [ErrorMessageHint] -> SourceConstraint -> SolverM Expr
         go work _ (Constraint _ className' _ tys' _) | work > 1000 = throwError . errorMessage $ PossiblyInfiniteInstance className' tys'
-        go work hints' con@(Constraint _ className' kinds' tys' conInfo) = WriterT . StateT . (withErrorMessageHint (ErrorSolvingConstraint con) .) . runStateT . runWriterT $ do
-            -- We might have unified types by solving other constraints, so we need to
-            -- apply the latest substitution.
+        go work hints' con@(Constraint _ className' kinds' tys' conInfo)
+          | className' == C.Warn = modifySolveCache taintSolveCache *> solveWithLatest
+          | work == 0 = solveWithLatest
+          | otherwise = do
             latestSubst <- lift . lift $ gets checkSubstitution
             let kinds'' = map (substituteType latestSubst) kinds'
                 tys'' = map (substituteType latestSubst) tys'
+            if any hasUnknowns kinds'' || any hasUnknowns tys''
+              then solveWith work hints' con kinds'' tys''
+              else do
+                let key = (className', kinds'', tys'', conInfo)
+                cache <- lift (gets snd)
+                case M.lookup key (solvedGround cache) of
+                  Just SolvedGround{ groundDictDepth = Just depth, .. } | work + depth - 1 <= 1000 -> do
+                    tell (Any True, mempty)
+                    lift . lift . modify $ advanceCounters groundCounters
+                    pure groundDict
+                  _ -> do
+                    (t0, s0, sc0) <- lift . lift $ gets freshCounters
+                    dict <- solveWith work hints' con kinds'' tys''
+                    (t1, s1, sc1) <- lift . lift $ gets freshCounters
+                    taint <- lift (gets (solveTaint . snd))
+                    when (isApplied dict && taint == solveTaint cache) . modifySolveCache $ \c ->
+                      c { solvedGround = M.insert key (SolvedGround dict (solvedDictDepth dict) (t1 - t0, s1 - s0, sc1 - sc0)) (solvedGround c) }
+                    pure dict
+          where
+          solveWithLatest = do
+            -- We might have unified types by solving other constraints, so we need to
+            -- apply the latest substitution.
+            latestSubst <- lift . lift $ gets checkSubstitution
+            solveWith work hints' con (map (substituteType latestSubst) kinds') (map (substituteType latestSubst) tys')
 
+        solveWith :: Int -> [ErrorMessageHint] -> SourceConstraint -> [SourceType] -> [SourceType] -> SolverM Expr
+        solveWith work hints' con@(Constraint _ className' _ _ conInfo) kinds'' tys'' = WriterT . StateT . (withErrorMessageHint (ErrorSolvingConstraint con) .) . runStateT . runWriterT $ do
             -- Get the inferred constraint context so far, and merge it with the global context
-            inferred <- lift get
+            inferred <- lift (gets fst)
             -- We need information about functional dependencies, so we have to look up the class
             -- name in the environment:
             env <- lift . lift $ gets checkEnv
@@ -334,7 +414,7 @@ entails SolverOptions{..} constraint context hints =
                 -- future.
                 newDicts <- lift . lift $ newDictionaries [] qident unsolved
                 let newContext = mkContext newDicts
-                modify (combineContexts newContext)
+                modify (combineContexts newContext *** (\c -> SolveCache M.empty (solveTaint c + 1)))
                 -- Mark this constraint for generalization
                 tell (mempty, [(ident, context, unsolved)])
                 return (Var nullSourceSpan qident)
@@ -416,7 +496,7 @@ entails SolverOptions{..} constraint context hints =
             -- Create dictionaries for subgoals which still need to be solved by calling go recursively
             -- E.g. the goal (Show a, Show b) => Show (Either a b) can be satisfied if the current type
             -- unifies with Either a b, and we can satisfy the subgoals Show a and Show b recursively.
-            solveSubgoals :: Matching SourceType -> ErrorMessageHint -> Maybe [SourceConstraint] -> WriterT (Any, [(Ident, InstanceContext, SourceConstraint)]) (StateT InstanceContext TypeCheckM) (Maybe [Expr])
+            solveSubgoals :: Matching SourceType -> ErrorMessageHint -> Maybe [SourceConstraint] -> SolverM (Maybe [Expr])
             solveSubgoals _ _ Nothing = return Nothing
             solveSubgoals subst hint (Just subgoals) =
               Just <$> traverse (rethrow (addHint hint) . go (work + 1) (hints' <> [hint]) . mapConstraintArgsAll (map (replaceAllTypeVars (M.toList subst)))) subgoals
