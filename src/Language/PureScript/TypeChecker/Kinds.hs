@@ -93,14 +93,16 @@ apply :: SourceType -> TypeCheckM SourceType
 apply ty = flip substituteType ty <$> gets checkSubstitution
 
 substituteType :: Substitution -> SourceType -> SourceType
-substituteType sub = everywhereOnTypes $ \case
-  TUnknown ann u ->
-    case IM.lookup u (substType sub) of
-      Nothing -> TUnknown ann u
-      Just (TUnknown ann' u1) | u1 == u -> TUnknown ann' u1
-      Just t -> substituteType sub t
-  other ->
-    other
+substituteType sub
+  | IM.null (substType sub) = id
+  | otherwise = rewriteTypesBottomUp $ \case
+      TUnknown _ u ->
+        case IM.lookup u (substType sub) of
+          Nothing -> Nothing
+          Just t@(TUnknown _ u1) | u1 == u -> Just t
+          Just t -> Just (substituteType sub t)
+      _ ->
+        Nothing
 
 freshUnknown :: TypeCheckM Unknown
 freshUnknown = do
