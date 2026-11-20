@@ -9,6 +9,7 @@ module Language.PureScript.ModuleDependencies
 
 import Protolude hiding (head)
 
+import Control.Parallel.Strategies (parListChunk, rseq, withStrategy)
 import Data.Array (Array, (!), array, bounds, indices, listArray)
 import Data.Graph (SCC(..), graphFromEdges, stronglyConnComp)
 import Data.IntSet qualified as IS
@@ -59,7 +60,10 @@ sortModules dependencyDepth toSig ms = do
                                          Transitive -> IS.toList (transitiveDeps ! v)
                              toKey = (keys !)
                          return (mn, filter (/= mn) (map toKey deps))
-    keys `seq` graph `seq` return (fst <$> ms'', moduleGraph)
+        transitiveDepsInOrder = case dependencyDepth of
+          Direct -> ()
+          Transitive -> foldl' (flip seq) () (withStrategy (parListChunk 32 rseq) [transitiveDeps ! v | v <- mapMaybe (toVertex . sigModuleName . snd) ms''])
+    transitiveDepsInOrder `seq` keys `seq` graph `seq` return (fst <$> ms'', moduleGraph)
   where
     toGraphNode :: S.Set ModuleName -> (a, ModuleSignature) -> m ((a, ModuleSignature), ModuleName, [ModuleName])
     toGraphNode mns m@(_, ModuleSignature _ mn deps) = do

@@ -22,9 +22,11 @@ import Control.Monad.Trans.Control (MonadBaseControl(..))
 import Control.Monad.Trans.State (runStateT)
 import Control.Monad.Writer.Class (MonadWriter(..), censor)
 import Control.Monad.Writer.Strict (runWriterT)
+import Data.Array (Array, bounds, listArray, (!))
 import Data.Function (on)
 import Data.Foldable (fold, for_, traverse_)
 import Data.List (foldl', sortOn)
+import Data.IntSet qualified as IS
 import Data.List.NonEmpty qualified as NEL
 import Data.Maybe (fromMaybe, mapMaybe)
 import Data.Map qualified as M
@@ -209,9 +211,10 @@ make' MakeOptions{..} ma@MakeActions{..} ms = do
 
   sortedModuleNames <- liftBase . evaluate . force $ getModuleName . CST.resPartial <$> sorted
   let moduleRanks = M.fromList (zip sortedModuleNames [0 :: Int ..])
+  let modulesByRank = listArray (0, M.size moduleRanks - 1) sortedModuleNames :: Array Int ModuleName
   let graphMap = M.fromList graph
   let toBeRebuilt = filter (BuildPlan.needsRebuild buildPlan . getModuleName . CST.resPartial) sorted
-  _ <- liftBase . evaluate $ M.size moduleRanks + M.size graphMap
+  _ <- liftBase . evaluate $ M.size moduleRanks + M.size graphMap + snd (bounds modulesByRank)
   totalModuleCount <- liftBase . evaluate $ length toBeRebuilt
   for_ toBeRebuilt $ \m -> fork $ do
     let moduleName = getModuleName . CST.resPartial $ m
@@ -220,7 +223,7 @@ make' MakeOptions{..} ma@MakeActions{..} ms = do
       (T.unpack . spanName . getModuleSourceSpan . CST.resPartial $ m)
       (fst $ CST.resFull m)
       (fmap importPrim . snd $ CST.resFull m)
-      (sortOn (moduleRanks M.!) deps)
+      (map (modulesByRank !) . IS.toAscList . IS.fromList $ map (moduleRanks M.!) deps)
 
       -- Prevent hanging on other modules when there is an internal error
       -- (the exception is thrown, but other threads waiting on MVars are released)
