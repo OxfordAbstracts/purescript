@@ -20,7 +20,9 @@ import Control.Monad (foldM, guard)
 import Control.Monad.Trans.Control (MonadBaseControl(..))
 import Data.Foldable (foldl')
 import Data.Map qualified as M
-import Data.Maybe (fromMaybe, isNothing, catMaybes)
+import Data.Maybe (fromMaybe, isNothing)
+import Data.Monoid (Any(..))
+import Data.Semigroup (Max(..))
 import Data.Set qualified as S
 import Data.Text qualified as T
 import Data.Time.Clock (UTCTime)
@@ -33,6 +35,7 @@ import Language.PureScript.Externs (ExternsFile)
 import Language.PureScript.Make.Actions as Actions
 import Language.PureScript.Make.Cache (CacheDb, CacheInfo, checkChanged)
 import Language.PureScript.Make.ExternsDiff (ExternsDiff, emptyDiff)
+import Language.PureScript.ModuleDependencies (ModuleSignature(..), moduleSignature)
 import Language.PureScript.Names (ModuleName)
 import Language.PureScript.Sugar.Names.Env (Env, primEnv)
 import System.Directory (getCurrentDirectory)
@@ -194,7 +197,7 @@ construct Options{..} MakeActions{..} cacheDb (sorted, graph) = do
   let toBeRebuilt = M.keys rebuildMap
 
   -- Set of all dependencies of modules to be rebuilt.
-  let allBuildDeps = S.unions (S.fromList . moduleDeps <$> toBeRebuilt)
+  let allBuildDeps = transitiveDepsOf toBeRebuilt
   let inBuildDeps = flip S.member allBuildDeps
 
   -- We only need prebuilt results for deps of the modules to be build.
@@ -285,26 +288,36 @@ construct Options{..} MakeActions{..} cacheDb (sorted, graph) = do
             })
 
     graphMap = M.fromList graph
-    moduleDeps = fromMaybe graphError . flip M.lookup graphMap
+
+    directDeps = M.fromList
+      [ (getModuleName m, filter (`M.member` graphMap) (fst <$> sigImports (moduleSignature m)))
+      | m <- CST.resPartial <$> sorted
+      ]
+    directDepsOf = fromMaybe [] . flip M.lookup directDeps
+
+    transitiveDepsOf :: [ModuleName] -> S.Set ModuleName
+    transitiveDepsOf = go S.empty . concatMap directDepsOf
       where
-        graphError = internalError "make: module not found in dependency graph."
+        go seen [] = seen
+        go seen (d : ds)
+          | S.member d seen = go seen ds
+          | otherwise = go (S.insert d seen) (directDepsOf d <> ds)
 
     splitModules :: [RebuildStatus] -> (M.Map ModuleName (Maybe (UpToDateStatus, UTCTime)), M.Map ModuleName UTCTime)
-    splitModules = foldl' collectByStatus (M.empty, M.empty)
+    splitModules = (\(build, prebuilt, _) -> (build, prebuilt)) . foldl' collectByStatus (M.empty, M.empty, M.empty)
 
-    collectByStatus (build, prebuilt) (RebuildStatus mn rebuildNever _ mbPb upToDate)
+    collectByStatus (build, prebuilt, depsInfo) (RebuildStatus mn rebuildNever _ mbPb upToDate)
       -- To build if no prebuilt result exits.
-      | Nothing <- mbPb = (M.insert mn Nothing build, prebuilt)
+      | Nothing <- mbPb = (M.insert mn Nothing build, prebuilt, depsInfo')
       -- To build if not up to date.
       | Just pb <- mbPb, not upToDate = toRebuild (False, pb)
       -- To prebuilt because of policy.
       | Just pb <- mbPb, rebuildNever = toPrebuilt pb
       -- In other case analyze compilation times of dependencies.
       | Just pb <- mbPb = do
-          let deps = moduleDeps mn
-          let modTimes = map (flip M.lookup prebuilt) deps
+          let (latestDepModTime, Any anyDepNotPrebuilt) = info
 
-          case maximumMaybe (catMaybes modTimes) of
+          case getMax <$> latestDepModTime of
                 -- Check if any of deps where build later. This means we should
                 -- recompile even if the module's source is up-to-date. This may
                 -- happen due to some partial builds or ide compilation
@@ -314,12 +327,14 @@ construct Options{..} MakeActions{..} cacheDb (sorted, graph) = do
                 Just depModTime | pb < depModTime -> toRebuild (False, pb)
                 -- If one of the deps is not in the prebuilt, though the module
                 -- is up to date, we should add it in the rebuild queue.
-                _ | any isNothing modTimes -> toRebuild (upToDate, pb)
+                _ | anyDepNotPrebuilt -> toRebuild (upToDate, pb)
                 _ -> toPrebuilt pb
         where
-          toRebuild (up, t) = (M.insert mn (Just (UpToDateStatus up, t)) build, prebuilt)
-          toPrebuilt v = (build, M.insert mn v prebuilt)
+          toRebuild (up, t) = (M.insert mn (Just (UpToDateStatus up, t)) build, prebuilt, depsInfo')
+          toPrebuilt v = (build, M.insert mn v prebuilt, depsInfo')
+          info = foldMap depInfo (directDepsOf mn)
+          depInfo dep =
+            (Max <$> M.lookup dep prebuilt, Any (M.notMember dep prebuilt))
+              <> M.findWithDefault mempty dep depsInfo
+          depsInfo' = M.insert mn info depsInfo
 
-maximumMaybe :: Ord a => [a] -> Maybe a
-maximumMaybe [] = Nothing
-maximumMaybe xs = Just $ maximum xs
