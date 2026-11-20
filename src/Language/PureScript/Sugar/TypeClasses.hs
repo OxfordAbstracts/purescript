@@ -16,10 +16,10 @@ import Control.Monad.Error.Class (MonadError(..))
 import Control.Monad.State (MonadState(..), StateT, evalStateT, modify)
 import Control.Monad.Supply.Class (MonadSupply)
 import Data.Graph (SCC(..), stronglyConnComp)
-import Data.List (find, partition)
+import Data.List (partition)
 import Data.List.NonEmpty (nonEmpty)
 import Data.Map qualified as M
-import Data.Maybe (catMaybes, mapMaybe, isJust)
+import Data.Maybe (catMaybes, mapMaybe)
 import Data.List.NonEmpty qualified as NEL
 import Data.Set qualified as S
 import Data.Text (Text)
@@ -242,21 +242,23 @@ desugarDecl mn exps = go
     | otherwise = Nothing
 
   isExportedClass :: Qualified (ProperName 'ClassName) -> Bool
-  isExportedClass = isExported (elem . TypeClassRef genSpan)
+  isExportedClass = isExported exportedClassNames
 
   isExportedType :: Qualified (ProperName 'TypeName) -> Bool
-  isExportedType = isExported $ \pn -> isJust . find (matchesTypeRef pn)
+  isExportedType = isExported exportedTypeNames
+
+  exportedClassNames :: S.Set (ProperName 'ClassName)
+  exportedClassNames = S.fromList [pn | TypeClassRef _ pn <- exps]
+
+  exportedTypeNames :: S.Set (ProperName 'TypeName)
+  exportedTypeNames = S.fromList [pn | TypeRef _ pn _ <- exps]
 
   isExported
-    :: (ProperName a -> [DeclarationRef] -> Bool)
+    :: S.Set (ProperName a)
     -> Qualified (ProperName a)
     -> Bool
-  isExported test (Qualified (ByModuleName mn') pn) = mn /= mn' || test pn exps
+  isExported exported (Qualified (ByModuleName mn') pn) = mn /= mn' || pn `S.member` exported
   isExported _ _ = internalError "Names should have been qualified in name desugaring"
-
-  matchesTypeRef :: ProperName 'TypeName -> DeclarationRef -> Bool
-  matchesTypeRef pn (TypeRef _ pn' _) = pn == pn'
-  matchesTypeRef _ _ = False
 
   getConstructors :: SourceType -> [Qualified (ProperName 'TypeName)]
   getConstructors = everythingOnTypes (++) getConstructor
