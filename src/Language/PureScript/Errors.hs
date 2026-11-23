@@ -1987,7 +1987,7 @@ renderBox = unlines
             . dropWhile whiteSpace
             . dropWhileEnd whiteSpace
             . lines
-            . Box.render
+            . Box.renderTrimmed
   where
   whiteSpace = all isSpace
 

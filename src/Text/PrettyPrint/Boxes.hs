@@ -38,6 +38,7 @@ module Text.PrettyPrint.Boxes
   , alignVert
   , align
   , render
+  , renderTrimmed
   , printBox
   ) where
 
@@ -235,3 +236,68 @@ alignedOffset a outer inner = leading outer - leading (max 0 inner)
 
 printBox :: Box -> IO ()
 printBox = putStr . render
+
+renderTrimmed :: Box -> String
+renderTrimmed = unlines . map trimmedVisible . trimmedLines
+
+data TrimmedLine = TrimmedLine
+  { trimmedVisibleLength :: !Int
+  , trimmedVisible :: String
+  , trimmedWidth :: !Int
+  }
+
+blankTrimmedLine :: Int -> TrimmedLine
+blankTrimmedLine c = TrimmedLine 0 "" (max 0 c)
+
+textTrimmedLine :: String -> TrimmedLine
+textTrimmedLine t = let n = length t in TrimmedLine n t n
+
+appendTrimmedLine :: TrimmedLine -> TrimmedLine -> TrimmedLine
+appendTrimmedLine (TrimmedLine vl1 v1 w1) (TrimmedLine vl2 v2 w2)
+  | vl2 == 0 = TrimmedLine vl1 v1 (w1 + w2)
+  | otherwise = TrimmedLine (w1 + vl2) (v1 ++ replicate (w1 - vl1) ' ' ++ v2) (w1 + w2)
+
+resizeTrimmedLine :: Int -> TrimmedLine -> TrimmedLine
+resizeTrimmedLine c l@(TrimmedLine vl v _)
+  | c <= 0 = blankTrimmedLine 0
+  | c < vl = TrimmedLine c (take c v) c
+  | otherwise = l { trimmedWidth = c }
+
+resizeTrimmedLineAligned :: Alignment -> Int -> TrimmedLine -> TrimmedLine
+resizeTrimmedLineAligned AlignFirst c l = resizeTrimmedLine c l
+resizeTrimmedLineAligned AlignLast c (TrimmedLine vl v w)
+  | c <= 0 = blankTrimmedLine 0
+  | c > w = if vl == 0 then blankTrimmedLine c else TrimmedLine (c - w + vl) (replicate (c - w) ' ' ++ v) c
+  | w - c >= vl = blankTrimmedLine c
+  | otherwise = TrimmedLine (vl - (w - c)) (drop (w - c) v) c
+resizeTrimmedLineAligned a c (TrimmedLine vl v w) = textTrimmedLine (takeAligned a ' ' c (v ++ replicate (w - vl) ' '))
+
+trimmedLines :: Box -> [TrimmedLine]
+trimmedLines b = case content b of
+  Blank -> resize [blankTrimmedLine 0]
+  Text t -> resize [textTrimmedLine t]
+  Row bs -> resize . foldr (zipWith appendTrimmedLine . (\x -> trimmedLines x { rows = r })) (repeat (blankTrimmedLine 0)) $ bs
+  Col bs -> resize . concatMap (\x -> trimmedLines x { cols = c }) $ bs
+  SubBox ha va x -> takeAligned va (blankTrimmedLine c) r . map (resizeTrimmedLineAligned ha c) . trimmedLines $ x
+  where
+  r = rows b
+  c = cols b
+  resize = takePadded (blankTrimmedLine c) r . map (resizeTrimmedLine c)
+
+takePadded :: a -> Int -> [a] -> [a]
+takePadded _ n _ | n <= 0 = []
+takePadded b n [] = replicate n b
+takePadded b n (x : xs) = x : takePadded b (n - 1) xs
+
+takeAligned :: Alignment -> a -> Int -> [a] -> [a]
+takeAligned a b n xs = reverse (takePadded b (numRev a n) (reverse before)) ++ takePadded b (numFwd a n) after
+  where
+  (before, after) = splitAt (numRev a (length xs)) xs
+  numFwd AlignFirst k = k
+  numFwd AlignLast _ = 0
+  numFwd AlignCenter1 k = k `div` 2
+  numFwd AlignCenter2 k = (k + 1) `div` 2
+  numRev AlignFirst _ = 0
+  numRev AlignLast k = k
+  numRev AlignCenter1 k = (k + 1) `div` 2
+  numRev AlignCenter2 k = k `div` 2
