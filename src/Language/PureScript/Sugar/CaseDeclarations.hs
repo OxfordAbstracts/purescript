@@ -267,13 +267,21 @@ desugarGuardedExprs ss (Case scrut alternatives) =
     alts' <- desugarAlternatives alternatives
     return $ optimize (Case scrut alts')
 
-desugarGuardedExprs ss (TypedValue inferred e ty) =
-  TypedValue inferred <$> desugarGuardedExprs ss e <*> pure ty
+desugarGuardedExprs ss (TypedValue inferred e ty)
+  | wrapsCase e =
+    TypedValue inferred <$> desugarGuardedExprs ss e <*> pure ty
 
-desugarGuardedExprs _ (PositionedValue ss comms e) =
-  PositionedValue ss comms <$> desugarGuardedExprs ss e
+desugarGuardedExprs _ (PositionedValue ss comms e)
+  | wrapsCase e =
+    PositionedValue ss comms <$> desugarGuardedExprs ss e
 
 desugarGuardedExprs _ v = pure v
+
+wrapsCase :: Expr -> Bool
+wrapsCase (TypedValue _ e _) = wrapsCase e
+wrapsCase (PositionedValue _ _ e) = wrapsCase e
+wrapsCase Case{} = True
+wrapsCase _ = False
 
 -- |
 -- Validates that case head and binder lengths match.
