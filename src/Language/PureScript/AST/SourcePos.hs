@@ -6,11 +6,13 @@ module Language.PureScript.AST.SourcePos where
 
 import Prelude
 
-import Codec.Serialise (Serialise)
+import Codec.Serialise (Serialise(..))
+import Codec.Serialise.Class (gdecode)
 import Control.DeepSeq (NFData)
 import Data.Aeson ((.=), (.:))
 import Data.Text (Text)
-import GHC.Generics (Generic)
+import Data.Text.PureScript (shareDecodedText)
+import GHC.Generics (Generic, to)
 import Language.PureScript.Comments (Comment)
 import Data.Aeson qualified as A
 import Data.Text qualified as T
@@ -53,7 +55,13 @@ data SourceSpan = SourceSpan
     -- ^ Start of the span
   , spanEnd :: {-# UNPACK #-} !SourcePos
     -- ^ End of the span
-  } deriving (Show, Eq, Ord, Generic, NFData, Serialise)
+  } deriving (Show, Eq, Ord, Generic, NFData)
+
+instance Serialise SourceSpan where
+  decode = do
+    SourceSpan name start end <- to <$> gdecode
+    sharedName <- shareDecodedText name
+    pure (SourceSpan sharedName start end)
 
 displayStartEndPos :: SourceSpan -> Text
 displayStartEndPos sp =
