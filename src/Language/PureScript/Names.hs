@@ -7,18 +7,20 @@ module Language.PureScript.Names where
 
 import Prelude
 
-import Codec.Serialise (Serialise)
+import Codec.Serialise (Serialise(..))
+import Codec.Serialise.Class (gdecode)
 import Control.Applicative ((<|>))
 import Control.Monad.Supply.Class (MonadSupply(..))
 import Control.DeepSeq (NFData)
 import Data.Functor.Contravariant (contramap)
 import Data.Vector qualified as V
 
-import GHC.Generics (Generic)
+import GHC.Generics (Generic, to)
 import Data.Aeson (FromJSON(..), FromJSONKey(..), Options(..), SumEncoding(..), ToJSON(..), ToJSONKey(..), defaultOptions, parseJSON2, toJSON2, withArray)
 import Data.Aeson.TH (deriveJSON)
 import Data.Text (Text)
 import Data.Text qualified as T
+import Data.Text.PureScript (shareDecodedText)
 import Data.Int (Int64)
 
 import Language.PureScript.AST.SourcePos (SourcePos, pattern SourcePos)
@@ -160,7 +162,11 @@ newtype ProperName (a :: ProperNameType) = ProperName { runProperName :: Text }
   deriving (Show, Eq, Ord, Generic)
 
 instance NFData (ProperName a)
-instance Serialise (ProperName a)
+
+instance Serialise (ProperName a) where
+  decode = do
+    ProperName name <- to <$> gdecode
+    ProperName <$> shareDecodedText name
 
 instance ToJSON (ProperName a) where
   toJSON = toJSON . runProperName
@@ -190,9 +196,12 @@ coerceProperName = ProperName . runProperName
 --
 newtype ModuleName = ModuleName Text
   deriving (Show, Eq, Ord, Generic)
-  deriving newtype Serialise
 
 instance NFData ModuleName
+
+instance Serialise ModuleName where
+  encode (ModuleName name) = encode name
+  decode = ModuleName <$> (decode >>= shareDecodedText)
 
 runModuleName :: ModuleName -> Text
 runModuleName (ModuleName name) = name
