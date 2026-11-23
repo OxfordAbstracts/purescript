@@ -12,9 +12,9 @@ import Prelude
 
 import Control.Monad.Error.Class (MonadError(..))
 import Control.Monad.State.Class (MonadState(..), gets, modify)
-import Data.Foldable (traverse_)
+import Data.Foldable (foldl', traverse_)
 import Data.Functor.Identity (Identity(), runIdentity)
-import Data.Set (Set, fromList, notMember)
+import Data.Set (Set, insert, notMember)
 import Data.Text (Text)
 import Language.PureScript.AST (Binder(..), ErrorMessageHint(..), Expr(..), SourceAnn, SourceSpan, everythingWithContextOnValues, everywhereWithContextOnValuesM, nonEmptySpan)
 import Language.PureScript.Crash (internalError)
@@ -108,7 +108,8 @@ skolemEscapeCheck expr@TypedValue{} =
         ( (allScopes, ssUsed)
         , [ ErrorMessage (maybe id ((:) . positionedError) ssUsed [ ErrorInExpression val ]) $
               EscapedSkolem name (nonEmptySpan ssBound) ty
-          | (ssBound, name, scope) <- collectSkolems ty
+          | hasEscapedSkolem ty
+          , (ssBound, name, scope) <- collectSkolems ty
           , notMember scope allScopes
           ]
         )
@@ -119,7 +120,12 @@ skolemEscapeCheck expr@TypedValue{} =
 
         -- All scopes, including new scopes
         allScopes :: Set SkolemScope
-        allScopes = fromList newScopes <> scopes
+        allScopes = foldl' (flip insert) scopes newScopes
+
+        hasEscapedSkolem :: SourceType -> Bool
+        hasEscapedSkolem = everythingOnTypes (||) $ \case
+          Skolem _ _ _ _ scope -> notMember scope allScopes
+          _ -> False
 
         -- Collect any scopes appearing in quantifiers at the top level
         collectScopes :: SourceType -> [SkolemScope]
