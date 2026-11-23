@@ -585,6 +585,19 @@ freeTypeVariables = ordNub . fmap snd . sortOn fst . go 0 [] where
   go lvl bound (ParensInType _ t) = go lvl bound t
   go _ _ _ = []
 
+typeVariableOccursFree :: Text -> Type a -> Bool
+typeVariableOccursFree name = go where
+  go (TypeVar _ v) = v == name
+  go (TypeApp _ t1 t2) = go t1 || go t2
+  go (KindApp _ t1 t2) = go t1 || go t2
+  go (ForAll _ _ v mbK t _) = any go mbK || (v /= name && go t)
+  go (ConstrainedType _ c t) = any go (constraintKindArgs c) || any go (constraintArgs c) || go t
+  go (RCons _ _ t r) = go t || go r
+  go (KindedType _ t k) = go t || go k
+  go (BinaryNoParensType _ t1 t2 t3) = go t1 || go t2 || go t3
+  go (ParensInType _ t) = go t
+  go _ = False
+
 -- | Collect a complete set of kind-annotated quantifiers at the front of a type.
 completeBinderList :: Type a -> Maybe ([(a, (Text, Type a))], Type a)
 completeBinderList = go []
@@ -658,7 +671,7 @@ eraseForAllKindAnnotations = removeAmbiguousVars . removeForAllKinds
 
   removeAmbiguousVars = everywhereOnTypes $ \case
     fa@(ForAll _ _ arg _ ty _)
-      | arg `elem` freeTypeVariables ty -> fa
+      | typeVariableOccursFree arg ty -> fa
       | otherwise -> ty
     other -> other
 
