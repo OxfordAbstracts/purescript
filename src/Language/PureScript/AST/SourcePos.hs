@@ -21,9 +21,9 @@ type SourceAnn = (SourceSpan, [Comment])
 
 -- | Source position information
 data SourcePos = SourcePos
-  { sourcePosLine :: Int
+  { sourcePosLine :: {-# UNPACK #-} !Int
     -- ^ Line number
-  , sourcePosColumn :: Int
+  , sourcePosColumn :: {-# UNPACK #-} !Int
     -- ^ Column number
   } deriving (Show, Eq, Ord, Generic, NFData, Serialise)
 
@@ -47,11 +47,11 @@ instance A.FromJSON SourcePos where
     return $ SourcePos line col
 
 data SourceSpan = SourceSpan
-  { spanName :: Text
+  { spanName :: !Text
     -- ^ Source name
-  , spanStart :: SourcePos
+  , spanStart :: {-# UNPACK #-} !SourcePos
     -- ^ Start of the span
-  , spanEnd :: SourcePos
+  , spanEnd :: {-# UNPACK #-} !SourcePos
     -- ^ End of the span
   } deriving (Show, Eq, Ord, Generic, NFData, Serialise)
 
