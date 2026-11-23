@@ -24,7 +24,7 @@ import Data.Either (lefts, partitionEithers)
 import Data.Foldable (for_, fold, toList)
 import Data.Function (on)
 import Data.Functor (($>), (<&>))
-import Data.List (delete, findIndices, minimumBy, nubBy, sortOn, tails)
+import Data.List (findIndices, minimumBy, sortOn, tails)
 import Data.Maybe (catMaybes, fromMaybe, isNothing, listToMaybe, mapMaybe)
 import Data.Map qualified as M
 import Data.Set qualified as S
@@ -678,12 +678,14 @@ entails SolverOptions{..} constraint context hints =
                 -- Partition the output rows into those that belong in right
                 -- (taken off the end) and those that must end up in left.
                 grabLabel e (left', right', remaining)
-                  | rowListLabel e `elem` remaining =
-                    (left', e : right', delete (rowListLabel e) remaining)
+                  | rowListLabel e `M.member` remaining =
+                    (left', e : right', M.update takeOne (rowListLabel e) remaining)
                   | otherwise =
                     (e : left', right', remaining)
+                takeOne count = if count > 1 then Just (count - 1) else Nothing
+                countLabel e = M.insertWith (+) (rowListLabel e) (1 :: Int)
                 (outL, outR, leftover) =
-                  foldr grabLabel ([], [], fmap rowListLabel right) output
+                  foldr grabLabel ([], [], foldr countLabel M.empty right) output
               in ( null leftover
                  , rowFromList (outL, restu)
                  , rowFromList (outR, rightu)
@@ -737,9 +739,10 @@ entails SolverOptions{..} constraint context hints =
     nubRows :: SourceType -> Maybe SourceType
     nubRows r =
         guard (isREmpty rest) $>
-        rowFromList (nubBy ((==) `on` rowListLabel) fixed, rest)
+        rowFromList (foldr keepFirst [] fixed, rest)
       where
         (fixed, rest) = rowToSortedList r
+        keepFirst item kept = item : dropWhile (((==) `on` rowListLabel) item) kept
 
     solveLacks :: [SourceType] -> [SourceType] -> Maybe [TypeClassDict]
     solveLacks kinds tys@[_, REmptyKinded _ _] =
