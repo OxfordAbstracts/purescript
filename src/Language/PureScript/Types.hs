@@ -757,6 +757,7 @@ rewriteTypesBottomUp f t = fromMaybe t (go t) where
   changed ty' = case f ty' of
     Nothing -> Just ty'
     r -> r
+{-# INLINE rewriteTypesBottomUp #-}
 
 everywhereOnTypesM :: Monad m => (Type a -> m (Type a)) -> Type a -> m (Type a)
 everywhereOnTypesM f = go where
