@@ -79,7 +79,7 @@ solveType u t = rethrow (onErrorMessages withoutPosition) $ do
 substituteType :: Substitution -> SourceType -> SourceType
 substituteType sub
   | IM.null (substType sub) = id
-  | otherwise = rewriteTypesBottomUp go
+  | otherwise = \t -> if mentionsSolvedUnknown sub t then rewriteTypesBottomUp go t else t
   where
   go (TUnknown _ u) =
     case IM.lookup u (substType sub) of
@@ -88,6 +88,11 @@ substituteType sub
       Just (Solution _ t@(TUnknown _ u1)) | u1 == u -> Just t
       Just (Solution _ t) -> Just $! substituteType sub t
   go _ = Nothing
+
+mentionsSolvedUnknown :: Substitution -> SourceType -> Bool
+mentionsSolvedUnknown sub = everythingOnTypes (||) $ \case
+  TUnknown _ u -> IM.member u (substType sub)
+  _ -> False
 
 substituteTypeSince :: Substitution -> Substitution -> SourceType -> SourceType
 substituteTypeSince old new
