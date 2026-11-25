@@ -22,6 +22,7 @@ import Control.Monad.Trans.Control (MonadBaseControl(..))
 import Control.Monad.Trans.State (runStateT)
 import Control.Monad.Writer.Class (MonadWriter(..), censor)
 import Control.Monad.Writer.Strict (runWriterT)
+import Control.Parallel.Strategies (parListChunk, rseq, withStrategy)
 import Data.Array (Array, bounds, listArray, (!))
 import Data.Function (on)
 import Data.Foldable (fold, for_, traverse_)
@@ -225,7 +226,7 @@ make' MakeOptions{..} ma@MakeActions{..} ms = do
   checkModuleNames
   cacheDb <- readCacheDb
 
-  (sorted, graph) <- sortModules Transitive (moduleSignature . CST.resPartial) ms
+  (sorted, graph) <- sortModules Direct (moduleSignature . CST.resPartial) ms
   let opts = BuildPlan.Options {optPreloadAllExterns = moCollectAllExterns}
   (buildPlan, newCacheDb) <- BuildPlan.construct opts ma cacheDb (sorted, graph)
 
@@ -242,19 +243,29 @@ make' MakeOptions{..} ma@MakeActions{..} ms = do
 
   sortedModuleNames <- liftBase . evaluate . force $ getModuleName . CST.resPartial <$> sorted
   let moduleRanks = M.fromList (zip sortedModuleNames [0 :: Int ..])
-  let modulesByRank = listArray (0, M.size moduleRanks - 1) sortedModuleNames :: Array Int ModuleName
+  let rankBounds = (0, M.size moduleRanks - 1)
+  let modulesByRank = listArray rankBounds sortedModuleNames :: Array Int ModuleName
   let graphMap = M.fromList graph
-  let toBeRebuilt = filter (BuildPlan.needsRebuild buildPlan . getModuleName . CST.resPartial) sorted
-  _ <- liftBase . evaluate $ M.size moduleRanks + M.size graphMap + snd (bounds modulesByRank)
+  let directDepRanks moduleName =
+        map (moduleRanks M.!) $
+          fromMaybe (internalError "make: module not found in dependency graph.") (M.lookup moduleName graphMap)
+  let transitiveDepRanks :: Array Int IS.IntSet
+      transitiveDepRanks = listArray rankBounds
+        [ IS.unions [ IS.insert dep (transitiveDepRanks ! dep) | dep <- directDepRanks moduleName ]
+        | moduleName <- sortedModuleNames
+        ]
+  let toBeRebuilt = filter (BuildPlan.needsRebuild buildPlan . getModuleName . CST.resPartial . snd) (zip [0 ..] sorted)
+  _ <- liftBase . evaluate $ M.size moduleRanks + M.size graphMap + snd (bounds modulesByRank) + snd (bounds transitiveDepRanks)
   totalModuleCount <- liftBase . evaluate $ length toBeRebuilt
-  for_ toBeRebuilt $ \m -> fork $ do
+  liftBase . evaluate $ foldl' (flip seq) () $
+    withStrategy (parListChunk 32 rseq) [ transitiveDepRanks ! rank | (rank, _) <- toBeRebuilt ]
+  for_ toBeRebuilt $ \(rank, m) -> fork $ do
     let moduleName = getModuleName . CST.resPartial $ m
-    let deps = fromMaybe (internalError "make: module not found in dependency graph.") (M.lookup moduleName graphMap)
     buildModule lock reportProgress buildPlan moduleName totalModuleCount
       (T.unpack . spanName . getModuleSourceSpan . CST.resPartial $ m)
       (fst $ CST.resFull m)
       (fmap importPrim . snd $ CST.resFull m)
-      (map (modulesByRank !) . IS.toAscList . IS.fromList $ map (moduleRanks M.!) deps)
+      (map (modulesByRank !) . IS.toAscList $ transitiveDepRanks ! rank)
 
       -- Prevent hanging on other modules when there is an internal error
       -- (the exception is thrown, but other threads waiting on MVars are released)
