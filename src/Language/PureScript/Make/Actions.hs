@@ -15,10 +15,11 @@ module Language.PureScript.Make.Actions
 import Prelude
 
 import Control.Monad (guard, unless, when)
-import Control.Monad.Error.Class (MonadError(..))
+import Control.Monad.Error.Class (MonadError(..), liftEither)
 import Control.Monad.IO.Class (MonadIO(..))
-import Control.Monad.Reader (asks)
-import Control.Monad.Supply (SupplyT)
+import Control.Monad.Reader (ask, asks, runReaderT)
+import Control.Monad.Supply (SupplyT, runSupplyT)
+import Control.Monad.Supply.Class (consumeUpTo, peek)
 import Control.Monad.Trans.Class (MonadTrans(..))
 import Control.Monad.Writer.Class (MonadWriter(..))
 import Data.Aeson (Value(String), (.=), object)
@@ -311,7 +312,10 @@ buildMakeActions outputDir filePathMap foreigns usePrefix =
               return $ Just "./foreign.js"
         Nothing | requiresForeign m -> throwError . errorMessage' (CF.moduleSourceSpan m) $ MissingFFIModule mn
                 | otherwise -> return Nothing
-      rawJs <- J.moduleToJs m foreignInclude
+      options <- lift ask
+      nextName <- peek
+      (rawJs, nextName') <- liftEither $ runReaderT (runSupplyT nextName (J.moduleToJs m foreignInclude)) options
+      consumeUpTo nextName'
       dir <- lift $ makeIO "get the current directory" getCurrentDirectory
       let sourceMaps = S.member JSSourceMap codegenTargets
           (pjs, mappings) = if sourceMaps then prettyPrintJSWithSourceMaps rawJs else (prettyPrintJS rawJs, [])
