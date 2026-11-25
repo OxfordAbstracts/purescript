@@ -12,7 +12,7 @@ import Prelude
 
 import Control.Concurrent.Async.Chunked (forConcurrentlyChunked)
 import Control.Concurrent.Lifted as C
-import Control.DeepSeq (force)
+import Control.DeepSeq (force, rnf)
 import Control.Exception.Lifted (onException, bracket_, evaluate, finally)
 import Control.Monad (foldM, unless, void, when, (<=<))
 import Control.Monad.Base (MonadBase(liftBase))
@@ -31,7 +31,7 @@ import Data.List (foldl', sortOn)
 import Data.IntSet qualified as IS
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef)
 import Data.List.NonEmpty qualified as NEL
-import Data.Maybe (catMaybes, fromMaybe, mapMaybe)
+import Data.Maybe (catMaybes, fromMaybe, isJust, mapMaybe)
 import Data.Map qualified as M
 import Data.Set qualified as S
 import Data.Text qualified as T
@@ -307,11 +307,10 @@ make' MakeOptions{..} ma@MakeActions{..} ms = do
         fromMaybe (internalError $ "make: module not found in results: " <> T.unpack name)
         $ M.lookup mn successes
 
-  pure $
-    if moCollectAllExterns then
-      map lookupResult sortedModuleNames
-    else
-      mapMaybe (flip M.lookup successes) sortedModuleNames
+  if moCollectAllExterns then
+    liftBase . evaluate . force $ map lookupResult sortedModuleNames
+  else
+    pure $ mapMaybe (flip M.lookup successes) sortedModuleNames
 
   where
   checkModuleNames :: m ()
@@ -398,6 +397,7 @@ make' MakeOptions{..} ma@MakeActions{..} ms = do
                   (exts, warnings) <- bracket_ (C.waitQSem lock) (C.signalQSem lock) $ do
                     -- Eventlog markers for profiling; see debug/eventlog.js
                     liftBase $ traceMarkerIO $ T.unpack (runModuleName moduleName) <> " start"
+                    for_ prevResult $ \(_, prev) -> when (isJust depsDiffs) $ evaluate (rnf prev)
                     -- Force the externs and warnings to avoid retaining excess module
                     -- data after the module is finished compiling.
                     extsAndWarnings <- evaluate . force <=< listen $ do

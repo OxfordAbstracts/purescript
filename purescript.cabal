@@ -405,6 +405,7 @@ library
     System.IO.UTF8
     Text.PrettyPrint.Boxes
   other-modules:
+    Codec.CBOR.PureScript
     Data.Text.PureScript
     Data.InternedName
     Language.PureScript.Constants.TH

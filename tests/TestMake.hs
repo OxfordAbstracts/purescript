@@ -304,6 +304,23 @@ spec = do
       writeFile mAPath timestampC mAContent2
       compile [mAPath, mBPath] `shouldReturn` moduleNames ["A", "B"]
 
+    it "reads large types from prebuilt externs and recompiles downstream modules when they change" $ do
+      let mAPath = modulePath "A"
+          mBPath = modulePath "B"
+          fields n = T.intercalate ", " ["field" <> T.pack (show i) <> " :: Int" | i <- [1 .. n :: Int]]
+          mAContent n = "module A where\ntype Row = ( " <> fields n <> " )\n"
+          mBContent name = "module B where\nimport A (Row)\n" <> name <> " :: Record Row -> Int\n" <> name <> " r = r.field40\n"
+
+      writeFile mAPath timestampA (mAContent 40)
+      writeFile mBPath timestampB (mBContent "bar")
+      compile [mAPath, mBPath] `shouldReturn` moduleNames ["A", "B"]
+
+      writeFile mBPath timestampC (mBContent "baz")
+      compile [mAPath, mBPath] `shouldReturn` moduleNames ["B"]
+
+      writeFile mAPath timestampD (mAContent 41)
+      compile [mAPath, mBPath] `shouldReturn` moduleNames ["A", "B"]
+
     -- If a module is compiled with no effective changes for downstream they should
     -- not be rebuilt.
     it "recompiles downstream modules only when a module is rebuilt end externs changed" $ do

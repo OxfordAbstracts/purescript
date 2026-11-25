@@ -40,10 +40,6 @@ import Control.Monad.Writer.Class (MonadWriter(..))
 import Data.Aeson qualified as Aeson
 import Data.ByteString qualified as B
 import Data.ByteString.Lazy qualified as BL
-import Data.ByteString.Unsafe qualified as BU
-import Data.Bits (shiftL, shiftR, (.&.), (.|.))
-import Data.List (foldl')
-import Data.Word (Word64)
 import Data.Maybe (isJust)
 import Data.Text (Text)
 import Data.Text qualified as Text
@@ -51,13 +47,15 @@ import Data.Time.Clock (UTCTime)
 import Data.Time.Clock qualified as Time
 import Language.PureScript.Errors (ErrorMessage(..), MultipleErrors, SimpleErrorMessage(..), singleError)
 import Language.PureScript.Crash (internalError)
-import Language.PureScript.Externs (ExternsFile, currentVersion)
+import Language.PureScript.Externs (ExternsFile, currentVersion, decodeExternsFile)
 import Language.PureScript.Make.Cache (ContentHash, hash)
 import Language.PureScript.Options (Options)
 import System.Directory (createDirectoryIfMissing, getModificationTime, setModificationTime)
 import System.Directory qualified as Directory
 import System.FilePath (takeDirectory)
+import System.IO (IOMode(..), SeekMode(..), hFileSize, hSeek, withBinaryFile)
 import System.IO.Error (tryIOError, isDoesNotExistError)
+import System.IO.Unsafe (unsafePerformIO)
 import System.IO.UTF8 (readUTF8FileT)
 
 -- | A monad for running make actions
@@ -149,84 +147,21 @@ readExternsFile path =
     mbytes <- catchDoesNotExist (B.readFile path)
     return $! do
       bytes <- mbytes
-      guard $ skipCborItem bytes 0 == B.length bytes
-      let lazyBytes = BL.fromStrict bytes
-      (_, version) <- either (const Nothing) Just $ CBOR.deserialiseFromBytes decodeExternsVersion lazyBytes
+      (_, version) <- either (const Nothing) Just $ CBOR.deserialiseFromBytes decodeExternsVersion (BL.fromStrict bytes)
       guard $ Text.unpack version == currentVersion
-      return $ either (internalError . ("Corrupt externs file " <>) . (path <>) . (": " <>) . displayException) id $
-        Serialise.deserialiseOrFail lazyBytes
+      let !size = B.length bytes
+      decodeExternsFile (readFileSlice path size) bytes
   where
   decodeExternsVersion = CBOR.decodeListLen *> CBOR.decodeWord *> CBOR.decodeString
 
-skipCborItem :: B.ByteString -> Int -> Int
-skipCborItem bytes = item
-  where
-  len = B.length bytes
-  byteAt i = BU.unsafeIndex bytes i
-  invalid = -1
-
-  item i
-    | i < 0 || i >= len = invalid
-    | otherwise = case header `shiftR` 5 of
-        0 -> argumentEnd i
-        1 -> argumentEnd i
-        2 -> chunked i
-        3 -> chunked i
-        4 | info == 31 -> untilBreak item (i + 1)
-          | otherwise -> items 1 (argument i) (argumentEnd i)
-        5 | info == 31 -> untilBreak (item . item) (i + 1)
-          | otherwise -> items 2 (argument i) (argumentEnd i)
-        6 -> item (argumentEnd i)
-        _ | info < 24 -> i + 1
-          | info <= 27 -> within (argumentEnd i)
-          | otherwise -> invalid
-    where
-    header = byteAt i
-    info = header .&. 31
-
-  chunked i
-    | byteAt i .&. 31 == 31 = untilBreak chunk (i + 1)
-    | j < 0 || n > fromIntegral (len - j) = invalid
-    | otherwise = j + fromIntegral n
-    where
-    j = argumentEnd i
-    n = argument i
-    chunk k
-      | k >= 0 && k < len && byteAt k `shiftR` 5 == byteAt i `shiftR` 5 && byteAt k .&. 31 /= 31 = chunked k
-      | otherwise = invalid
-
-  items :: Word64 -> Word64 -> Int -> Int
-  items perEntry n j
-    | j < 0 || n > fromIntegral (len - j) = invalid
-    | otherwise = go (n * perEntry) j
-    where
-    go 0 k = k
-    go m k = go (m - 1) (item k)
-
-  untilBreak step k
-    | k < 0 || k >= len = invalid
-    | byteAt k == 0xff = k + 1
-    | otherwise = untilBreak step (step k)
-
-  argumentEnd i = within $ case byteAt i .&. 31 of
-    24 -> i + 2
-    25 -> i + 3
-    26 -> i + 5
-    27 -> i + 9
-    info | info < 24 -> i + 1
-         | otherwise -> invalid
-
-  argument :: Int -> Word64
-  argument i = case byteAt i .&. 31 of
-    24 -> readBE 1
-    25 -> readBE 2
-    26 -> readBE 4
-    27 -> readBE 8
-    info -> fromIntegral info
-    where
-    readBE n = foldl' (\acc o -> acc `shiftL` 8 .|. fromIntegral (byteAt (i + 1 + o))) 0 [0 .. n - 1]
-
-  within k = if k <= len then k else invalid
+readFileSlice :: FilePath -> Int -> Int -> Int -> B.ByteString
+readFileSlice path size start len = unsafePerformIO $ withBinaryFile path ReadMode $ \handle -> do
+  actualSize <- hFileSize handle
+  hSeek handle AbsoluteSeek (fromIntegral start)
+  slice <- B.hGet handle len
+  if actualSize == fromIntegral size && B.length slice == len
+    then pure slice
+    else internalError ("Externs file changed during the build: " <> path)
 
 hashFile :: (MonadIO m, MonadError MultipleErrors m) => FilePath -> m ContentHash
 hashFile path = do

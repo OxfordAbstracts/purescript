@@ -14,13 +14,19 @@ module Language.PureScript.Externs
   , applyExternsFileToEnvironment
   , externsFileName
   , currentVersion
+  , decodeExternsFile
   ) where
 
 import Prelude
 
-import Codec.Serialise (Serialise)
+import Codec.CBOR.PureScript (cborArray, cborArrayHeader, cborItem, cborWord)
+import Codec.CBOR.Read qualified as CBOR
+import Codec.Serialise (Serialise(..))
 import Control.DeepSeq (NFData)
-import Control.Monad (join)
+import Control.Monad (guard, join)
+import Data.ByteString qualified as B
+import Data.ByteString.Lazy qualified as BL
+import Data.ByteString.Unsafe qualified as BU
 import Data.Maybe (fromMaybe, mapMaybe, maybeToList)
 import Data.List (foldl', find)
 import Data.Text (Text)
@@ -34,7 +40,7 @@ import Language.PureScript.AST (Associativity, Declaration(..), DeclarationRef(.
 import Language.PureScript.AST.Declarations.ChainId (ChainId)
 import Language.PureScript.Crash (internalError)
 import Language.PureScript.Environment (DataDeclType, Environment(..), FunctionalDependency, NameKind(..), NameVisibility(..), TypeClassData(..), TypeKind(..), dictTypeName, makeTypeClassData)
-import Language.PureScript.Names (Ident, ModuleName, OpName, OpNameType(..), ProperName, ProperNameType(..), Qualified(..), QualifiedBy(..), coerceProperName, isPlainIdent)
+import Language.PureScript.Names (Ident, ModuleName, OpName, OpNameType(..), ProperName, ProperNameType(..), Qualified(..), QualifiedBy(..), coerceProperName, isPlainIdent, runModuleName)
 import Language.PureScript.TypeClassDictionaries (NamedDict, TypeClassDictionaryInScope(..), instancesByClass, singletonInstance)
 import Language.PureScript.Types (SourceConstraint, SourceType, srcInstanceType)
 
@@ -166,6 +172,73 @@ data ExternsDeclaration =
   deriving (Eq, Show, Generic, NFData, ToJSON, FromJSON)
 
 instance Serialise ExternsDeclaration
+
+decodeExternsFile :: (Int -> Int -> B.ByteString) -> B.ByteString -> Maybe ExternsFile
+decodeExternsFile later bytes = do
+  (Just 9, tagStart) <- cborArrayHeader bytes 0
+  (tag, versionStart) <- item tagStart
+  0 <- cborWord bytes (fst tag)
+  (externsVersion, moduleNameStart) <- item versionStart
+  (moduleName, exportsStart) <- item moduleNameStart
+  (exports, importsStart) <- item exportsStart
+  (imports, fixitiesStart) <- item importsStart
+  (fixities, typeFixitiesStart) <- item fixitiesStart
+  (typeFixities, declarationsStart) <- item typeFixitiesStart
+  efModuleName <- now moduleName
+  let field :: Serialise a => (Int, Int) -> Maybe a
+      field range@(start, end)
+        | end - start < largeField = now range
+        | otherwise = Just (fromMaybe (corruptField efModuleName) (decoded (later start (end - start))))
+
+      elements :: Serialise a => (Int, Int) -> Maybe [a]
+      elements range@(start, end)
+        | end - start < largeField = now range
+        | otherwise = fst <$> cborArray bytes (\k -> item k >>= \(element, next) -> (, next) <$> field element) start
+
+      declaration start = do
+        (constructorTag : fields, next) <- cborArray bytes item start
+        constructor <- cborWord bytes (fst constructorTag)
+        decl <- case (constructor, fields) of
+          (0, [name, kind, declKind]) ->
+            EDType <$> now name <*> field kind <*> field declKind
+          (1, [name, args, ty]) ->
+            EDTypeSynonym <$> now name <*> field args <*> field ty
+          (2, [name, origin, tyCtor, ty, ctorFields]) ->
+            EDDataConstructor <$> now name <*> now origin <*> now tyCtor <*> field ty <*> field ctorFields
+          (3, [name, ty]) ->
+            EDValue <$> now name <*> field ty
+          (4, [name, args, members, constraints, deps, isEmpty]) ->
+            EDClass <$> now name <*> field args <*> field members <*> field constraints <*> field deps <*> now isEmpty
+          (5, [cls, name, forAll, kinds, types, constraints, chain, chainIndex, nameSource, ss]) ->
+            EDInstance <$> now cls <*> now name <*> field forAll <*> field kinds <*> elements types <*> field constraints <*> now chain <*> now chainIndex <*> now nameSource <*> now ss
+          _ -> Nothing
+        decl `seq` pure (decl, next)
+  (efDeclarations, sourceSpanStart) <- cborArray bytes declaration declarationsStart
+  (sourceSpan, end) <- item sourceSpanStart
+  guard (end == B.length bytes)
+  efVersion <- now externsVersion
+  efExports <- field exports
+  efImports <- field imports
+  efFixities <- field fixities
+  efTypeFixities <- field typeFixities
+  efSourceSpan <- now sourceSpan
+  pure ExternsFile{..}
+  where
+  item = cborItem bytes
+
+  now :: Serialise a => (Int, Int) -> Maybe a
+  now (start, end) = decoded (BU.unsafeTake (end - start) (BU.unsafeDrop start bytes))
+
+decoded :: Serialise a => B.ByteString -> Maybe a
+decoded slice = case CBOR.deserialiseFromBytes decode (BL.fromStrict slice) of
+  Right (rest, !value) | BL.null rest -> Just value
+  _ -> Nothing
+
+corruptField :: ModuleName -> a
+corruptField moduleName = internalError ("Corrupt externs file for module " <> T.unpack (runModuleName moduleName))
+
+largeField :: Int
+largeField = 1024
 
 currentVersion :: String
 currentVersion = showVersion Paths.version
