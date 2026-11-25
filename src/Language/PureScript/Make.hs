@@ -13,7 +13,7 @@ import Prelude
 import Control.Concurrent.Async.Chunked (forConcurrentlyChunked)
 import Control.Concurrent.Lifted as C
 import Control.DeepSeq (force, rnf)
-import Control.Exception.Lifted (onException, bracket_, evaluate, finally)
+import Control.Exception.Lifted (IOException, onException, bracket_, evaluate, finally, handle, uninterruptibleMask_)
 import Control.Monad (foldM, unless, void, when, (<=<))
 import Control.Monad.Base (MonadBase(liftBase))
 import Control.Monad.Error.Class (MonadError(..), liftEither)
@@ -24,7 +24,7 @@ import Control.Monad.Trans.State (runStateT)
 import Control.Monad.Writer.Class (MonadWriter(..), censor)
 import Control.Monad.Writer.Strict (runWriterT)
 import Control.Parallel.Strategies (parListChunk, rseq, withStrategy)
-import Data.Array (Array, bounds, listArray, (!))
+import Data.Array (Array, accumArray, bounds, listArray, range, (!))
 import Data.Function (on)
 import Data.Foldable (fold, for_, traverse_)
 import Data.Functor (($>))
@@ -76,7 +76,7 @@ import Language.PureScript.Make.Monad as Monad
       getCurrentTime,
       copyFile )
 import Language.PureScript.CoreFn qualified as CF
-import System.Directory (doesFileExist)
+import System.Directory (doesFileExist, getFileSize)
 import System.FilePath (replaceExtension)
 import Language.PureScript.TypeChecker.Monad (liftTypeCheckM)
 
@@ -166,6 +166,35 @@ data MakeOptions = MakeOptions
   { moCollectAllExterns :: Bool
   }
 
+newtype BuildSlots = BuildSlots (C.MVar (Int, M.Map (Integer, Int) (C.MVar ())))
+
+newBuildSlots :: MonadBase IO m => Int -> m BuildSlots
+newBuildSlots count = BuildSlots <$> C.newMVar (count, M.empty)
+
+takeBuildSlot :: MonadBase IO m => BuildSlots -> (Integer, Int) -> m ()
+takeBuildSlot slots@(BuildSlots state) (weight, rank) = liftBase $ do
+  turn <- C.newEmptyMVar
+  queued <- C.modifyMVar state $ \(free, waiting) -> pure $
+    if free > 0
+      then ((free - 1, waiting), False)
+      else ((free, M.insert key turn waiting), True)
+  when queued $ C.takeMVar turn `onException` uninterruptibleMask_ abandon
+  where
+  key = (negate weight, rank)
+  abandon = do
+    handedOver <- C.modifyMVar state $ \(free, waiting) ->
+      pure ((free, M.delete key waiting), M.notMember key waiting)
+    when handedOver $ releaseBuildSlot slots
+
+releaseBuildSlot :: MonadBase IO m => BuildSlots -> m ()
+releaseBuildSlot (BuildSlots state) = liftBase $ C.modifyMVar_ state $ \(free, waiting) ->
+  case M.minView waiting of
+    Nothing -> pure (free + 1, waiting)
+    Just (turn, rest) -> C.putMVar turn () $> (free, rest)
+
+sourceSizeOrZero :: FilePath -> IO Integer
+sourceSizeOrZero = handle (\(_ :: IOException) -> pure 0) . getFileSize
+
 data ProgressQueue = ProgressQueue
   { pqPending :: IORef [ProgressMessage]
   , pqWriter :: C.MVar ()
@@ -239,7 +268,7 @@ make' MakeOptions{..} ma@MakeActions{..} ms = do
   -- by the Haskell runtime.
   capabilities <- getNumCapabilities
   let concurrency = max 1 capabilities
-  lock <- C.newQSem concurrency
+  slots <- newBuildSlots concurrency
   progressQueue <- newProgressQueue
   let reportProgress = enqueueProgress progress progressQueue
 
@@ -263,9 +292,17 @@ make' MakeOptions{..} ma@MakeActions{..} ms = do
   liftBase . evaluate $ foldl' (flip seq) () $
     withStrategy (parListChunk 32 rseq) [ transitiveDepRanks ! rank | (rank, _) <- toBeRebuilt ]
   void $ forConcurrentlyChunked 64 toBeRebuilt (liftBase . evaluate . CST.resFull . snd)
+  sourceSizes <- forConcurrentlyChunked 64 toBeRebuilt $ \(rank, m) ->
+    liftBase $ (rank,) <$> sourceSizeOrZero (T.unpack . spanName . getModuleSourceSpan . CST.resPartial $ m)
+  let ownWeight = accumArray (+) 0 rankBounds sourceSizes :: Array Int Integer
+  let dependentRanks = accumArray (flip (:)) [] rankBounds
+        [ (dep, rank) | (rank, moduleName) <- zip [0 ..] sortedModuleNames, dep <- directDepRanks moduleName ] :: Array Int [Int]
+  let downstreamWeight = listArray rankBounds
+        [ ownWeight ! rank + foldl' max 0 (map (downstreamWeight !) (dependentRanks ! rank)) | rank <- range rankBounds ] :: Array Int Integer
+  liftBase . evaluate $ foldl' (\() (rank, _) -> downstreamWeight ! rank `seq` ()) () toBeRebuilt
   for_ toBeRebuilt $ \(rank, m) -> fork $ do
     let moduleName = getModuleName . CST.resPartial $ m
-    buildModule lock reportProgress buildPlan moduleName totalModuleCount
+    buildModule slots (downstreamWeight ! rank, rank) reportProgress buildPlan moduleName totalModuleCount
       (T.unpack . spanName . getModuleSourceSpan . CST.resPartial $ m)
       (fst $ CST.resFull m)
       (fmap importPrim . snd $ CST.resFull m)
@@ -343,8 +380,8 @@ make' MakeOptions{..} ma@MakeActions{..} ms = do
       [] -> Nothing
       xss -> Just xss
 
-  buildModule :: QSem -> (ProgressMessage -> m ()) -> BuildPlan -> ModuleName -> Int -> FilePath -> [CST.ParserWarning] -> Either (NEL.NonEmpty CST.ParserError) Module -> IS.IntSet -> (Int -> ModuleName) -> (Int -> BuildPlan.ResultSource) -> m ()
-  buildModule lock reportProgress buildPlan moduleName cnt fp pwarnings mres depRanks moduleAtRank resultAtRank = do
+  buildModule :: BuildSlots -> (Integer, Int) -> (ProgressMessage -> m ()) -> BuildPlan -> ModuleName -> Int -> FilePath -> [CST.ParserWarning] -> Either (NEL.NonEmpty CST.ParserError) Module -> IS.IntSet -> (Int -> ModuleName) -> (Int -> BuildPlan.ResultSource) -> m ()
+  buildModule slots urgency reportProgress buildPlan moduleName cnt fp pwarnings mres depRanks moduleAtRank resultAtRank = do
     result <- flip catchError (return . BuildJobFailed) $ do
       -- We need to wait for dependencies to be built, before checking if the current
       -- module should be rebuilt, so the first thing to do is to wait on the
@@ -400,7 +437,7 @@ make' MakeOptions{..} ma@MakeActions{..} ms = do
                 -- Bracket all of the per-module work behind the semaphore, including
                 -- forcing the result. This is done to limit concurrency and keep
                 -- memory usage down; see comments above.
-                  (exts, warnings) <- bracket_ (C.waitQSem lock) (C.signalQSem lock) $ do
+                  (exts, warnings) <- bracket_ (takeBuildSlot slots urgency) (releaseBuildSlot slots) $ do
                     -- Eventlog markers for profiling; see debug/eventlog.js
                     liftBase $ traceMarkerIO $ T.unpack (runModuleName moduleName) <> " start"
                     for_ prevResult $ \(_, prev) -> when (isJust depsDiffs) $ evaluate (rnf prev)
