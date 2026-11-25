@@ -8,7 +8,7 @@ import Data.List (foldl')
 import Data.Maybe (fromMaybe)
 
 import Language.PureScript.Crash (internalError)
-import Language.PureScript.CoreImp.AST (AST(..), everything, rewriteBottomUp)
+import Language.PureScript.CoreImp.AST (AST(..), anywhere, everything, rewriteBottomUp)
 import Language.PureScript.Names (ModuleName)
 import Language.PureScript.PSString (PSString)
 
@@ -35,7 +35,7 @@ replaceIdents vars ast = fromMaybe ast (rewriteBottomUp replace ast)
   replace _ = Nothing
 
 isReassigned :: Text -> AST -> Bool
-isReassigned var1 = everything (||) check
+isReassigned var1 = anywhere check
   where
   check :: AST -> Bool
   check (Function _ _ args _) | var1 `elem` args = True
@@ -55,7 +55,7 @@ variablesIn = everything (++) variablesOf
   variablesOf _ = []
 
 isAnyReassignedOrUpdated :: [Text] -> AST -> Bool
-isAnyReassignedOrUpdated vars = everything (||) check
+isAnyReassignedOrUpdated vars = anywhere check
   where
   check :: AST -> Bool
   check (Function _ _ args _) = any (`elem` args) vars
@@ -71,7 +71,7 @@ targetVariable (Indexer _ _ tgt) = targetVariable tgt
 targetVariable _ = internalError "Invalid argument to targetVariable"
 
 isUpdated :: Text -> AST -> Bool
-isUpdated var1 = everything (||) check
+isUpdated var1 = anywhere check
   where
   check :: AST -> Bool
   check (Assignment _ target _) | var1 == targetVariable target = True
