@@ -43,9 +43,9 @@ import Language.PureScript.Names (pattern ByNullSourcePos, Ident(..), ModuleName
 import Language.PureScript.TypeChecker.Entailment.Coercible (GivenSolverState(..), WantedSolverState(..), initialGivenSolverState, initialWantedSolverState, insoluble, solveGivens, solveWanteds)
 import Language.PureScript.TypeChecker.Entailment.IntCompare (mkFacts, mkRelation, solveRelation)
 import Language.PureScript.TypeChecker.Kinds (elaborateKind, unifyKinds')
-import Language.PureScript.TypeChecker.Monad (CheckState(..), withErrorMessageHint, TypeCheckM)
+import Language.PureScript.TypeChecker.Monad (CheckState(..), Substitution, withErrorMessageHint, TypeCheckM)
 import Language.PureScript.TypeChecker.Synonyms (replaceAllTypeSynonyms)
-import Language.PureScript.TypeChecker.Unify (freshTypeWithKind, substituteType, unifyTypes)
+import Language.PureScript.TypeChecker.Unify (freshTypeWithKind, substituteType, substituteTypeSince, unifyTypes)
 import Language.PureScript.TypeClassDictionaries (InstanceContext, NamedDict, TypeClassDictionaryInScope(..), headConstructor, instancesByClass, instancesByHead, singletonInstance, superclassName)
 import Language.PureScript.Types
 import Language.PureScript.Label (Label(..))
@@ -268,16 +268,17 @@ entails SolverOptions{..} constraint context hints =
     valUndefined = Var nullSourceSpan C.I_undefined
 
     solve :: SourceConstraint -> WriterT (Any, [(Ident, InstanceContext, SourceConstraint)]) (StateT InstanceContext TypeCheckM) Expr
-    solve = go 0 hints
+    solve = go 0 hints Nothing
       where
-        go :: Int -> [ErrorMessageHint] -> SourceConstraint -> WriterT (Any, [(Ident, InstanceContext, SourceConstraint)]) (StateT InstanceContext TypeCheckM) Expr
-        go work _ (Constraint _ className' _ tys' _) | work > 1000 = throwError . errorMessage $ PossiblyInfiniteInstance className' tys'
-        go work hints' con@(Constraint _ className' kinds' tys' conInfo) = WriterT . StateT . (withErrorMessageHint (ErrorSolvingConstraint con) .) . runStateT . runWriterT $ do
+        go :: Int -> [ErrorMessageHint] -> Maybe Substitution -> SourceConstraint -> WriterT (Any, [(Ident, InstanceContext, SourceConstraint)]) (StateT InstanceContext TypeCheckM) Expr
+        go work _ _ (Constraint _ className' _ tys' _) | work > 1000 = throwError . errorMessage $ PossiblyInfiniteInstance className' tys'
+        go work hints' substitutedWith con@(Constraint _ className' kinds' tys' conInfo) = WriterT . StateT . (withErrorMessageHint (ErrorSolvingConstraint con) .) . runStateT . runWriterT $ do
             -- We might have unified types by solving other constraints, so we need to
             -- apply the latest substitution.
             latestSubst <- lift . lift $ gets checkSubstitution
-            let kinds'' = map (substituteType latestSubst) kinds'
-                tys'' = map (substituteType latestSubst) tys'
+            let applyLatest = maybe (substituteType latestSubst) (`substituteTypeSince` latestSubst) substitutedWith
+                kinds'' = map applyLatest kinds'
+                tys'' = map applyLatest tys'
 
             -- Get the inferred constraint context so far, and merge it with the global context
             inferred <- lift get
@@ -328,14 +329,14 @@ entails SolverOptions{..} constraint context hints =
                 -- type variables before unifying.
                 let subst = fmap (headDef $ internalError "entails: empty substitution") substs
                 currentSubst <- lift . lift $ gets checkSubstitution
-                subst' <- lift . lift $ withFreshTypes tcd (fmap (substituteType currentSubst) subst)
+                subst' <- lift . lift $ withFreshTypes tcd (fmap (substituteTypeSince latestSubst currentSubst) subst)
                 lift . lift $ zipWithM_ (\t1 t2 -> do
                   let inferredType = replaceAllTypeVars (M.toList subst') t1
                   unifyTypes inferredType t2) (tcdInstanceTypes tcd) tys''
                 currentSubst' <- lift . lift $ gets checkSubstitution
-                let subst'' = fmap (substituteType currentSubst') subst'
+                let subst'' = fmap (substituteTypeSince currentSubst currentSubst') subst'
                 -- Solve any necessary subgoals
-                args <- solveSubgoals subst'' (ErrorSolvingConstraint con) (tcdDependencies tcd)
+                args <- solveSubgoals currentSubst' subst'' (ErrorSolvingConstraint con) (tcdDependencies tcd)
 
                 initDict <- lift . lift $ mkDictionary (tcdValue tcd) args
 
@@ -434,10 +435,10 @@ entails SolverOptions{..} constraint context hints =
             -- Create dictionaries for subgoals which still need to be solved by calling go recursively
             -- E.g. the goal (Show a, Show b) => Show (Either a b) can be satisfied if the current type
             -- unifies with Either a b, and we can satisfy the subgoals Show a and Show b recursively.
-            solveSubgoals :: Matching SourceType -> ErrorMessageHint -> Maybe [SourceConstraint] -> WriterT (Any, [(Ident, InstanceContext, SourceConstraint)]) (StateT InstanceContext TypeCheckM) (Maybe [Expr])
-            solveSubgoals _ _ Nothing = return Nothing
-            solveSubgoals subst hint (Just subgoals) =
-              Just <$> traverse (rethrow (addHint hint) . go (work + 1) (hints' <> [hint]) . mapConstraintArgsAll (map (replaceAllTypeVars (M.toList subst)))) subgoals
+            solveSubgoals :: Substitution -> Matching SourceType -> ErrorMessageHint -> Maybe [SourceConstraint] -> WriterT (Any, [(Ident, InstanceContext, SourceConstraint)]) (StateT InstanceContext TypeCheckM) (Maybe [Expr])
+            solveSubgoals _ _ _ Nothing = return Nothing
+            solveSubgoals substitutedWith' subst hint (Just subgoals) =
+              Just <$> traverse (rethrow (addHint hint) . go (work + 1) (hints' <> [hint]) (Just substitutedWith') . mapConstraintArgsAll (map (replaceAllTypeVars (M.toList subst)))) subgoals
 
             -- We need subgoal dictionaries to appear in the term somewhere
             -- If there aren't any then the dictionary is just undefined

@@ -6,6 +6,7 @@ module Language.PureScript.TypeChecker.Unify
   , freshTypeWithKind
   , solveType
   , substituteType
+  , substituteTypeSince
   , unknownsInType
   , unifyTypes
   , unifyRows
@@ -30,7 +31,7 @@ import Language.PureScript.Crash (internalError)
 import Language.PureScript.Environment qualified as E
 import Language.PureScript.Errors (ErrorMessageHint(..), SimpleErrorMessage(..), SourceAnn, errorMessage, internalCompilerError, onErrorMessages, rethrow, warnWithPosition, withoutPosition)
 import Language.PureScript.TypeChecker.Kinds (elaborateKind, instantiateKind, unifyKinds')
-import Language.PureScript.TypeChecker.Monad (CheckState(..), Substitution(..), UnkLevel(..), Unknown, getLocalContext, guardWith, lookupUnkName, withErrorMessageHint, TypeCheckM)
+import Language.PureScript.TypeChecker.Monad (CheckState(..), Substitution(..), UnkLevel(..), Unknown, getLocalContext, guardWith, insertSolution, lookupUnkName, withErrorMessageHint, TypeCheckM)
 import Language.PureScript.TypeChecker.Skolems (newSkolemConstant, skolemize)
 import Language.PureScript.Types (Constraint(..), pattern REmptyKinded, RowListItem(..), SourceType, Type(..), WildcardData(..), alignRowsWith, everythingOnTypes, everywhereOnTypesM, rewriteTypesBottomUp, getAnnForType, mkForAll, rowFromList, srcTUnknown)
 
@@ -72,11 +73,7 @@ solveType u t = rethrow (onErrorMessages withoutPosition) $ do
   subst <- gets checkSubstitution
   k2 <- maybe (internalCompilerError ("No kind for unification variable ?" <> T.pack (show u))) (pure . substituteType subst . snd) . IM.lookup u . substUnsolved $ subst
   t' <- instantiateKind (t, k1) k2
-  modify $ \cs -> cs { checkSubstitution =
-                         (checkSubstitution cs) { substType =
-                                                    IM.insert u t' $ substType $ checkSubstitution cs
-                                                }
-                     }
+  modify $ \cs -> cs { checkSubstitution = insertSolution u t' (checkSubstitution cs) }
 
 -- | Apply a substitution to a type
 substituteType :: Substitution -> SourceType -> SourceType
@@ -90,6 +87,11 @@ substituteType sub
       Just t@(TUnknown _ u1) | u1 == u -> Just t
       Just t -> Just $! substituteType sub t
   go _ = Nothing
+
+substituteTypeSince :: Substitution -> Substitution -> SourceType -> SourceType
+substituteTypeSince old new
+  | substSolutions old == substSolutions new = id
+  | otherwise = substituteType new
 
 -- | Make sure that an unknown does not occur in a type
 occursCheck :: Int -> SourceType -> TypeCheckM ()

@@ -138,7 +138,11 @@ data Substitution = Substitution
   -- ^ Unsolved unification variables with their level (scope ordering) and kind
   , substNames :: IM.IntMap Text
   -- ^ The original names of unknowns
+  , substSolutions :: !Int
   }
+
+insertSolution :: Unknown -> SourceType -> Substitution -> Substitution
+insertSolution u t sub = sub { substType = IM.insert u t (substType sub), substSolutions = substSolutions sub + 1 }
 
 insertUnkName :: (MonadState CheckState m) => Unknown -> Text -> m ()
 insertUnkName u t = do
@@ -155,7 +159,7 @@ lookupUnkName u = gets $ IM.lookup u . substNames . checkSubstitution
 
 -- | An empty substitution
 emptySubstitution :: Substitution
-emptySubstitution = Substitution IM.empty IM.empty IM.empty
+emptySubstitution = Substitution IM.empty IM.empty IM.empty 0
 
 -- | State required for type checking
 data CheckState = CheckState
@@ -550,7 +554,7 @@ debugValue :: Expr -> String
 debugValue = init . render . prettyPrintValue 100
 
 debugSubstitution :: Substitution -> [String]
-debugSubstitution (Substitution solved unsolved names) =
+debugSubstitution (Substitution solved unsolved names _) =
   concat
     [ fmap go1 (IM.toList solved)
     , fmap go2 (IM.toList unsolved')

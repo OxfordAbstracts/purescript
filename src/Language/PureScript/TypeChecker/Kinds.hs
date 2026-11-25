@@ -53,7 +53,7 @@ import Language.PureScript.Crash (HasCallStack, internalError)
 import Language.PureScript.Environment qualified as E
 import Language.PureScript.Errors
 import Language.PureScript.Names (pattern ByNullSourcePos, ModuleName, Name(..), ProperName(..), ProperNameType(..), Qualified(..), QualifiedBy(..), coerceProperName, mkQualified)
-import Language.PureScript.TypeChecker.Monad (CheckState(..), Substitution(..), UnkLevel(..), Unknown, bindLocalTypeVariables, debugType, getEnv, lookupTypeVariable, unsafeCheckCurrentModule, withErrorMessageHint, withFreshSubstitution, TypeCheckM)
+import Language.PureScript.TypeChecker.Monad (CheckState(..), Substitution(..), UnkLevel(..), Unknown, bindLocalTypeVariables, insertSolution, debugType, getEnv, lookupTypeVariable, unsafeCheckCurrentModule, withErrorMessageHint, withFreshSubstitution, TypeCheckM)
 import Language.PureScript.TypeChecker.Skolems (newSkolemConstant, newSkolemScope, skolemize)
 import Language.PureScript.TypeChecker.Synonyms (replaceAllTypeSynonyms)
 import Language.PureScript.Types
@@ -130,11 +130,8 @@ addUnsolved lvl unk kind = modify $ \st -> do
   st { checkSubstitution = subs { substUnsolved = uns } }
 
 solve :: Unknown -> SourceType -> TypeCheckM ()
-solve unk solution = modify $ \st -> do
-  let
-    subs = checkSubstitution st
-    tys = IM.insert unk solution $ substType subs
-  st { checkSubstitution = subs { substType = tys } }
+solve unk solution = modify $ \st ->
+  st { checkSubstitution = insertSolution unk solution (checkSubstitution st) }
 
 lookupUnsolved
   :: HasCallStack
