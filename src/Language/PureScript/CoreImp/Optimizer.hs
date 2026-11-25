@@ -21,14 +21,15 @@ module Language.PureScript.CoreImp.Optimizer (optimize) where
 
 import Prelude
 
+import Control.Applicative ((<|>))
 import Data.Map qualified as M
 import Data.Maybe (fromMaybe, isJust)
 import Data.Text (Text)
 
 import Control.Monad.Supply.Class (MonadSupply)
-import Language.PureScript.CoreImp.AST (AST(..), InitializerEffects(..), anywhere, everywhere, everywhereTopDown, everywhereTopDownM)
+import Language.PureScript.CoreImp.AST (AST(..), InitializerEffects(..), anywhere, rewriteBottomUp, rewriteTopDown, rewriteTopDownM)
 import Language.PureScript.CoreImp.Optimizer.Blocks (collapseNestedBlocks, collapseNestedIfs)
-import Language.PureScript.CoreImp.Optimizer.Common (applyAll)
+import Language.PureScript.CoreImp.Optimizer.Common (applyRules)
 import Language.PureScript.CoreImp.Optimizer.Inliner (etaConvert, evaluateIifes, inlineCommonOperators, inlineCommonValues, inlineFnComposition, inlineFnIdentity, inlineUnsafeCoerce, inlineUnsafePartial, inlineVariables, unThunk)
 import Language.PureScript.CoreImp.Optimizer.MagicDo (inlineST, magicDoEff, magicDoEffect, magicDoST)
 import Language.PureScript.CoreImp.Optimizer.TCO (tco)
@@ -46,14 +47,18 @@ optimize exps jsDecls = removeUnusedEffectFreeVars exps <$> traverse (traverse g
         =<< magicDoUntilFixedPoint (magicDoEff expander)
         =<< magicDoUntilFixedPoint (magicDoEffect expander) js'
 
-    inline :: AST -> m AST
-    inline = everywhereTopDownM (\js -> fromMaybe (return js) (inlineFnComposition expander js))
-      . everywhereTopDown (orUnchanged (inlineFnIdentity expander))
-      . everywhereTopDown (orUnchanged inlineUnsafeCoerce)
-      . everywhereTopDown (orUnchanged inlineUnsafePartial)
-      . tidyUp
-      . everywhere (orUnchanged (inlineCommonValues expander))
-      . everywhereTopDown (orUnchanged (inlineCommonOperators expander))
+    inline :: AST -> m (Maybe AST)
+    inline js = do
+      let rewritten = applyRules
+            [ rewriteTopDown (inlineFnIdentity expander)
+            , rewriteTopDown inlineUnsafeCoerce
+            , rewriteTopDown inlineUnsafePartial
+            , tidyUp
+            , rewriteBottomUp (inlineCommonValues expander)
+            , rewriteTopDown (inlineCommonOperators expander)
+            ] js
+      composed <- rewriteTopDownM (inlineFnComposition expander) (fromMaybe js rewritten)
+      return (composed <|> rewritten)
 
     inlineApplies :: AST -> Bool
     inlineApplies = anywhere $ \js ->
@@ -66,10 +71,10 @@ optimize exps jsDecls = removeUnusedEffectFreeVars exps <$> traverse (traverse g
         || isJust (inlineFnComposition expander js :: Maybe (m AST))
 
     magicDoUntilFixedPoint :: (AST -> Maybe AST) -> AST -> m AST
-    magicDoUntilFixedPoint rule = untilFixedPointWhen (anyRuleApplies [rule]) (return . everywhereTopDown (orUnchanged rule))
+    magicDoUntilFixedPoint rule = untilFixedPointWhen (anyRuleApplies [rule]) (return . rewriteTopDown rule)
 
-    tidyUp :: AST -> AST
-    tidyUp = applyAll (map (everywhere . orUnchanged) tidyUpRules)
+    tidyUp :: AST -> Maybe AST
+    tidyUp = applyRules (map rewriteBottomUp tidyUpRules)
 
     tidyUpRules :: [AST -> Maybe AST]
     tidyUpRules =
@@ -92,17 +97,14 @@ untilFixedPoint f = go
    a' <- f a
    if a' == a then return a' else go a'
 
-untilFixedPointWhen :: (Monad m, Eq a) => (a -> Bool) -> (a -> m a) -> a -> m a
+untilFixedPointWhen :: (Monad m, Eq a) => (a -> Bool) -> (a -> m (Maybe a)) -> a -> m a
 untilFixedPointWhen applies f = go
   where
   go a
-    | applies a = do
-        a' <- f a
-        if a' == a then return a' else go a'
+    | applies a = f a >>= \case
+        Just a' | a' /= a -> go a'
+        _ -> return a
     | otherwise = return a
-
-orUnchanged :: (AST -> Maybe AST) -> AST -> AST
-orUnchanged rule js = fromMaybe js (rule js)
 
 anyRuleApplies :: [AST -> Maybe AST] -> AST -> Bool
 anyRuleApplies rules = anywhere (\js -> any (\rule -> isJust (rule js)) rules)

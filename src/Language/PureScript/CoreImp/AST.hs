@@ -5,6 +5,7 @@ import Prelude
 
 import Control.Monad ((>=>))
 import Control.Monad.Identity (Identity(..), runIdentity)
+import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 
 import Language.PureScript.AST (SourceSpan(..))
@@ -199,6 +200,114 @@ everywhere f = go where
   go (InstanceOf ss j1 j2) = f (InstanceOf ss (go j1) (go j2))
   go (Comment com j) = f (Comment com (go j))
   go other = f other
+
+rewriteBottomUp :: (AST -> Maybe AST) -> AST -> Maybe AST
+rewriteBottomUp f = go where
+  go :: AST -> Maybe AST
+  go js = case js of
+    Unary ss op j -> rebuild1 (Unary ss op) j
+    Binary ss op j1 j2 -> rebuild2 (Binary ss op) j1 j2
+    ArrayLiteral ss js' -> rebuildList (ArrayLiteral ss) js'
+    Indexer ss j1 j2 -> rebuild2 (Indexer ss) j1 j2
+    ObjectLiteral ss props -> maybe (f js) (changed . ObjectLiteral ss) (rewriteList (\(k, v) -> (k,) <$> go v) props)
+    Function ss name args j -> rebuild1 (Function ss name args) j
+    App ss j js' -> case (go j, rewriteList go js') of
+      (Nothing, Nothing) -> f js
+      (j', js'') -> changed $ App ss (fromMaybe j j') (fromMaybe js' js'')
+    Block ss js' -> rebuildList (Block ss) js'
+    VariableIntroduction ss name (Just (eff, j)) -> rebuild1 (VariableIntroduction ss name . Just . (eff,)) j
+    Assignment ss j1 j2 -> rebuild2 (Assignment ss) j1 j2
+    While ss j1 j2 -> rebuild2 (While ss) j1 j2
+    For ss name j1 j2 j3 -> case (go j1, go j2, go j3) of
+      (Nothing, Nothing, Nothing) -> f js
+      (j1', j2', j3') -> changed $ For ss name (fromMaybe j1 j1') (fromMaybe j2 j2') (fromMaybe j3 j3')
+    ForIn ss name j1 j2 -> rebuild2 (ForIn ss name) j1 j2
+    IfElse ss j1 j2 Nothing -> rebuild2 (\j1' j2' -> IfElse ss j1' j2' Nothing) j1 j2
+    IfElse ss j1 j2 (Just j3) -> case (go j1, go j2, go j3) of
+      (Nothing, Nothing, Nothing) -> f js
+      (j1', j2', j3') -> changed $ IfElse ss (fromMaybe j1 j1') (fromMaybe j2 j2') (Just (fromMaybe j3 j3'))
+    Return ss j -> rebuild1 (Return ss) j
+    Throw ss j -> rebuild1 (Throw ss) j
+    InstanceOf ss j1 j2 -> rebuild2 (InstanceOf ss) j1 j2
+    Comment com j -> rebuild1 (Comment com) j
+    _ -> f js
+    where
+    rebuild1 con j = maybe (f js) (changed . con) (go j)
+    rebuild2 con j1 j2 = case (go j1, go j2) of
+      (Nothing, Nothing) -> f js
+      (j1', j2') -> changed $ con (fromMaybe j1 j1') (fromMaybe j2 j2')
+    rebuildList con js' = maybe (f js) (changed . con) (rewriteList go js')
+  changed js' = Just (fromMaybe js' (f js'))
+
+rewriteList :: (a -> Maybe a) -> [a] -> Maybe [a]
+rewriteList f = go where
+  go [] = Nothing
+  go (x : xs) = case (f x, go xs) of
+    (Nothing, Nothing) -> Nothing
+    (x', xs') -> Just (fromMaybe x x' : fromMaybe xs xs')
+
+rewriteTopDown :: (AST -> Maybe AST) -> AST -> Maybe AST
+rewriteTopDown f = runIdentity . rewriteTopDownM (fmap Identity . f)
+
+rewriteTopDownM :: Monad m => (AST -> Maybe (m AST)) -> AST -> m (Maybe AST)
+rewriteTopDownM f = top where
+  top js = case f js of
+    Nothing -> descend js
+    Just m -> do
+      js' <- m
+      Just . fromMaybe js' <$> descend js'
+  descend js = case js of
+    Unary ss op j -> fmap (Unary ss op) <$> top j
+    Binary ss op j1 j2 -> two (Binary ss op) j1 j2
+    ArrayLiteral ss js' -> fmap (ArrayLiteral ss) <$> list top js'
+    Indexer ss j1 j2 -> two (Indexer ss) j1 j2
+    ObjectLiteral ss props -> fmap (ObjectLiteral ss) <$> list (\(k, v) -> fmap (k,) <$> top v) props
+    Function ss name args j -> fmap (Function ss name args) <$> top j
+    App ss j js' -> do
+      j' <- top j
+      js'' <- list top js'
+      pure $ case (j', js'') of
+        (Nothing, Nothing) -> Nothing
+        _ -> Just $ App ss (fromMaybe j j') (fromMaybe js' js'')
+    Block ss js' -> fmap (Block ss) <$> list top js'
+    VariableIntroduction _ _ Nothing -> pure Nothing
+    VariableIntroduction ss name (Just (eff, j)) -> fmap (VariableIntroduction ss name . Just . (eff,)) <$> top j
+    Assignment ss j1 j2 -> two (Assignment ss) j1 j2
+    While ss j1 j2 -> two (While ss) j1 j2
+    For ss name j1 j2 j3 -> do
+      j1' <- top j1
+      j2' <- top j2
+      j3' <- top j3
+      pure $ case (j1', j2', j3') of
+        (Nothing, Nothing, Nothing) -> Nothing
+        _ -> Just $ For ss name (fromMaybe j1 j1') (fromMaybe j2 j2') (fromMaybe j3 j3')
+    ForIn ss name j1 j2 -> two (ForIn ss name) j1 j2
+    IfElse ss j1 j2 j3 -> do
+      j1' <- top j1
+      j2' <- top j2
+      j3' <- maybe (pure Nothing) top j3
+      pure $ case (j1', j2', j3') of
+        (Nothing, Nothing, Nothing) -> Nothing
+        _ -> Just $ IfElse ss (fromMaybe j1 j1') (fromMaybe j2 j2') (maybe j3 Just j3')
+    Return ss j -> fmap (Return ss) <$> top j
+    Throw ss j -> fmap (Throw ss) <$> top j
+    InstanceOf ss j1 j2 -> two (InstanceOf ss) j1 j2
+    Comment com j -> fmap (Comment com) <$> top j
+    _ -> maybe (pure Nothing) (fmap Just) (f js)
+  two con j1 j2 = do
+    j1' <- top j1
+    j2' <- top j2
+    pure $ case (j1', j2') of
+      (Nothing, Nothing) -> Nothing
+      _ -> Just $ con (fromMaybe j1 j1') (fromMaybe j2 j2')
+  list g = go where
+    go [] = pure Nothing
+    go (x : xs) = do
+      x' <- g x
+      xs' <- go xs
+      pure $ case (x', xs') of
+        (Nothing, Nothing) -> Nothing
+        _ -> Just (fromMaybe x x' : fromMaybe xs xs')
 
 everywhereTopDown :: (AST -> AST) -> AST -> AST
 everywhereTopDown f = runIdentity . everywhereTopDownM (Identity . f)

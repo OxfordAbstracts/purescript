@@ -8,7 +8,7 @@ import Data.List (foldl')
 import Data.Maybe (fromMaybe)
 
 import Language.PureScript.Crash (internalError)
-import Language.PureScript.CoreImp.AST (AST(..), everything, everywhere)
+import Language.PureScript.CoreImp.AST (AST(..), everything, rewriteBottomUp)
 import Language.PureScript.Names (ModuleName)
 import Language.PureScript.PSString (PSString)
 
@@ -23,16 +23,16 @@ applyRules rules a = case foldr applyRule (False, a) rules of
   applyRule rule (changed, a') = maybe (changed, a') (True,) (rule a')
 
 replaceIdent :: Text -> AST -> AST -> AST
-replaceIdent var1 js = everywhere replace
+replaceIdent var1 js ast = fromMaybe ast (rewriteBottomUp replace ast)
   where
-  replace (Var _ var2) | var1 == var2 = js
-  replace other = other
+  replace (Var _ var2) | var1 == var2 = Just js
+  replace _ = Nothing
 
 replaceIdents :: [(Text, AST)] -> AST -> AST
-replaceIdents vars = everywhere replace
+replaceIdents vars ast = fromMaybe ast (rewriteBottomUp replace ast)
   where
-  replace v@(Var _ var) = fromMaybe v $ lookup var vars
-  replace other = other
+  replace (Var _ var) = lookup var vars
+  replace _ = Nothing
 
 isReassigned :: Text -> AST -> Bool
 isReassigned var1 = everything (||) check
