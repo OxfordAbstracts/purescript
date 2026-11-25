@@ -522,28 +522,65 @@ replaceTypeVars v r = replaceAllTypeVars [(v, r)]
 
 -- | Replace named type variables with types
 replaceAllTypeVars :: [(Text, Type a)] -> Type a -> Type a
-replaceAllTypeVars = go [] where
-  go :: [Text] -> [(Text, Type a)] -> Type a -> Type a
-  go _  m (TypeVar ann v) = fromMaybe (TypeVar ann v) (v `lookup` m)
-  go bs m (TypeApp ann t1 t2) = TypeApp ann (go bs m t1) (go bs m t2)
-  go bs m (KindApp ann t1 t2) = KindApp ann (go bs m t1) (go bs m t2)
-  go bs m (ForAll ann vis v mbK t sco)
-    | v `elem` keys = go bs (filter ((/= v) . fst) m) $ ForAll ann vis v mbK' t sco
+replaceAllTypeVars m0 t0 = fromMaybe t0 (go [] m0 t0) where
+  go :: [Text] -> [(Text, Type a)] -> Type a -> Maybe (Type a)
+  go _ [] _ = Nothing
+  go _ m (TypeVar _ v) = v `lookup` m
+  go bs m (TypeApp ann t1 t2) = rebuild2 (TypeApp ann) (go bs m) t1 t2
+  go bs m (KindApp ann t1 t2) = rebuild2 (KindApp ann) (go bs m) t1 t2
+  go bs m ty@(ForAll ann vis v mbK t sco)
+    | v `elem` keys =
+      let inner = maybe ty (\k -> ForAll ann vis v (Just k) t sco) mbK'
+      in case go bs (filter ((/= v) . fst) m) inner of
+        Nothing -> inner <$ mbK'
+        r -> r
     | v `elem` usedVars =
       let v' = genPureName v (keys ++ bs ++ usedVars)
-          t' = go bs [(v, TypeVar ann v')] t
-      in ForAll ann vis v' mbK' (go (v' : bs) m t') sco
-    | otherwise = ForAll ann vis v mbK' (go (v : bs) m t) sco
+          !t' = full bs [(v, TypeVar ann v')] t
+          !t'' = full (v' : bs) m t'
+          !k = maybe mbK Just mbK'
+      in Just (ForAll ann vis v' k t'' sco)
+    | otherwise = case (mbK', go (v : bs) m t) of
+      (Nothing, Nothing) -> Nothing
+      (k', t') ->
+        let !k = maybe mbK Just k'
+            !body = fromMaybe t t'
+        in Just (ForAll ann vis v k body sco)
     where
-      mbK' = go bs m <$> mbK
+      mbK' = go bs m =<< mbK
       keys = map fst m
       usedVars = concatMap (usedTypeVariables . snd) m
-  go bs m (ConstrainedType ann c t) = ConstrainedType ann (mapConstraintArgsAll (map (go bs m)) c) (go bs m t)
-  go bs m (RCons ann name' t r) = RCons ann name' (go bs m t) (go bs m r)
-  go bs m (KindedType ann t k) = KindedType ann (go bs m t) (go bs m k)
-  go bs m (BinaryNoParensType ann t1 t2 t3) = BinaryNoParensType ann (go bs m t1) (go bs m t2) (go bs m t3)
-  go bs m (ParensInType ann t) = ParensInType ann (go bs m t)
-  go _  _ ty = ty
+  go bs m (ConstrainedType ann c t) =
+    let kargs' = map (go bs m) (constraintKindArgs c)
+        args' = map (go bs m) (constraintArgs c)
+        t' = go bs m t
+    in if all null kargs' && all null args' && null t'
+      then Nothing
+      else
+        let !c' = c { constraintKindArgs = zipWith fromMaybe (constraintKindArgs c) kargs', constraintArgs = zipWith fromMaybe (constraintArgs c) args' }
+            !body = fromMaybe t t'
+        in Just (ConstrainedType ann c' body)
+  go bs m (RCons ann name' t r) = rebuild2 (RCons ann name') (go bs m) t r
+  go bs m (KindedType ann t k) = rebuild2 (KindedType ann) (go bs m) t k
+  go bs m (BinaryNoParensType ann t1 t2 t3) = case (go bs m t1, go bs m t2, go bs m t3) of
+    (Nothing, Nothing, Nothing) -> Nothing
+    (t1', t2', t3') ->
+      let !a = fromMaybe t1 t1'
+          !b = fromMaybe t2 t2'
+          !c = fromMaybe t3 t3'
+      in Just (BinaryNoParensType ann a b c)
+  go bs m (ParensInType ann t) = case go bs m t of
+    Nothing -> Nothing
+    Just t' -> Just $! ParensInType ann t'
+  go _ _ _ = Nothing
+
+  full bs m t = fromMaybe t (go bs m t)
+
+  rebuild2 con f t1 t2 = case f t1 of
+    Nothing -> case f t2 of
+      Nothing -> Nothing
+      Just t2' -> Just $! con t1 t2'
+    Just t1' -> let !t2' = fromMaybe t2 (f t2) in Just $! con t1' t2'
 
 genPureName :: Text -> [Text] -> Text
 genPureName orig inUse = try' 0
