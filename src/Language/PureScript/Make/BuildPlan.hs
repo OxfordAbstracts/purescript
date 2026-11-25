@@ -16,6 +16,7 @@ import Prelude
 import Control.Concurrent.Async.Chunked (forConcurrentlyChunked)
 import Control.Concurrent.Async.Lifted qualified as A
 import Control.Concurrent.Lifted qualified as C
+import Control.Exception.Lifted (bracket_)
 import Control.Monad.Base (liftBase)
 import Control.Monad (foldM, guard)
 import Control.Monad.Trans.Control (MonadBaseControl(..))
@@ -222,11 +223,14 @@ construct Options{..} MakeActions{..} cacheDb (sorted, graph) = do
           )
           rebuildMap
 
+  capabilities <- C.getNumCapabilities
+  loadLock <- C.newQSem (max 1 capabilities)
+  let load mn = bracket_ (C.waitQSem loadLock) (C.signalQSem loadLock) . loadPrebuilt mn
   (prebuiltLoad, prevLoad) <-
     A.concurrently
-      (A.mapConcurrently id $ M.mapWithKey loadPrebuilt toLoadPrebuilt)
+      (A.mapConcurrently id $ M.mapWithKey load toLoadPrebuilt)
       (A.mapConcurrently id $ M.mapWithKey
-        (\mn (up, ts) -> fmap (up,) <$> loadPrebuilt mn ts) toLoadPrev)
+        (\mn (up, ts) -> fmap (up,) <$> load mn ts) toLoadPrev)
 
   let prebuilt = M.mapMaybe id prebuiltLoad
   let previous = M.mapMaybe id prevLoad
