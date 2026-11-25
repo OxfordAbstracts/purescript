@@ -205,38 +205,40 @@ rewriteBottomUp :: (AST -> Maybe AST) -> AST -> Maybe AST
 rewriteBottomUp f = go where
   go :: AST -> Maybe AST
   go js = case js of
-    Unary ss op j -> rebuild1 (Unary ss op) j
-    Binary ss op j1 j2 -> rebuild2 (Binary ss op) j1 j2
-    ArrayLiteral ss js' -> rebuildList (ArrayLiteral ss) js'
-    Indexer ss j1 j2 -> rebuild2 (Indexer ss) j1 j2
+    Unary ss op j -> rebuild1 js (Unary ss op) j
+    Binary ss op j1 j2 -> rebuild2 js (Binary ss op) j1 j2
+    ArrayLiteral ss js' -> rebuildList js (ArrayLiteral ss) js'
+    Indexer ss j1 j2 -> rebuild2 js (Indexer ss) j1 j2
     ObjectLiteral ss props -> maybe (f js) (changed . ObjectLiteral ss) (rewriteList (\(k, v) -> (k,) <$> go v) props)
-    Function ss name args j -> rebuild1 (Function ss name args) j
+    Function ss name args j -> rebuild1 js (Function ss name args) j
     App ss j js' -> case (go j, rewriteList go js') of
       (Nothing, Nothing) -> f js
       (j', js'') -> changed $ App ss (fromMaybe j j') (fromMaybe js' js'')
-    Block ss js' -> rebuildList (Block ss) js'
-    VariableIntroduction ss name (Just (eff, j)) -> rebuild1 (VariableIntroduction ss name . Just . (eff,)) j
-    Assignment ss j1 j2 -> rebuild2 (Assignment ss) j1 j2
-    While ss j1 j2 -> rebuild2 (While ss) j1 j2
+    Block ss js' -> rebuildList js (Block ss) js'
+    VariableIntroduction ss name (Just (eff, j)) -> rebuild1 js (VariableIntroduction ss name . Just . (eff,)) j
+    Assignment ss j1 j2 -> rebuild2 js (Assignment ss) j1 j2
+    While ss j1 j2 -> rebuild2 js (While ss) j1 j2
     For ss name j1 j2 j3 -> case (go j1, go j2, go j3) of
       (Nothing, Nothing, Nothing) -> f js
       (j1', j2', j3') -> changed $ For ss name (fromMaybe j1 j1') (fromMaybe j2 j2') (fromMaybe j3 j3')
-    ForIn ss name j1 j2 -> rebuild2 (ForIn ss name) j1 j2
-    IfElse ss j1 j2 Nothing -> rebuild2 (\j1' j2' -> IfElse ss j1' j2' Nothing) j1 j2
+    ForIn ss name j1 j2 -> rebuild2 js (ForIn ss name) j1 j2
+    IfElse ss j1 j2 Nothing -> rebuild2 js (\j1' j2' -> IfElse ss j1' j2' Nothing) j1 j2
     IfElse ss j1 j2 (Just j3) -> case (go j1, go j2, go j3) of
       (Nothing, Nothing, Nothing) -> f js
       (j1', j2', j3') -> changed $ IfElse ss (fromMaybe j1 j1') (fromMaybe j2 j2') (Just (fromMaybe j3 j3'))
-    Return ss j -> rebuild1 (Return ss) j
-    Throw ss j -> rebuild1 (Throw ss) j
-    InstanceOf ss j1 j2 -> rebuild2 (InstanceOf ss) j1 j2
-    Comment com j -> rebuild1 (Comment com) j
+    Return ss j -> rebuild1 js (Return ss) j
+    Throw ss j -> rebuild1 js (Throw ss) j
+    InstanceOf ss j1 j2 -> rebuild2 js (InstanceOf ss) j1 j2
+    Comment com j -> rebuild1 js (Comment com) j
     _ -> f js
-    where
-    rebuild1 con j = maybe (f js) (changed . con) (go j)
-    rebuild2 con j1 j2 = case (go j1, go j2) of
-      (Nothing, Nothing) -> f js
-      (j1', j2') -> changed $ con (fromMaybe j1 j1') (fromMaybe j2 j2')
-    rebuildList con js' = maybe (f js) (changed . con) (rewriteList go js')
+  {-# INLINE rebuild1 #-}
+  rebuild1 js con j = maybe (f js) (changed . con) (go j)
+  {-# INLINE rebuild2 #-}
+  rebuild2 js con j1 j2 = case (go j1, go j2) of
+    (Nothing, Nothing) -> f js
+    (j1', j2') -> changed $ con (fromMaybe j1 j1') (fromMaybe j2 j2')
+  {-# INLINE rebuildList #-}
+  rebuildList js con js' = maybe (f js) (changed . con) (rewriteList go js')
   changed js' = Just (fromMaybe js' (f js'))
 
 rewriteList :: (a -> Maybe a) -> [a] -> Maybe [a]
