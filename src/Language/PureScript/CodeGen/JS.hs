@@ -188,8 +188,14 @@ moduleToJs (Module _ coms mn _ imps exps reExps foreigns decls) foreignInclude =
 
   -- Check that all integers fall within the valid int range for JavaScript.
   checkIntegers :: AST -> m ()
-  checkIntegers = void . everywhereTopDownM go
+  checkIntegers ast
+    | AST.anywhere mayBeOutOfRange ast = void (everywhereTopDownM go ast)
+    | otherwise = pure ()
     where
+    outOfRange i = i < -2147483648 || i > 2147483647
+    mayBeOutOfRange (AST.NumericLiteral _ (Left i)) = outOfRange i
+    mayBeOutOfRange (AST.Unary _ AST.Negate (AST.NumericLiteral _ (Left i))) = outOfRange (negate i)
+    mayBeOutOfRange _ = False
     go :: AST -> m AST
     go (AST.Unary _ AST.Negate (AST.NumericLiteral ss (Left i))) =
       -- Move the negation inside the literal; since this is a top-down
