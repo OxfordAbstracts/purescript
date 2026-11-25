@@ -786,6 +786,7 @@ rewriteTypesBottomUp f t = fromMaybe t (go t) where
       Nothing -> f ty
       Just t1' -> changed $ ParensInType ann t1'
     _ -> f ty
+  {-# INLINE rebuild2 #-}
   rebuild2 ty con t1 t2 = case go t1 of
     Nothing -> case go t2 of
       Nothing -> f ty
