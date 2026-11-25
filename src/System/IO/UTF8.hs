@@ -13,7 +13,11 @@ import Protolude (ordNub)
 -- | Unfortunately ByteString's readFile does not convert line endings on
 -- Windows, so we have to do it ourselves
 fixCRLF :: BS.ByteString -> BS.ByteString
-fixCRLF = BSL.toStrict . BSS.replace "\r\n" ("\n" :: BS.ByteString)
+fixCRLF bytes
+  | BS.elem carriageReturn bytes = BSL.toStrict (BSS.replace "\r\n" ("\n" :: BS.ByteString) bytes)
+  | otherwise = bytes
+  where
+  carriageReturn = 13
 
 readUTF8FilesT :: [FilePath] -> IO [(FilePath, Text)]
 readUTF8FilesT =
