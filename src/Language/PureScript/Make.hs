@@ -268,7 +268,8 @@ make' MakeOptions{..} ma@MakeActions{..} ms = do
       (T.unpack . spanName . getModuleSourceSpan . CST.resPartial $ m)
       (fst $ CST.resFull m)
       (fmap importPrim . snd $ CST.resFull m)
-      (map (modulesByRank !) . IS.toAscList $ transitiveDepRanks ! rank)
+      (transitiveDepRanks ! rank)
+      (modulesByRank !)
 
       -- Prevent hanging on other modules when there is an internal error
       -- (the exception is thrown, but other threads waiting on MVars are released)
@@ -340,13 +341,14 @@ make' MakeOptions{..} ma@MakeActions{..} ms = do
       [] -> Nothing
       xss -> Just xss
 
-  buildModule :: QSem -> (ProgressMessage -> m ()) -> BuildPlan -> ModuleName -> Int -> FilePath -> [CST.ParserWarning] -> Either (NEL.NonEmpty CST.ParserError) Module -> [ModuleName] -> m ()
-  buildModule lock reportProgress buildPlan moduleName cnt fp pwarnings mres deps = do
+  buildModule :: QSem -> (ProgressMessage -> m ()) -> BuildPlan -> ModuleName -> Int -> FilePath -> [CST.ParserWarning] -> Either (NEL.NonEmpty CST.ParserError) Module -> IS.IntSet -> (Int -> ModuleName) -> m ()
+  buildModule lock reportProgress buildPlan moduleName cnt fp pwarnings mres depRanks moduleAtRank = do
     result <- flip catchError (return . BuildJobFailed) $ do
       -- We need to wait for dependencies to be built, before checking if the current
       -- module should be rebuilt, so the first thing to do is to wait on the
       -- MVars for the module's dependencies.
-      for_ deps $ getResult buildPlan
+      IS.foldr (\rank rest -> getResult buildPlan (moduleAtRank rank) >> rest) (pure ()) depRanks
+      let deps = map moduleAtRank (IS.toAscList depRanks)
       mexterns <- fmap unzip . sequence <$> traverse (getResult buildPlan) deps
       let pwarnings' = CST.toMultipleWarnings fp pwarnings
       let parsed = tell pwarnings' *> CST.unwrapParserError fp mres
