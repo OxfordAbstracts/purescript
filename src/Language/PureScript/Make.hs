@@ -286,8 +286,9 @@ make' MakeOptions{..} ma@MakeActions{..} ms = do
 
   flushProgress progress progressQueue
 
-  -- Write the updated build cache database to disk
-  writeCacheDb $ Cache.removeModules (M.keysSet failures) newCacheDb
+  let updatedCacheDb = Cache.removeModules (M.keysSet failures) newCacheDb
+  unless (totalModuleCount == 0 && updatedCacheDb == cacheDb) $
+    writeCacheDb updatedCacheDb
 
   writePackageJson
 
