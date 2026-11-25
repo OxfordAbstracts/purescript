@@ -27,6 +27,7 @@ import Control.Parallel.Strategies (parListChunk, rseq, withStrategy)
 import Data.Array (Array, bounds, listArray, (!))
 import Data.Function (on)
 import Data.Foldable (fold, for_, traverse_)
+import Data.Functor (($>))
 import Data.List (foldl', sortOn)
 import Data.IntSet qualified as IS
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef)
@@ -51,7 +52,7 @@ import Language.PureScript.Sugar (Env, collapseBindingGroups, createBindingGroup
 import Language.PureScript.TypeChecker (CheckState(..), emptyCheckState, typeCheckModule)
 import Language.PureScript.Make.BuildPlan (BuildJobResult(..), BuildPlan(..), getResult, isUpToDate)
 import Language.PureScript.Make.BuildPlan qualified as BuildPlan
-import Language.PureScript.Make.ExternsDiff (checkDiffs, emptyDiff, diffExterns)
+import Language.PureScript.Make.ExternsDiff (checkDiffs, emptyDiff, diffExterns, isEmptyDiff)
 import Language.PureScript.Make.Cache qualified as Cache
 import Language.PureScript.Make.Actions as Actions
 import Language.PureScript.Make.Monad as Monad
@@ -348,21 +349,21 @@ make' MakeOptions{..} ma@MakeActions{..} ms = do
       for_ deps $ getResult buildPlan
       mexterns <- fmap unzip . sequence <$> traverse (getResult buildPlan) deps
       let pwarnings' = CST.toMultipleWarnings fp pwarnings
-      tell pwarnings'
-      m <- CST.unwrapParserError fp mres
+      let parsed = tell pwarnings' *> CST.unwrapParserError fp mres
 
       case mexterns of
         Just (_, depsDiffExterns) -> do
           let externs = fst <$> depsDiffExterns
           let prevResult = BuildPlan.getPrevResult buildPlan moduleName
           let depsDiffs = traverse snd depsDiffExterns
+          let affectedBy diffs = not (all isEmptyDiff diffs) && either (const True) (`checkDiffs` diffs) mres
           let maySkipBuild moduleIndex
                 -- We may skip built only for up-to-date modules.
                 | Just (status, exts) <- prevResult
                 , isUpToDate status
                 -- Check if no dep's externs have changed. If any of the diffs
                 -- is Nothing means we can not check and need to rebuild.
-                , Just False <- checkDiffs m <$> depsDiffs = do
+                , Just False <- affectedBy <$> depsDiffs = do
                   -- We should update modification times to mark existing
                   -- compilation results as actual. If it fails to update timestamp
                   -- on any of exiting codegen targets, it will run the build process.
@@ -378,6 +379,7 @@ make' MakeOptions{..} ma@MakeActions{..} ms = do
 
           (exts, warnings, diff) <- do
             let doBuild = do
+                  m <- parsed
                   traverse_ evaluate externs
                   C.modifyMVar_ (bpEnv buildPlan) $ \env -> do
                     let missing = filter (\(dep, _) -> not (M.member dep env)) (zip deps externs)
@@ -405,14 +407,14 @@ make' MakeOptions{..} ma@MakeActions{..} ms = do
                     liftBase $ traceMarkerIO $ T.unpack (runModuleName moduleName) <> " end"
                     return extsAndWarnings
                   diff <- liftBase . evaluate $ diffExterns exts <$> (snd <$> prevResult) <*> depsDiffs
-                  pure (exts, warnings, diff)
+                  pure (exts, pwarnings' <> warnings, diff)
             maySkipBuild (Just (idx, cnt)) >>= maybe doBuild pure
-          return $ BuildJobSucceeded (pwarnings' <> warnings) exts diff
+          return $ BuildJobSucceeded warnings exts diff
 
         -- If we got Nothing for deps externs, that means one of the deps failed
         -- to compile. Though if we have a previous built result we will keep to
         -- avoid potentially unnecessary recompilation next time.
-        Nothing -> return $
+        Nothing -> parsed $>
           case BuildPlan.getPrevResult buildPlan moduleName of
             Just (_, exts) ->
               BuildJobSucceeded (MultipleErrors []) exts (Just (emptyDiff moduleName))

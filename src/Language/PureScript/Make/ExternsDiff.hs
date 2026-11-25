@@ -1,6 +1,7 @@
 module Language.PureScript.Make.ExternsDiff
   ( ExternsDiff
   , emptyDiff
+  , isEmptyDiff
   , diffExterns
   , checkDiffs
   ) where
@@ -225,7 +226,7 @@ diffExterns newExts oldExts depsDiffs =
 -- entries). True if uses, False if not.
 checkDiffs :: P.Module -> [ExternsDiff] -> Bool
 checkDiffs (P.Module _ _ _ decls exports) diffs
-  | all isEmpty diffs = False
+  | all isEmptyDiff diffs = False
   | isNothing mbSearch = True
   | null searches = False
   | otherwise = checkReExports || checkUsage searches decls
@@ -346,8 +347,8 @@ toRefs = \case
   P.ValueOpRef _ n -> [ValueOpRef n]
   _ -> []
 
-isEmpty :: ExternsDiff -> Bool
-isEmpty (ExternsDiff _ refs)
+isEmptyDiff :: ExternsDiff -> Bool
+isEmptyDiff (ExternsDiff _ refs)
   | null refs = True
   | otherwise = False
 
