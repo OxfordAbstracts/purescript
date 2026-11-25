@@ -5,8 +5,6 @@ module Language.PureScript.Pretty.Common where
 
 import Prelude
 
-import Control.Monad.State (StateT, modify, get)
-
 import Data.List (elemIndices, intersperse)
 import Data.Text (Text)
 import Data.Text qualified as T
@@ -75,13 +73,19 @@ instance Emit StrPos where
       mapping = SMap file startPos zeroPos
       zeroPos = SourcePos 0 0
 
-newtype PlainString = PlainString Text deriving (Semigroup, Monoid)
+newtype PlainString = PlainString ([Text] -> [Text])
+
+instance Semigroup PlainString where
+  PlainString f <> PlainString g = PlainString (f . g)
+
+instance Monoid PlainString where
+  mempty = PlainString id
 
 runPlainString :: PlainString -> Text
-runPlainString (PlainString s) = s
+runPlainString (PlainString chunks) = T.concat (chunks [])
 
 instance Emit PlainString where
-  emit = PlainString
+  emit s = PlainString (s :)
   addMapping _ = mempty
 
 addMapping' :: (Emit gen) => Maybe SourceSpan -> gen
@@ -96,31 +100,11 @@ addPos (SourcePos n m) (SourcePos 0 m') = SourcePos n (m + m')
 addPos (SourcePos n _) (SourcePos n' m') = SourcePos (n + n') m'
 
 
-data PrinterState = PrinterState { indent :: Int }
-
 -- |
 -- Number of characters per indentation level
 --
 blockIndent :: Int
 blockIndent = 4
-
--- |
--- Pretty print with a new indentation level
---
-withIndent :: StateT PrinterState Maybe gen -> StateT PrinterState Maybe gen
-withIndent action = do
-  modify $ \st -> st { indent = indent st + blockIndent }
-  result <- action
-  modify $ \st -> st { indent = indent st - blockIndent }
-  return result
-
--- |
--- Get the current indentation level
---
-currentIndent :: (Emit gen) => StateT PrinterState Maybe gen
-currentIndent = do
-  current <- get
-  return $ emit $ T.replicate (indent current) " "
 
 objectKeyRequiresQuoting :: Text -> Bool
 objectKeyRequiresQuoting = not . isUnquotedKey

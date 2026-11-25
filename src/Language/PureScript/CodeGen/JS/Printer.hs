@@ -6,146 +6,251 @@ module Language.PureScript.CodeGen.JS.Printer
 
 import Prelude
 
-import Control.Arrow ((<+>))
-import Control.Monad (forM, mzero)
-import Control.Monad.State (StateT, evalStateT)
-import Control.PatternArrows (Operator(..), OperatorTable(..), Pattern(..), buildPrettyPrinter, mkPattern, mkPattern')
-import Control.Arrow qualified as A
-
 import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.List.NonEmpty qualified as NEL (toList)
 
-import Language.PureScript.AST (SourceSpan(..))
+import Language.PureScript.AST (SourceSpan)
 import Language.PureScript.CodeGen.JS.Common (identCharToText, isValidJsIdentifier, nameIsJsBuiltIn, nameIsJsReserved)
 import Language.PureScript.CoreImp.AST (AST(..), BinaryOperator(..), CIComments(..), UnaryOperator(..), getSourceSpan)
 import Language.PureScript.CoreImp.Module (Export(..), Import(..), Module(..))
 import Language.PureScript.Comments (Comment(..))
 import Language.PureScript.Crash (internalError)
-import Language.PureScript.Pretty.Common (Emit(..), PrinterState(..), SMap, StrPos(..), addMapping', currentIndent, intercalate, parensPos, runPlainString, withIndent)
+import Language.PureScript.Pretty.Common (Emit(..), SMap, StrPos(..), addMapping', blockIndent, intercalate, parensPos, runPlainString)
 import Language.PureScript.PSString (PSString, decodeString, prettyPrintStringJS)
 
--- TODO (Christoph): Get rid of T.unpack / pack
+indentation :: (Emit gen) => Int -> gen
+indentation i = emit $ T.replicate i " "
 
-literals :: (Emit gen) => Pattern PrinterState AST gen
-literals = mkPattern' match'
+indexerLevel, accessorLevel, appLevel, newLevel, lamLevel, prefixLevel, instanceOfLevel, topLevel :: Int
+indexerLevel = 1
+accessorLevel = 2
+appLevel = 3
+newLevel = 4
+lamLevel = 5
+prefixLevel = 6
+instanceOfLevel = 10
+topLevel = 16
+
+unaryLevel :: UnaryOperator -> Int
+unaryLevel New = newLevel
+unaryLevel _ = prefixLevel
+
+binaryOperator :: BinaryOperator -> (Int, Text)
+binaryOperator = \case
+  Multiply -> (7, "*")
+  Divide -> (7, "/")
+  Modulus -> (7, "%")
+  Add -> (8, "+")
+  Subtract -> (8, "-")
+  ShiftLeft -> (9, "<<")
+  ShiftRight -> (9, ">>")
+  ZeroFillShiftRight -> (9, ">>>")
+  LessThan -> (10, "<")
+  LessThanOrEqualTo -> (10, "<=")
+  GreaterThan -> (10, ">")
+  GreaterThanOrEqualTo -> (10, ">=")
+  EqualTo -> (11, "===")
+  NotEqualTo -> (11, "!==")
+  BitwiseAnd -> (12, "&")
+  BitwiseXor -> (13, "^")
+  BitwiseOr -> (14, "|")
+  And -> (15, "&&")
+  Or -> (16, "||")
+
+accessorProperty :: AST -> Maybe Text
+accessorProperty (StringLiteral _ prop)
+  | Just s <- decodeString prop, isValidJsIdentifier s = Just s
+accessorProperty _ = Nothing
+
+value :: (Emit gen) => Int -> Int -> AST -> gen
+value level i js = case js of
+  Indexer _ index val
+    | level >= accessorLevel, Just prop <- accessorProperty index -> accessor i prop val
+    | level >= indexerLevel -> indexer i index val
+  App _ val args | level >= appLevel -> app i val args
+  Unary _ op val | level >= unaryLevel op -> unary i op val
+  Function ss name args ret | level >= lamLevel -> lam i ss name args ret
+  Binary _ op v1 v2 | level >= fst (binaryOperator op) -> binary i op v1 v2
+  InstanceOf _ v1 v2 | level >= instanceOfLevel -> instanceOf i v1 v2
+  _ -> literal i js
+
+accessor :: (Emit gen) => Int -> Text -> AST -> gen
+accessor i prop val = operand <> emit "." <> emit prop
   where
-  match' :: (Emit gen) => AST -> StateT PrinterState Maybe gen
-  match' js = (addMapping' (getSourceSpan js) <>) <$> match js
+  operand = case val of
+    Indexer _ index' val' | Just prop' <- accessorProperty index' -> accessor i prop' val'
+    _ -> value (accessorLevel - 1) i val
 
-  match :: (Emit gen) => AST -> StateT PrinterState Maybe gen
-  match (NumericLiteral _ n) = return $ emit $ T.pack $ either show show n
-  match (StringLiteral _ s) = return $ emit $ prettyPrintStringJS s
-  match (BooleanLiteral _ True) = return $ emit "true"
-  match (BooleanLiteral _ False) = return $ emit "false"
-  match (ArrayLiteral _ xs) = mconcat <$> sequence
-    [ return $ emit "[ "
-    , intercalate (emit ", ") <$> forM xs prettyPrintJS'
-    , return $ emit " ]"
-    ]
-  match (ObjectLiteral _ []) = return $ emit "{}"
-  match (ObjectLiteral _ ps) = mconcat <$> sequence
-    [ return $ emit "{\n"
-    , withIndent $ do
-        jss <- forM ps $ \(key, value) -> fmap ((objectPropertyToString key <> emit ": ") <>) . prettyPrintJS' $ value
-        indentString <- currentIndent
-        return $ intercalate (emit ",\n") $ map (indentString <>) jss
-    , return $ emit "\n"
-    , currentIndent
-    , return $ emit "}"
-    ]
-    where
-    objectPropertyToString :: (Emit gen) => PSString -> gen
-    objectPropertyToString s =
-      emit $ case decodeString s of
-        Just s' | isValidJsIdentifier s' ->
-          s'
-        _ ->
-          prettyPrintStringJS s
-  match (Block _ sts) = mconcat <$> sequence
-    [ return $ emit "{\n"
-    , withIndent $ prettyStatements sts
-    , return $ emit "\n"
-    , currentIndent
-    , return $ emit "}"
-    ]
-  match (Var _ ident) = return $ emit ident
-  match (VariableIntroduction _ ident value) = mconcat <$> sequence
-    [ return $ emit $ "var " <> ident
-    , maybe (return mempty) (fmap (emit " = " <>) . prettyPrintJS' . snd) value
-    ]
-  match (Assignment _ target value) = mconcat <$> sequence
-    [ prettyPrintJS' target
-    , return $ emit " = "
-    , prettyPrintJS' value
-    ]
-  match (While _ cond sts) = mconcat <$> sequence
-    [ return $ emit "while ("
-    , prettyPrintJS' cond
-    , return $ emit ") "
-    , prettyPrintJS' sts
-    ]
-  match (For _ ident start end sts) = mconcat <$> sequence
-    [ return $ emit $ "for (var " <> ident <> " = "
-    , prettyPrintJS' start
-    , return $ emit $ "; " <> ident <> " < "
-    , prettyPrintJS' end
-    , return $ emit $ "; " <> ident <> "++) "
-    , prettyPrintJS' sts
-    ]
-  match (ForIn _ ident obj sts) = mconcat <$> sequence
-    [ return $ emit $ "for (var " <> ident <> " in "
-    , prettyPrintJS' obj
-    , return $ emit ") "
-    , prettyPrintJS' sts
-    ]
-  match (IfElse _ cond thens elses) = mconcat <$> sequence
-    [ return $ emit "if ("
-    , prettyPrintJS' cond
-    , return $ emit ") "
-    , prettyPrintJS' thens
-    , maybe (return mempty) (fmap (emit " else " <>) . prettyPrintJS') elses
-    ]
-  match (Return _ value) = mconcat <$> sequence
-    [ return $ emit "return "
-    , prettyPrintJS' value
-    ]
-  match (ReturnNoResult _) = return $ emit "return"
-  match (Throw _ value) = mconcat <$> sequence
-    [ return $ emit "throw "
-    , prettyPrintJS' value
-    ]
-  match (Comment (SourceComments com) js) = mconcat <$> sequence
-    [ return $ emit "\n"
-    , mconcat <$> forM com comment
-    , prettyPrintJS' js
-    ]
-  match (Comment PureAnnotation js) = mconcat <$> sequence 
-    [ return $ emit "/* #__PURE__ */ "
-    , prettyPrintJS' js 
-    ]
-  match _ = mzero
+indexer :: (Emit gen) => Int -> AST -> AST -> gen
+indexer i index val = operand <> emit "[" <> prettyPrintJS' i index <> emit "]"
+  where
+  operand = case val of
+    Indexer _ index' val' -> indexer i index' val'
+    _ -> value (indexerLevel - 1) i val
 
-comment :: (Emit gen) => Comment -> StateT PrinterState Maybe gen
-comment (LineComment com) = mconcat <$> sequence
-  [ currentIndent
-  , return $ emit "//" <> emit com <> emit "\n"
+app :: (Emit gen) => Int -> AST -> [AST] -> gen
+app i val args = operand <> emit "(" <> intercalate (emit ", ") (map (prettyPrintJS' i) args) <> emit ")"
+  where
+  operand = case val of
+    App _ val' args' -> app i val' args'
+    _ -> value (appLevel - 1) i val
+
+unary :: (Emit gen) => Int -> UnaryOperator -> AST -> gen
+unary i op val = emit str <> operand
+  where
+  str = case op of
+    New -> "new "
+    Not -> "!"
+    BitwiseNot -> "~"
+    Positive -> "+"
+    Negate | isNegate val -> "- "
+           | otherwise -> "-"
+  isNegate (Unary _ Negate _) = True
+  isNegate _ = False
+  operand = case val of
+    Unary _ op' val' | op' == op -> unary i op val'
+    _ -> value (unaryLevel op - 1) i val
+
+lam :: (Emit gen) => Int -> Maybe SourceSpan -> Maybe Text -> [Text] -> AST -> gen
+lam i ss name args ret =
+  addMapping' ss <>
+    emit ("function "
+      <> fromMaybe "" name
+      <> "(" <> intercalate ", " args <> ") ")
+      <> operand
+  where
+  operand = case ret of
+    Function ss' name' args' ret' -> lam i ss' name' args' ret'
+    _ -> value (lamLevel - 1) i ret
+
+binary :: (Emit gen) => Int -> BinaryOperator -> AST -> AST -> gen
+binary i op v1 v2 = left <> emit (" " <> str <> " ") <> value (level - 1) i v2
+  where
+  (level, str) = binaryOperator op
+  left = case v1 of
+    Binary _ op' v1' v2' | op' == op -> binary i op v1' v2'
+    _ -> value (level - 1) i v1
+
+instanceOf :: (Emit gen) => Int -> AST -> AST -> gen
+instanceOf i v1 v2 = value (instanceOfLevel - 1) i v1 <> emit " instanceof " <> right
+  where
+  right = case v2 of
+    InstanceOf _ v1' v2' -> instanceOf i v1' v2'
+    _ -> value (instanceOfLevel - 1) i v2
+
+literal :: (Emit gen) => Int -> AST -> gen
+literal i js = case js of
+  NumericLiteral _ n -> mapped $ emit $ T.pack $ either show show n
+  StringLiteral _ s -> mapped $ emit $ prettyPrintStringJS s
+  BooleanLiteral _ True -> mapped $ emit "true"
+  BooleanLiteral _ False -> mapped $ emit "false"
+  ArrayLiteral _ xs -> mapped $ mconcat
+    [ emit "[ "
+    , intercalate (emit ", ") (map (prettyPrintJS' i) xs)
+    , emit " ]"
+    ]
+  ObjectLiteral _ [] -> mapped $ emit "{}"
+  ObjectLiteral _ ps -> mapped $ mconcat
+    [ emit "{\n"
+    , intercalate (emit ",\n") $ map ((indentation inner <>) . property) ps
+    , emit "\n"
+    , indentation i
+    , emit "}"
+    ]
+  Block _ sts -> mapped $ mconcat
+    [ emit "{\n"
+    , prettyStatements inner sts
+    , emit "\n"
+    , indentation i
+    , emit "}"
+    ]
+  Var _ ident -> mapped $ emit ident
+  VariableIntroduction _ ident val -> mapped $ mconcat
+    [ emit $ "var " <> ident
+    , maybe mempty ((emit " = " <>) . prettyPrintJS' i . snd) val
+    ]
+  Assignment _ target val -> mapped $ mconcat
+    [ prettyPrintJS' i target
+    , emit " = "
+    , prettyPrintJS' i val
+    ]
+  While _ cond sts -> mapped $ mconcat
+    [ emit "while ("
+    , prettyPrintJS' i cond
+    , emit ") "
+    , prettyPrintJS' i sts
+    ]
+  For _ ident start end sts -> mapped $ mconcat
+    [ emit $ "for (var " <> ident <> " = "
+    , prettyPrintJS' i start
+    , emit $ "; " <> ident <> " < "
+    , prettyPrintJS' i end
+    , emit $ "; " <> ident <> "++) "
+    , prettyPrintJS' i sts
+    ]
+  ForIn _ ident obj sts -> mapped $ mconcat
+    [ emit $ "for (var " <> ident <> " in "
+    , prettyPrintJS' i obj
+    , emit ") "
+    , prettyPrintJS' i sts
+    ]
+  IfElse _ cond thens elses -> mapped $ mconcat
+    [ emit "if ("
+    , prettyPrintJS' i cond
+    , emit ") "
+    , prettyPrintJS' i thens
+    , maybe mempty ((emit " else " <>) . prettyPrintJS' i) elses
+    ]
+  Return _ val -> mapped $ mconcat
+    [ emit "return "
+    , prettyPrintJS' i val
+    ]
+  ReturnNoResult _ -> mapped $ emit "return"
+  Throw _ val -> mapped $ mconcat
+    [ emit "throw "
+    , prettyPrintJS' i val
+    ]
+  Comment (SourceComments com) js' -> mapped $ mconcat
+    [ emit "\n"
+    , mconcat $ map (comment i) com
+    , prettyPrintJS' i js'
+    ]
+  Comment PureAnnotation js' -> mapped $ mconcat
+    [ emit "/* #__PURE__ */ "
+    , prettyPrintJS' i js'
+    ]
+  ModuleAccessor{} -> internalError "Incomplete pattern"
+  _ -> parensPos $ prettyPrintJS' i js
+  where
+  mapped = (addMapping' (getSourceSpan js) <>)
+  inner = i + blockIndent
+  property (key, val) = (objectPropertyToString key <> emit ": ") <> prettyPrintJS' inner val
+  objectPropertyToString :: (Emit gen) => PSString -> gen
+  objectPropertyToString s =
+    emit $ case decodeString s of
+      Just s' | isValidJsIdentifier s' ->
+        s'
+      _ ->
+        prettyPrintStringJS s
+
+comment :: (Emit gen) => Int -> Comment -> gen
+comment i (LineComment com) = mconcat
+  [ indentation i
+  , emit "//" <> emit com <> emit "\n"
   ]
-comment (BlockComment com) = fmap mconcat $ sequence $
-  [ currentIndent
-  , return $ emit "/**\n"
+comment i (BlockComment com) = mconcat $
+  [ indentation i
+  , emit "/**\n"
   ] ++
   map asLine (T.lines com) ++
-  [ currentIndent
-  , return $ emit " */\n"
-  , currentIndent
+  [ indentation i
+  , emit " */\n"
+  , indentation i
   ]
   where
-  asLine :: (Emit gen) => Text -> StateT PrinterState Maybe gen
-  asLine s = do
-    i <- currentIndent
-    return $ i <> emit " * " <> (emit . removeComments) s <> emit "\n"
+  asLine s = indentation i <> emit " * " <> (emit . removeComments) s <> emit "\n"
 
   removeComments :: Text -> Text
   removeComments t =
@@ -155,22 +260,18 @@ comment (BlockComment com) = fmap mconcat $ sequence $
         Just (x, xs) -> x `T.cons` removeComments xs
         Nothing -> ""
 
-prettyImport :: (Emit gen) => Import -> StateT PrinterState Maybe gen
+prettyImport :: (Emit gen) => Import -> gen
 prettyImport (Import ident from) =
-  return . emit $
+  emit $
     "import * as " <> ident <> " from " <> prettyPrintStringJS from <> ";"
 
-prettyExport :: (Emit gen) => Export -> StateT PrinterState Maybe gen
+prettyExport :: (Emit gen) => Export -> gen
 prettyExport (Export idents from) =
-  mconcat <$> sequence
-    [ return $ emit "export {\n"
-    , withIndent $ do
-        let exportsStrings = emit . exportedIdentToString from <$> idents
-        indentString <- currentIndent
-        return . intercalate (emit ",\n") . NEL.toList $ (indentString <>) <$> exportsStrings
-    , return $ emit "\n"
-    , currentIndent
-    , return . emit $ "}" <> maybe "" ((" from " <>) . prettyPrintStringJS) from <> ";"
+  mconcat
+    [ emit "export {\n"
+    , intercalate (emit ",\n") . NEL.toList $ (indentation blockIndent <>) . emit . exportedIdentToString from <$> idents
+    , emit "\n"
+    , emit $ "}" <> maybe "" ((" from " <>) . prettyPrintStringJS) from <> ";"
     ]
   where
   exportedIdentToString Nothing ident
@@ -181,130 +282,24 @@ prettyExport (Export idents from) =
   exportedIdentToString _ ident
     = T.concatMap identCharToText ident
 
-accessor :: Pattern PrinterState AST (Text, AST)
-accessor = mkPattern match
-  where
-  match (Indexer _ (StringLiteral _ prop) val) =
-    case decodeString prop of
-      Just s | isValidJsIdentifier s -> Just (s, val)
-      _ -> Nothing
-  match _ = Nothing
+prettyStatements :: (Emit gen) => Int -> [AST] -> gen
+prettyStatements i sts =
+  intercalate (emit "\n") $ map ((<> emit ";") . (indentation i <>) . prettyPrintJS' i) sts
 
-indexer :: (Emit gen) => Pattern PrinterState AST (gen, AST)
-indexer = mkPattern' match
-  where
-  match (Indexer _ index val) = (,) <$> prettyPrintJS' index <*> pure val
-  match _ = mzero
-
-lam :: Pattern PrinterState AST ((Maybe Text, [Text], Maybe SourceSpan), AST)
-lam = mkPattern match
-  where
-  match (Function ss name args ret) = Just ((name, args, ss), ret)
-  match _ = Nothing
-
-app :: (Emit gen) => Pattern PrinterState AST (gen, AST)
-app = mkPattern' match
-  where
-  match (App _ val args) = do
-    jss <- traverse prettyPrintJS' args
-    return (intercalate (emit ", ") jss, val)
-  match _ = mzero
-
-instanceOf :: Pattern PrinterState AST (AST, AST)
-instanceOf = mkPattern match
-  where
-  match (InstanceOf _ val ty) = Just (val, ty)
-  match _ = Nothing
-
-unary' :: (Emit gen) => UnaryOperator -> (AST -> Text) -> Operator PrinterState AST gen
-unary' op mkStr = Wrap match (<>)
-  where
-  match :: (Emit gen) => Pattern PrinterState AST (gen, AST)
-  match = mkPattern match'
-    where
-    match' (Unary _ op' val) | op' == op = Just (emit $ mkStr val, val)
-    match' _ = Nothing
-
-unary :: (Emit gen) => UnaryOperator -> Text -> Operator PrinterState AST gen
-unary op str = unary' op (const str)
-
-negateOperator :: (Emit gen) => Operator PrinterState AST gen
-negateOperator = unary' Negate (\v -> if isNegate v then "- " else "-")
-  where
-  isNegate (Unary _ Negate _) = True
-  isNegate _ = False
-
-binary :: (Emit gen) => BinaryOperator -> Text -> Operator PrinterState AST gen
-binary op str = AssocL match (\v1 v2 -> v1 <> emit (" " <> str <> " ") <> v2)
-  where
-  match :: Pattern PrinterState AST (AST, AST)
-  match = mkPattern match'
-    where
-    match' (Binary _ op' v1 v2) | op' == op = Just (v1, v2)
-    match' _ = Nothing
-
-prettyStatements :: (Emit gen) => [AST] -> StateT PrinterState Maybe gen
-prettyStatements sts = do
-  jss <- forM sts prettyPrintJS'
-  indentString <- currentIndent
-  return $ intercalate (emit "\n") $ map ((<> emit ";") . (indentString <>)) jss
-
-prettyModule :: (Emit gen) => Module -> StateT PrinterState Maybe gen
-prettyModule Module{..} = do
-  header <- mconcat <$> traverse comment modHeader
-  imps <- traverse prettyImport modImports
-  body <- prettyStatements modBody
-  exps <- traverse prettyExport modExports
-  pure $ header <> intercalate (emit "\n") (imps ++ body : exps)
+prettyModule :: (Emit gen) => Module -> gen
+prettyModule Module{..} =
+  mconcat (map (comment 0) modHeader)
+    <> intercalate (emit "\n") (map prettyImport modImports ++ prettyStatements 0 modBody : map prettyExport modExports)
 
 -- | Generate a pretty-printed string representing a collection of JavaScript expressions at the same indentation level
 prettyPrintJSWithSourceMaps :: Module -> (Text, [SMap])
 prettyPrintJSWithSourceMaps js =
-  let StrPos (_, s, mp) = (fromMaybe (internalError "Incomplete pattern") . flip evalStateT (PrinterState 0) . prettyModule) js
+  let StrPos (_, s, mp) = prettyModule js
   in (s, mp)
 
 prettyPrintJS :: Module -> Text
-prettyPrintJS = maybe (internalError "Incomplete pattern") runPlainString . flip evalStateT (PrinterState 0) . prettyModule
+prettyPrintJS = runPlainString . prettyModule
 
 -- | Generate an indented, pretty-printed string representing a JavaScript expression
-prettyPrintJS' :: (Emit gen) => AST -> StateT PrinterState Maybe gen
-prettyPrintJS' = A.runKleisli $ runPattern matchValue
-  where
-  matchValue :: (Emit gen) => Pattern PrinterState AST gen
-  matchValue = buildPrettyPrinter operators (literals <+> fmap parensPos matchValue)
-  operators :: (Emit gen) => OperatorTable PrinterState AST gen
-  operators =
-    OperatorTable [ [ Wrap indexer $ \index val -> val <> emit "[" <> index <> emit "]" ]
-                  , [ Wrap accessor $ \prop val -> val <> emit "." <> emit prop ]
-                  , [ Wrap app $ \args val -> val <> emit "(" <> args <> emit ")" ]
-                  , [ unary New "new " ]
-                  , [ Wrap lam $ \(name, args, ss) ret -> addMapping' ss <>
-                      emit ("function "
-                        <> fromMaybe "" name
-                        <> "(" <> intercalate ", " args <> ") ")
-                        <> ret ]
-                  , [ unary     Not                  "!"
-                    , unary     BitwiseNot           "~"
-                    , unary     Positive             "+"
-                    , negateOperator ]
-                  , [ binary    Multiply             "*"
-                    , binary    Divide               "/"
-                    , binary    Modulus              "%" ]
-                  , [ binary    Add                  "+"
-                    , binary    Subtract             "-" ]
-                  , [ binary    ShiftLeft            "<<"
-                    , binary    ShiftRight           ">>"
-                    , binary    ZeroFillShiftRight   ">>>" ]
-                  , [ binary    LessThan             "<"
-                    , binary    LessThanOrEqualTo    "<="
-                    , binary    GreaterThan          ">"
-                    , binary    GreaterThanOrEqualTo ">="
-                    , AssocR instanceOf $ \v1 v2 -> v1 <> emit " instanceof " <> v2 ]
-                  , [ binary    EqualTo              "==="
-                    , binary    NotEqualTo           "!==" ]
-                  , [ binary    BitwiseAnd           "&" ]
-                  , [ binary    BitwiseXor           "^" ]
-                  , [ binary    BitwiseOr            "|" ]
-                  , [ binary    And                  "&&" ]
-                  , [ binary    Or                   "||" ]
-                    ]
+prettyPrintJS' :: (Emit gen) => Int -> AST -> gen
+prettyPrintJS' = value topLevel
