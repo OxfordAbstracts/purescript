@@ -247,6 +247,7 @@ make' MakeOptions{..} ma@MakeActions{..} ms = do
   let moduleRanks = M.fromList (zip sortedModuleNames [0 :: Int ..])
   let rankBounds = (0, M.size moduleRanks - 1)
   let modulesByRank = listArray rankBounds sortedModuleNames :: Array Int ModuleName
+  let resultsByRank = BuildPlan.resultSource buildPlan <$> modulesByRank
   let graphMap = M.fromList graph
   let directDepRanks moduleName =
         map (moduleRanks M.!) $
@@ -270,6 +271,7 @@ make' MakeOptions{..} ma@MakeActions{..} ms = do
       (fmap importPrim . snd $ CST.resFull m)
       (transitiveDepRanks ! rank)
       (modulesByRank !)
+      (resultsByRank !)
 
       -- Prevent hanging on other modules when there is an internal error
       -- (the exception is thrown, but other threads waiting on MVars are released)
@@ -341,15 +343,15 @@ make' MakeOptions{..} ma@MakeActions{..} ms = do
       [] -> Nothing
       xss -> Just xss
 
-  buildModule :: QSem -> (ProgressMessage -> m ()) -> BuildPlan -> ModuleName -> Int -> FilePath -> [CST.ParserWarning] -> Either (NEL.NonEmpty CST.ParserError) Module -> IS.IntSet -> (Int -> ModuleName) -> m ()
-  buildModule lock reportProgress buildPlan moduleName cnt fp pwarnings mres depRanks moduleAtRank = do
+  buildModule :: QSem -> (ProgressMessage -> m ()) -> BuildPlan -> ModuleName -> Int -> FilePath -> [CST.ParserWarning] -> Either (NEL.NonEmpty CST.ParserError) Module -> IS.IntSet -> (Int -> ModuleName) -> (Int -> BuildPlan.ResultSource) -> m ()
+  buildModule lock reportProgress buildPlan moduleName cnt fp pwarnings mres depRanks moduleAtRank resultAtRank = do
     result <- flip catchError (return . BuildJobFailed) $ do
       -- We need to wait for dependencies to be built, before checking if the current
       -- module should be rebuilt, so the first thing to do is to wait on the
       -- MVars for the module's dependencies.
-      IS.foldr (\rank rest -> getResult buildPlan (moduleAtRank rank) >> rest) (pure ()) depRanks
+      IS.foldr (\rank rest -> getResult (resultAtRank rank) >> rest) (pure ()) depRanks
       let deps = map moduleAtRank (IS.toAscList depRanks)
-      mexterns <- fmap unzip . sequence <$> traverse (getResult buildPlan) deps
+      mexterns <- fmap unzip . sequence <$> traverse (getResult . resultAtRank) (IS.toAscList depRanks)
       let pwarnings' = CST.toMultipleWarnings fp pwarnings
       let parsed = tell pwarnings' *> CST.unwrapParserError fp mres
 

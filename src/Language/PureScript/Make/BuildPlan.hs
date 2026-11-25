@@ -4,6 +4,8 @@ module Language.PureScript.Make.BuildPlan
   , Options(..)
   , isUpToDate
   , construct
+  , ResultSource
+  , resultSource
   , getResult
   , getPrevResult
   , collectResults
@@ -148,22 +150,30 @@ collectResults buildPlan = do
   barrierResults <- traverse (C.readMVar . bjResult) $ bpBuildJobs buildPlan
   pure (M.union prebuiltResults barrierResults)
 
--- | Gets the the build result for a given module name independent of whether it
+data ResultSource
+  = BuildJobSource BuildJob
+  | PrebuiltSource SuccessResult
+
+resultSource :: BuildPlan -> ModuleName -> ResultSource
+resultSource buildPlan moduleName =
+  case M.lookup moduleName (bpBuildJobs buildPlan) of
+    Just bj ->
+      BuildJobSource bj
+    Nothing -> do
+      let exts = pbExternsFile
+            $ fromMaybe (barrierError "resultSource")
+            $ M.lookup moduleName (bpPrebuilt buildPlan)
+      PrebuiltSource (MultipleErrors [], (exts, Just $ emptyDiff moduleName))
+
+-- | Gets the the build result for a given module independent of whether it
 -- was rebuilt or prebuilt. Prebuilt modules always return no warnings.
 getResult
   :: (MonadBaseControl IO m)
-  => BuildPlan
-  -> ModuleName
+  => ResultSource
   -> m (Maybe SuccessResult)
-getResult buildPlan moduleName =
-  case M.lookup moduleName (bpBuildJobs buildPlan) of
-    Just bj ->
-      buildJobSuccess <$> C.readMVar (bjResult bj)
-    Nothing -> do
-      let exts = pbExternsFile
-            $ fromMaybe (barrierError "getResult")
-            $ M.lookup moduleName (bpPrebuilt buildPlan)
-      pure (Just (MultipleErrors [], (exts, Just $ emptyDiff moduleName )))
+getResult = \case
+  BuildJobSource bj -> buildJobSuccess <$> C.readMVar (bjResult bj)
+  PrebuiltSource result -> pure (Just result)
 
 -- | Gets preloaded previous built result for modules that are going to be built. This
 -- will be used to skip compilation if dep's externs have not changed.
