@@ -390,6 +390,7 @@ typeCheckAll moduleName = traverse go
                   if isPlainIdent dictName then Nothing else Just $ srcInstanceType ss vars className tys''
           current <- getEnv
           putEnv current { typeClassDictionaries = M.unionWith (<>) (singletonInstance dict) (typeClassDictionaries current) }
+          forgetSolvedDictionaries
           return d
 
   checkInstanceArity :: Ident -> Qualified (ProperName 'ClassName) -> TypeClassData -> [SourceType] -> TypeCheckM ()

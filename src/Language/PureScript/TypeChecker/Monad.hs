@@ -169,6 +169,30 @@ lookupUnkName u = gets $ IM.lookup u . substNames . checkSubstitution
 emptySubstitution :: Substitution
 emptySubstitution = Substitution IM.empty IM.empty IM.empty 0
 
+type SolvedGoal = (Qualified (ProperName 'ClassName), [SourceType], [SourceType])
+
+data SolvedDictionary = SolvedDictionary
+  { solvedDictionary :: Expr
+  , solvedNewUnknowns :: !Int
+  , solvedNewSkolems :: !Int
+  , solvedNewSkolemScopes :: !Int
+  , solvedDepth :: !Int
+  , solvedClasses :: !(S.Set (Qualified (ProperName 'ClassName)))
+  }
+
+data SolvedDictionaries = SolvedDictionaries
+  { solvedByGoal :: !(M.Map SolvedGoal SolvedDictionary)
+  , solvedUnreusable :: !Int
+  , solvedDeepest :: !Int
+  , solvedTouched :: !(S.Set (Qualified (ProperName 'ClassName)))
+  }
+
+emptySolvedDictionaries :: SolvedDictionaries
+emptySolvedDictionaries = SolvedDictionaries M.empty 0 0 S.empty
+
+forgetSolvedDictionaries :: TypeCheckM ()
+forgetSolvedDictionaries = modify $ \st -> st { checkSolvedDictionaries = (checkSolvedDictionaries st) { solvedByGoal = M.empty } }
+
 -- | State required for type checking
 data CheckState = CheckState
   { checkEnv :: Environment
@@ -200,11 +224,12 @@ data CheckState = CheckState
   -- We have to keep track of them so that we don't emit unused import warnings.
   , checkUndefinedNames :: S.Set (Qualified Ident)
   , checkVisibleModules :: Maybe (S.Set ModuleName)
+  , checkSolvedDictionaries :: SolvedDictionaries
   }
 
 -- | Create an empty @CheckState@
 emptyCheckState :: Environment -> CheckState
-emptyCheckState env = CheckState env 0 0 0 Nothing [] emptySubstitution mempty mempty Nothing
+emptyCheckState env = CheckState env 0 0 0 Nothing [] emptySubstitution mempty mempty Nothing emptySolvedDictionaries
 
 -- | Unification variables
 type Unknown = Int

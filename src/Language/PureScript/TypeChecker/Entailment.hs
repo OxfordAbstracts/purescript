@@ -43,7 +43,7 @@ import Language.PureScript.Names (pattern ByNullSourcePos, Ident(..), ModuleName
 import Language.PureScript.TypeChecker.Entailment.Coercible (GivenSolverState(..), WantedSolverState(..), initialGivenSolverState, initialWantedSolverState, insoluble, solveGivens, solveWanteds)
 import Language.PureScript.TypeChecker.Entailment.IntCompare (mkFacts, mkRelation, solveRelation)
 import Language.PureScript.TypeChecker.Kinds (elaborateKind, unifyKinds')
-import Language.PureScript.TypeChecker.Monad (CheckState(..), Substitution, withErrorMessageHint, TypeCheckM)
+import Language.PureScript.TypeChecker.Monad (CheckState(..), SolvedDictionaries(..), SolvedDictionary(..), SolvedGoal, Substitution, withErrorMessageHint, TypeCheckM)
 import Language.PureScript.TypeChecker.Synonyms (replaceAllTypeSynonyms)
 import Language.PureScript.TypeChecker.Unify (freshTypeWithKind, substituteType, substituteTypeSince, unifyTypes)
 import Language.PureScript.TypeClassDictionaries (InstanceContext, NamedDict, TypeClassDictionaryInScope(..), headConstructor, instancesByClass, instancesByHead, singletonInstance, superclassName)
@@ -282,85 +282,100 @@ entails SolverOptions{..} constraint context hints =
 
             -- Get the inferred constraint context so far, and merge it with the global context
             inferred <- lift get
-            -- We need information about functional dependencies, so we have to look up the class
-            -- name in the environment:
-            env <- lift . lift $ gets checkEnv
-            let classesInScope = typeClasses env
-            TypeClassData
-              { typeClassArguments
-              , typeClassDependencies
-              , typeClassIsEmpty
-              , typeClassCoveringSets
-              , typeClassMembers
-              } <- case M.lookup className' classesInScope of
-                Nothing -> throwError . errorMessage $ UnknownClass className'
-                Just tcd -> pure tcd
-
-            dicts <- lift . lift $ forClassNameM env (combineContexts context inferred) className' kinds'' tys''
-
-            let (catMaybes -> ambiguous, instances) = partitionEithers $ do
-                  chain :: NonEmpty TypeClassDict <-
-                           NEL.groupBy ((==) `on` tcdChain) $
-                           sortOn (tcdChain &&& tcdIndex)
-                           (filter (not . provablyApart typeClassDependencies tys'') dicts)
-                  -- process instances in a chain in index order
-                  let found = for (tails1 chain) $ \(tcd :| tl) ->
-                                -- Make sure the type unifies with the type in the type instance definition
-                                case matches typeClassDependencies tcd tys'' of
-                                  Apart        -> Right ()                   -- keep searching
-                                  Match substs -> Left (Right (substs, tcd)) -- found a match
-                                  Unknown ->
-                                    if null (tcdChain tcd) || null tl
-                                    then Right ()                                   -- need proof of apartness but this is either not in a chain or at the end
-                                    else Left (Left (tcdToInstanceDescription tcd)) -- can't continue with this chain yet, need proof of apartness
-
-                  lefts [found]
-            solution <- lift . lift
-              $ unique kinds'' tys'' ambiguous instances
-              $ unknownsInAllCoveringSets (fst . (typeClassArguments !!)) typeClassMembers tys'' typeClassCoveringSets
-            case solution of
-              Solved substs tcd -> do
-                -- Note that we solved something.
+            let goal = solvedGoalKey className' kinds'' tys''
+                isLocal = hasLocalDictionaries context inferred
+            reused <- lift . lift $ maybe (pure Nothing) (reuseSolvedDictionary work isLocal) goal
+            case reused of
+              Just dict -> do
                 tell (Any True, mempty)
-                -- Make sure the substitution is valid:
-                lift . lift . for_ substs $ pairwiseM unifyTypes
-                -- Now enforce any functional dependencies, using unification
-                -- Note: we need to generate fresh types for any unconstrained
-                -- type variables before unifying.
-                let subst = fmap (headDef $ internalError "entails: empty substitution") substs
-                currentSubst <- lift . lift $ gets checkSubstitution
-                subst' <- lift . lift $ withFreshTypes tcd (fmap (substituteTypeSince latestSubst currentSubst) subst)
-                lift . lift $ zipWithM_ (\t1 t2 -> do
-                  let inferredType = replaceAllTypeVars (M.toList subst') t1
-                  unifyTypes inferredType t2) (tcdInstanceTypes tcd) tys''
-                currentSubst' <- lift . lift $ gets checkSubstitution
-                let subst'' = fmap (substituteTypeSince currentSubst currentSubst') subst'
-                -- Solve any necessary subgoals
-                args <- solveSubgoals currentSubst' subst'' (ErrorSolvingConstraint con) (tcdDependencies tcd)
+                pure dict
+              Nothing -> do
+                started <- lift . lift $ startSolving work className' goal
+                dict <- do
+                    -- We need information about functional dependencies, so we have to look up the class
+                    -- name in the environment:
+                    env <- lift . lift $ gets checkEnv
+                    let classesInScope = typeClasses env
+                    TypeClassData
+                      { typeClassArguments
+                      , typeClassDependencies
+                      , typeClassIsEmpty
+                      , typeClassCoveringSets
+                      , typeClassMembers
+                      } <- case M.lookup className' classesInScope of
+                        Nothing -> throwError . errorMessage $ UnknownClass className'
+                        Just tcd -> pure tcd
 
-                initDict <- lift . lift $ mkDictionary (tcdValue tcd) args
+                    dicts <- lift . lift $ forClassNameM env (combineContexts context inferred) className' kinds'' tys''
 
-                let match = foldr (\(className, index) dict -> subclassDictionaryValue dict className index)
-                                  initDict
-                                  (tcdPath tcd)
+                    let (catMaybes -> ambiguous, instances) = partitionEithers $ do
+                          chain :: NonEmpty TypeClassDict <-
+                                   NEL.groupBy ((==) `on` tcdChain) $
+                                   sortOn (tcdChain &&& tcdIndex)
+                                   (filter (not . provablyApart typeClassDependencies tys'') dicts)
+                          -- process instances in a chain in index order
+                          let found = for (tails1 chain) $ \(tcd :| tl) ->
+                                        -- Make sure the type unifies with the type in the type instance definition
+                                        case matches typeClassDependencies tcd tys'' of
+                                          Apart        -> Right ()                   -- keep searching
+                                          Match substs -> Left (Right (substs, tcd)) -- found a match
+                                          Unknown ->
+                                            if null (tcdChain tcd) || null tl
+                                            then Right ()                                   -- need proof of apartness but this is either not in a chain or at the end
+                                            else Left (Left (tcdToInstanceDescription tcd)) -- can't continue with this chain yet, need proof of apartness
 
-                return (if typeClassIsEmpty then Unused match else match)
-              Unsolved unsolved -> do
-                -- Generate a fresh name for the unsolved constraint's new dictionary
-                ident <- freshIdent ("dict" <> runProperName (disqualify (constraintClass unsolved)))
-                let qident = Qualified ByNullSourcePos ident
-                -- Store the new dictionary in the InstanceContext so that we can solve this goal in
-                -- future.
-                newDicts <- lift . lift $ newDictionaries [] qident unsolved
-                let newContext = mkContext newDicts
-                modify (combineContexts newContext)
-                -- Mark this constraint for generalization
-                tell (mempty, [(ident, context, unsolved)])
-                return (Var nullSourceSpan qident)
-              Deferred ->
-                -- Constraint was deferred, just return the dictionary unchanged,
-                -- with no unsolved constraints. Hopefully, we can solve this later.
-                return (TypeClassDictionary (srcConstraint className' kinds'' tys'' conInfo) context hints')
+                          lefts [found]
+                    solution <- lift . lift
+                      $ unique kinds'' tys'' ambiguous instances
+                      $ unknownsInAllCoveringSets (fst . (typeClassArguments !!)) typeClassMembers tys'' typeClassCoveringSets
+                    case solution of
+                      Solved substs tcd -> do
+                        -- Note that we solved something.
+                        tell (Any True, mempty)
+                        -- Make sure the substitution is valid:
+                        lift . lift . for_ substs $ pairwiseM unifyTypes
+                        -- Now enforce any functional dependencies, using unification
+                        -- Note: we need to generate fresh types for any unconstrained
+                        -- type variables before unifying.
+                        let subst = fmap (headDef $ internalError "entails: empty substitution") substs
+                        currentSubst <- lift . lift $ gets checkSubstitution
+                        subst' <- lift . lift $ withFreshTypes tcd (fmap (substituteTypeSince latestSubst currentSubst) subst)
+                        lift . lift $ zipWithM_ (\t1 t2 -> do
+                          let inferredType = replaceAllTypeVars (M.toList subst') t1
+                          unifyTypes inferredType t2) (tcdInstanceTypes tcd) tys''
+                        currentSubst' <- lift . lift $ gets checkSubstitution
+                        let subst'' = fmap (substituteTypeSince currentSubst currentSubst') subst'
+                        -- Solve any necessary subgoals
+                        args <- solveSubgoals currentSubst' subst'' (ErrorSolvingConstraint con) (tcdDependencies tcd)
+
+                        initDict <- lift . lift $ mkDictionary (tcdValue tcd) args
+
+                        let match = foldr (\(className, index) dict -> subclassDictionaryValue dict className index)
+                                          initDict
+                                          (tcdPath tcd)
+
+                        return (if typeClassIsEmpty then Unused match else match)
+                      Unsolved unsolved -> do
+                        lift . lift $ markUnreusable
+                        -- Generate a fresh name for the unsolved constraint's new dictionary
+                        ident <- freshIdent ("dict" <> runProperName (disqualify (constraintClass unsolved)))
+                        let qident = Qualified ByNullSourcePos ident
+                        -- Store the new dictionary in the InstanceContext so that we can solve this goal in
+                        -- future.
+                        newDicts <- lift . lift $ newDictionaries [] qident unsolved
+                        let newContext = mkContext newDicts
+                        modify (combineContexts newContext)
+                        -- Mark this constraint for generalization
+                        tell (mempty, [(ident, context, unsolved)])
+                        return (Var nullSourceSpan qident)
+                      Deferred -> do
+                        -- Constraint was deferred, just return the dictionary unchanged,
+                        -- with no unsolved constraints. Hopefully, we can solve this later.
+                        lift . lift $ markUnreusable
+                        return (TypeClassDictionary (srcConstraint className' kinds'' tys'' conInfo) context hints')
+                lift . lift $ finishSolving work isLocal started dict
+                pure dict
+
           where
             -- When checking functional dependencies, we need to use unification to make
             -- sure it is safe to use the selected instance. We will unify the solved type with
@@ -779,6 +794,70 @@ provablyApart deps tys TypeClassDictionaryInScope{..} =
     S.notMember i determined && case (headConstructor wanted, headConstructor instanceType) of
       (Just c1, Just c2) -> c1 /= c2
       _ -> False
+
+solvedGoalKey :: Qualified (ProperName 'ClassName) -> [SourceType] -> [SourceType] -> Maybe SolvedGoal
+solvedGoalKey className kinds tys = do
+  guard (className /= C.Warn && className /= C.Coercible)
+  guard (all isGroundType kinds && all isGroundType tys)
+  pure (className, kinds, tys)
+  where
+  isGroundType = not . everythingOnTypes (||) (\case
+    TUnknown{} -> True
+    Skolem{} -> True
+    TypeVar{} -> True
+    TypeWildcard{} -> True
+    _ -> False)
+
+hasLocalDictionaries :: InstanceContext -> InstanceContext -> Qualified (ProperName 'ClassName) -> Bool
+hasLocalDictionaries context inferred className =
+  any (maybe False (M.member className . instancesByClass) . M.lookup ByNullSourcePos) [context, inferred]
+
+reuseSolvedDictionary :: Int -> (Qualified (ProperName 'ClassName) -> Bool) -> SolvedGoal -> TypeCheckM (Maybe Expr)
+reuseSolvedDictionary work isLocal goal = do
+  st <- get
+  let solved = checkSolvedDictionaries st
+  case M.lookup goal (solvedByGoal solved) of
+    Just dict | work + solvedDepth dict <= 1000, not (any isLocal (solvedClasses dict)) -> do
+      put st
+        { checkNextType = checkNextType st + solvedNewUnknowns dict
+        , checkNextSkolem = checkNextSkolem st + solvedNewSkolems dict
+        , checkNextSkolemScope = checkNextSkolemScope st + solvedNewSkolemScopes dict
+        , checkSolvedDictionaries = solved
+            { solvedDeepest = max (solvedDeepest solved) (work + solvedDepth dict)
+            , solvedTouched = S.union (solvedTouched solved) (solvedClasses dict)
+            }
+        }
+      pure (Just (solvedDictionary dict))
+    _ -> pure Nothing
+
+data SolvingStart = SolvingStart SolvedGoal !Int !Int !Int !Int !Int !(S.Set (Qualified (ProperName 'ClassName)))
+
+startSolving :: Int -> Qualified (ProperName 'ClassName) -> Maybe SolvedGoal -> TypeCheckM (Maybe SolvingStart)
+startSolving work className goal = state $ \st ->
+  let solved = checkSolvedDictionaries st
+  in case goal of
+    Nothing ->
+      (Nothing, st { checkSolvedDictionaries = solved { solvedDeepest = max work (solvedDeepest solved), solvedTouched = S.insert className (solvedTouched solved) } })
+    Just g ->
+      ( Just (SolvingStart g (checkNextType st) (checkNextSkolem st) (checkNextSkolemScope st) (solvedUnreusable solved) (solvedDeepest solved) (solvedTouched solved))
+      , st { checkSolvedDictionaries = solved { solvedDeepest = work, solvedTouched = S.singleton className } }
+      )
+
+finishSolving :: Int -> (Qualified (ProperName 'ClassName) -> Bool) -> Maybe SolvingStart -> Expr -> TypeCheckM ()
+finishSolving _ _ Nothing _ = pure ()
+finishSolving work isLocal (Just (SolvingStart goal nextType skolems scopes unreusable deepest touched)) dict = modify $ \st ->
+  let solved = checkSolvedDictionaries st
+      classes = solvedTouched solved
+      entry = SolvedDictionary dict (checkNextType st - nextType) (checkNextSkolem st - skolems) (checkNextSkolemScope st - scopes) (solvedDeepest solved - work) classes
+      byGoal
+        | solvedUnreusable solved == unreusable && not (any isLocal classes) = M.insert goal entry (solvedByGoal solved)
+        | otherwise = solvedByGoal solved
+  in st { checkSolvedDictionaries = solved { solvedByGoal = byGoal, solvedDeepest = max deepest (solvedDeepest solved), solvedTouched = S.union touched classes } }
+
+markUnreusable :: TypeCheckM ()
+markUnreusable = modify $ \st ->
+  let solved = checkSolvedDictionaries st
+  in st { checkSolvedDictionaries = solved { solvedUnreusable = solvedUnreusable solved + 1 } }
 
 -- Check if an instance matches our list of types, allowing for types
 -- to be solved via functional dependencies. If the types match, we return a
