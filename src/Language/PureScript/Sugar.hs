@@ -7,8 +7,9 @@ import Prelude
 
 import Control.Category ((>>>))
 import Control.Monad ((>=>))
-import Control.Monad.Error.Class (MonadError)
-import Control.Monad.Supply.Class (MonadSupply)
+import Control.Monad.Error.Class (MonadError, liftEither)
+import Control.Monad.Supply (SupplyT, runSupplyT)
+import Control.Monad.Supply.Class (MonadSupply(..))
 import Control.Monad.State.Class (MonadState)
 import Control.Monad.Writer.Class (MonadWriter)
 
@@ -63,17 +64,33 @@ desugar
   -> Module
   -> m Module
 desugar externs =
-  desugarSignedLiterals
-    >>> desugarObjectConstructors
-    >>> fmap (desugarAccessorModule externs)
-    >=> desugarDoModule
-    >=> desugarAdoModule
-    >=> desugarLetPatternModule
-    >>> desugarCasesModule
-    >=> desugarTypeDeclarationsModule
+  withSupplyOnly
+    ( desugarSignedLiterals
+        >>> desugarObjectConstructors
+        >>> fmap (desugarAccessorModule externs)
+        >=> desugarDoModule
+        >=> desugarAdoModule
+        >=> desugarLetPatternModule
+        >>> desugarCasesModule
+        >=> desugarTypeDeclarationsModule
+    )
     >=> desugarImports
-    >=> rebracket externs
-    >=> checkFixityExports
-    >=> deriveInstances
-    >=> desugarTypeClasses externs
-    >=> createBindingGroupsModule
+    >=> withSupplyOnly
+      ( rebracket externs
+          >=> checkFixityExports
+          >=> deriveInstances
+          >=> desugarTypeClasses externs
+          >=> createBindingGroupsModule
+      )
+
+withSupplyOnly
+  :: MonadSupply m
+  => MonadError MultipleErrors m
+  => (a -> SupplyT (Either MultipleErrors) b)
+  -> a
+  -> m b
+withSupplyOnly pass a = do
+  start <- peek
+  (b, next) <- liftEither $ runSupplyT start (pass a)
+  consumeUpTo next
+  pure b

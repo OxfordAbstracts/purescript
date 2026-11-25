@@ -15,7 +15,7 @@ import Control.DeepSeq (force)
 import Control.Exception.Lifted (onException, bracket_, evaluate, finally)
 import Control.Monad (foldM, unless, void, when, (<=<))
 import Control.Monad.Base (MonadBase(liftBase))
-import Control.Monad.Error.Class (MonadError(..))
+import Control.Monad.Error.Class (MonadError(..), liftEither)
 import Control.Monad.IO.Class (MonadIO(..))
 import Control.Monad.Supply (evalSupplyT, runSupply, runSupplyT)
 import Control.Monad.Trans.Control (MonadBaseControl(..))
@@ -133,10 +133,9 @@ rebuildModuleWithIndex MakeActions{..} exEnv env visibleModules externs m@(Modul
   -- desugar case declarations *after* type- and exhaustiveness checking
   -- since pattern guards introduces cases which the exhaustiveness checker
   -- reports as not-exhaustive.
-  (deguarded, nextVar') <- runSupplyT nextVar $ do
-    desugarCaseGuards elaborated
+  (deguarded, nextVar') <- liftEither . runSupplyT nextVar $ desugarCaseGuards elaborated
 
-  regrouped <- createBindingGroups moduleName . collapseBindingGroups $ deguarded
+  regrouped <- liftEither . createBindingGroups moduleName . collapseBindingGroups $ deguarded
   let mod' = Module ss coms moduleName regrouped exps
       corefn = CF.moduleToCoreFn env' mod'
       (optimized, nextVar'') = runSupply nextVar' $ CF.optimizeCoreFn corefn
