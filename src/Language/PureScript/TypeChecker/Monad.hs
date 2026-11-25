@@ -34,7 +34,7 @@ import Text.PrettyPrint.Boxes (render)
 import Control.Monad.Supply.Class (MonadSupply)
 import Control.Monad.Writer (MonadWriter(..), censor)
 import Control.Monad.Supply.Class qualified as Supply
-import GHC.Exts (Int64#, gtInt64#, intToInt64#, isTrue#, plusInt64#)
+import GHC.Exts (oneShot, Int64#, gtInt64#, intToInt64#, isTrue#, plusInt64#)
 import GHC.Int (Int64(..))
 import Control.Monad (forM_, when, join, (<=<), guard)
 
@@ -42,49 +42,53 @@ type TypeCheckResult a = (# (# MultipleErrors, MultipleErrors #) | (# a, CheckSt
 
 newtype TypeCheckM a = TypeCheckM { unTypeCheckM :: [ErrorMessageHint] -> CheckState -> Int64# -> MultipleErrors -> TypeCheckResult a }
 
+mkTypeCheckM :: ([ErrorMessageHint] -> CheckState -> Int64# -> MultipleErrors -> TypeCheckResult a) -> TypeCheckM a
+mkTypeCheckM f = TypeCheckM (oneShot (\hints -> oneShot (\st -> oneShot (\n -> oneShot (\w -> f hints st n w)))))
+{-# INLINE mkTypeCheckM #-}
+
 instance Functor TypeCheckM where
-  fmap f (TypeCheckM m) = TypeCheckM $ \hints st n w -> case m hints st n w of
+  fmap f (TypeCheckM m) = mkTypeCheckM $ \hints st n w -> case m hints st n w of
     (# failure | #) -> (# failure | #)
     (# | (# a, st', n', w' #) #) -> (# | (# f a, st', n', w' #) #)
 
 instance Applicative TypeCheckM where
-  pure a = TypeCheckM $ \_ st n w -> (# | (# a, st, n, w #) #)
-  TypeCheckM mf <*> TypeCheckM ma = TypeCheckM $ \hints st n w -> case mf hints st n w of
+  pure a = mkTypeCheckM $ \_ st n w -> (# | (# a, st, n, w #) #)
+  TypeCheckM mf <*> TypeCheckM ma = mkTypeCheckM $ \hints st n w -> case mf hints st n w of
     (# failure | #) -> (# failure | #)
     (# | (# f, st', n', w' #) #) -> case ma hints st' n' w' of
       (# failure | #) -> (# failure | #)
       (# | (# a, st'', n'', w'' #) #) -> (# | (# f a, st'', n'', w'' #) #)
-  TypeCheckM ma *> TypeCheckM mb = TypeCheckM $ \hints st n w -> case ma hints st n w of
+  TypeCheckM ma *> TypeCheckM mb = mkTypeCheckM $ \hints st n w -> case ma hints st n w of
     (# failure | #) -> (# failure | #)
     (# | (# _, st', n', w' #) #) -> mb hints st' n' w'
 
 instance Monad TypeCheckM where
-  TypeCheckM m >>= k = TypeCheckM $ \hints st n w -> case m hints st n w of
+  TypeCheckM m >>= k = mkTypeCheckM $ \hints st n w -> case m hints st n w of
     (# failure | #) -> (# failure | #)
     (# | (# a, st', n', w' #) #) -> unTypeCheckM (k a) hints st' n' w'
 
 instance MonadState CheckState TypeCheckM where
-  get = TypeCheckM $ \_ st n w -> (# | (# st, st, n, w #) #)
-  put st = TypeCheckM $ \_ _ n w -> (# | (# (), st, n, w #) #)
-  state f = TypeCheckM $ \_ st n w -> let r = f st in (# | (# fst r, snd r, n, w #) #)
+  get = mkTypeCheckM $ \_ st n w -> (# | (# st, st, n, w #) #)
+  put st = mkTypeCheckM $ \_ _ n w -> (# | (# (), st, n, w #) #)
+  state f = mkTypeCheckM $ \_ st n w -> let r = f st in (# | (# fst r, snd r, n, w #) #)
 
 instance MonadSupply TypeCheckM where
-  fresh = TypeCheckM $ \_ st n w -> (# | (# I64# n, st, n `plusInt64#` intToInt64# 1#, w #) #)
-  peek = TypeCheckM $ \_ st n w -> (# | (# I64# n, st, n, w #) #)
-  consumeUpTo (I64# m) = TypeCheckM $ \_ st n w -> (# | (# (), st, if isTrue# (m `gtInt64#` n) then m else n, w #) #)
+  fresh = mkTypeCheckM $ \_ st n w -> (# | (# I64# n, st, n `plusInt64#` intToInt64# 1#, w #) #)
+  peek = mkTypeCheckM $ \_ st n w -> (# | (# I64# n, st, n, w #) #)
+  consumeUpTo (I64# m) = mkTypeCheckM $ \_ st n w -> (# | (# (), st, if isTrue# (m `gtInt64#` n) then m else n, w #) #)
 
 instance MonadError MultipleErrors TypeCheckM where
-  throwError e = TypeCheckM $ \_ _ _ w -> (# (# e, w #) | #)
-  catchError (TypeCheckM m) handler = TypeCheckM $ \hints st n w -> case m hints st n w of
+  throwError e = mkTypeCheckM $ \_ _ _ w -> (# (# e, w #) | #)
+  catchError (TypeCheckM m) handler = mkTypeCheckM $ \hints st n w -> case m hints st n w of
     (# (# e, w' #) | #) -> unTypeCheckM (handler e) hints st n w'
     success -> success
 
 instance MonadWriter MultipleErrors TypeCheckM where
-  tell w' = TypeCheckM $ \_ st n w -> let wt = w <> w' in wt `seq` (# | (# (), st, n, wt #) #)
-  listen (TypeCheckM m) = TypeCheckM $ \hints st n w -> case m hints st n mempty of
+  tell w' = mkTypeCheckM $ \_ st n w -> let wt = w <> w' in wt `seq` (# | (# (), st, n, wt #) #)
+  listen (TypeCheckM m) = mkTypeCheckM $ \hints st n w -> case m hints st n mempty of
     (# (# e, w' #) | #) -> let wt = w <> w' in wt `seq` (# (# e, wt #) | #)
     (# | (# a, st', n', w' #) #) -> let wt = w <> w' in wt `seq` (# | (# (a, w'), st', n', wt #) #)
-  pass (TypeCheckM m) = TypeCheckM $ \hints st n w -> case m hints st n mempty of
+  pass (TypeCheckM m) = mkTypeCheckM $ \hints st n w -> case m hints st n mempty of
     (# (# e, w' #) | #) -> let wt = w <> w' in wt `seq` (# (# e, wt #) | #)
     (# | (# r, st', n', w' #) #) -> let wt = w <> snd r w' in wt `seq` (# | (# fst r, st', n', wt #) #)
 
@@ -240,14 +244,14 @@ withErrorMessageHint
   :: ErrorMessageHint
   -> TypeCheckM a
   -> TypeCheckM a
-withErrorMessageHint hint (TypeCheckM action) = TypeCheckM $ \hints st n w -> case action (hint : hints) st n w of
+withErrorMessageHint hint (TypeCheckM action) = mkTypeCheckM $ \hints st n w -> case action (hint : hints) st n w of
   (# (# e, w' #) | #) -> (# (# addHint hint e, w' #) | #)
   success -> success
 
 -- | These hints are added at the front, so the most nested hint occurs
 -- at the front, but the simplifier assumes the reverse order.
 getHints :: TypeCheckM [ErrorMessageHint]
-getHints = TypeCheckM $ \hints st n w -> (# | (# reverse hints, st, n, w #) #)
+getHints = mkTypeCheckM $ \hints st n w -> (# | (# reverse hints, st, n, w #) #)
 
 rethrowWithPositionTC
   :: SourceSpan
