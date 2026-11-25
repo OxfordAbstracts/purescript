@@ -100,7 +100,7 @@ substituteType sub
         case IM.lookup u (substType sub) of
           Nothing -> Nothing
           Just t@(TUnknown _ u1) | u1 == u -> Just t
-          Just t -> Just (substituteType sub t)
+          Just t -> Just $! substituteType sub t
       _ ->
         Nothing
 

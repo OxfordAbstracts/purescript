@@ -724,7 +724,10 @@ rewriteTypesBottomUp f t = fromMaybe t (go t) where
     KindApp ann t1 t2 -> rebuild2 ty (KindApp ann) t1 t2
     ForAll ann vis arg mbK body sco -> case (go =<< mbK, go body) of
       (Nothing, Nothing) -> f ty
-      (mbK', body') -> changed $ ForAll ann vis arg (mbK' <|> mbK) (fromMaybe body body') sco
+      (mbK', body') ->
+        let !mbK'' = mbK' <|> mbK
+            !body'' = fromMaybe body body'
+        in changed (ForAll ann vis arg mbK'' body'' sco)
     ConstrainedType ann c body ->
       let kargs = constraintKindArgs c
           args = constraintArgs c
@@ -746,10 +749,14 @@ rewriteTypesBottomUp f t = fromMaybe t (go t) where
       Nothing -> f ty
       Just t1' -> changed $ ParensInType ann t1'
     _ -> f ty
-  rebuild2 ty con t1 t2 = case (go t1, go t2) of
-    (Nothing, Nothing) -> f ty
-    (t1', t2') -> changed $ con (fromMaybe t1 t1') (fromMaybe t2 t2')
-  changed ty' = Just (fromMaybe ty' (f ty'))
+  rebuild2 ty con t1 t2 = case go t1 of
+    Nothing -> case go t2 of
+      Nothing -> f ty
+      Just t2' -> changed (con t1 t2')
+    Just t1' -> let !t2' = fromMaybe t2 (go t2) in changed (con t1' t2')
+  changed ty' = case f ty' of
+    Nothing -> Just ty'
+    r -> r
 
 everywhereOnTypesM :: Monad m => (Type a -> m (Type a)) -> Type a -> m (Type a)
 everywhereOnTypesM f = go where
