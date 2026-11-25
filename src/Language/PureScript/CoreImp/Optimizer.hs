@@ -57,8 +57,14 @@ optimize exps jsDecls = removeUnusedEffectFreeVars exps <$> traverse (traverse g
             , rewriteBottomUp (inlineCommonValues expander)
             , rewriteTopDown (inlineCommonOperators expander)
             ] js
-      composed <- rewriteTopDownM (inlineFnComposition expander) (fromMaybe js rewritten)
+      let js' = fromMaybe js rewritten
+      composed <- if anywhere composes js'
+        then rewriteTopDownM (inlineFnComposition expander) js'
+        else return Nothing
       return (composed <|> rewritten)
+
+    composes :: AST -> Bool
+    composes js = isJust (inlineFnComposition expander js :: Maybe (m AST))
 
     inlineApplies :: AST -> Bool
     inlineApplies = anywhere $ \js ->
@@ -68,7 +74,7 @@ optimize exps jsDecls = removeUnusedEffectFreeVars exps <$> traverse (traverse g
         || isJust (inlineUnsafePartial js)
         || isJust (inlineUnsafeCoerce js)
         || isJust (inlineFnIdentity expander js)
-        || isJust (inlineFnComposition expander js :: Maybe (m AST))
+        || composes js
 
     magicDoUntilFixedPoint :: (AST -> Maybe AST) -> AST -> m AST
     magicDoUntilFixedPoint rule = untilFixedPointWhen (anyRuleApplies [rule]) (return . rewriteTopDown rule)
