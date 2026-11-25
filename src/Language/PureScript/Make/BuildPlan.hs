@@ -20,6 +20,7 @@ import Control.Monad.Base (liftBase)
 import Control.Monad (foldM, guard)
 import Control.Monad.Trans.Control (MonadBaseControl(..))
 import Data.Foldable (foldl')
+import Data.IORef (IORef, newIORef)
 import Data.Map qualified as M
 import Data.Maybe (fromMaybe, isNothing)
 import Data.Monoid (Any(..))
@@ -68,7 +69,7 @@ data BuildPlan = BuildPlan
   , bpBuildJobs :: M.Map ModuleName BuildJob
   , bpEnv :: C.MVar Env
   , bpCheckEnv :: C.MVar Environment
-  , bpIndex :: C.MVar Int
+  , bpIndex :: IORef Int
   }
 
 
@@ -242,7 +243,7 @@ construct Options{..} MakeActions{..} cacheDb (sorted, graph) = do
 
   env <- C.newMVar primEnv
   checkEnv <- C.newMVar initEnvironment
-  idx <- C.newMVar 1
+  idx <- liftBase $ newIORef 1
   pure
     ( BuildPlan prebuilt previous buildJobs env checkEnv idx
     , let

@@ -12,7 +12,7 @@ import Prelude
 
 import Control.Concurrent.Lifted as C
 import Control.DeepSeq (force)
-import Control.Exception.Lifted (onException, bracket_, evaluate)
+import Control.Exception.Lifted (onException, bracket_, evaluate, finally)
 import Control.Monad (foldM, unless, void, when, (<=<))
 import Control.Monad.Base (MonadBase(liftBase))
 import Control.Monad.Error.Class (MonadError(..))
@@ -27,6 +27,7 @@ import Data.Function (on)
 import Data.Foldable (fold, for_, traverse_)
 import Data.List (foldl', sortOn)
 import Data.IntSet qualified as IS
+import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef)
 import Data.List.NonEmpty qualified as NEL
 import Data.Maybe (fromMaybe, mapMaybe)
 import Data.Map qualified as M
@@ -163,6 +164,35 @@ data MakeOptions = MakeOptions
   { moCollectAllExterns :: Bool
   }
 
+data ProgressQueue = ProgressQueue
+  { pqPending :: IORef [ProgressMessage]
+  , pqWriter :: C.MVar ()
+  }
+
+newProgressQueue :: MonadBase IO m => m ProgressQueue
+newProgressQueue = ProgressQueue <$> liftBase (newIORef []) <*> C.newMVar ()
+
+enqueueProgress :: MonadBaseControl IO m => (ProgressMessage -> m ()) -> ProgressQueue -> ProgressMessage -> m ()
+enqueueProgress write queue msg = do
+  liftBase $ atomicModifyIORef' (pqPending queue) (\msgs -> (msg : msgs, ()))
+  writePendingProgress write queue
+
+writePendingProgress :: MonadBaseControl IO m => (ProgressMessage -> m ()) -> ProgressQueue -> m ()
+writePendingProgress write queue@ProgressQueue{..} = do
+  becameWriter <- C.tryTakeMVar pqWriter
+  for_ becameWriter $ \() -> do
+    drainProgress write queue `finally` C.putMVar pqWriter ()
+    stillPending <- liftBase $ readIORef pqPending
+    unless (null stillPending) $ writePendingProgress write queue
+
+drainProgress :: MonadBase IO m => (ProgressMessage -> m ()) -> ProgressQueue -> m ()
+drainProgress write ProgressQueue{..} =
+  liftBase (atomicModifyIORef' pqPending (\msgs -> ([], msgs))) >>= traverse_ write . reverse
+
+flushProgress :: MonadBaseControl IO m => (ProgressMessage -> m ()) -> ProgressQueue -> m ()
+flushProgress write queue@ProgressQueue{..} =
+  bracket_ (C.takeMVar pqWriter) (C.putMVar pqWriter ()) (drainProgress write queue)
+
 -- | Compiles in "make" mode, compiling each module separately to a @.js@ file
 -- and an @externs.cbor@ file.
 --
@@ -208,6 +238,8 @@ make' MakeOptions{..} ma@MakeActions{..} ms = do
   capabilities <- getNumCapabilities
   let concurrency = max 1 capabilities
   lock <- C.newQSem concurrency
+  progressQueue <- newProgressQueue
+  let reportProgress = enqueueProgress progress progressQueue
 
   sortedModuleNames <- liftBase . evaluate . force $ getModuleName . CST.resPartial <$> sorted
   let moduleRanks = M.fromList (zip sortedModuleNames [0 :: Int ..])
@@ -219,7 +251,7 @@ make' MakeOptions{..} ma@MakeActions{..} ms = do
   for_ toBeRebuilt $ \m -> fork $ do
     let moduleName = getModuleName . CST.resPartial $ m
     let deps = fromMaybe (internalError "make: module not found in dependency graph.") (M.lookup moduleName graphMap)
-    buildModule lock buildPlan moduleName totalModuleCount
+    buildModule lock reportProgress buildPlan moduleName totalModuleCount
       (T.unpack . spanName . getModuleSourceSpan . CST.resPartial $ m)
       (fst $ CST.resFull m)
       (fmap importPrim . snd $ CST.resFull m)
@@ -241,6 +273,8 @@ make' MakeOptions{..} ma@MakeActions{..} ms = do
           Left mempty
     in
       M.mapEither splitResults <$> BuildPlan.collectResults buildPlan
+
+  flushProgress progress progressQueue
 
   -- Write the updated build cache database to disk
   writeCacheDb $ Cache.removeModules (M.keysSet failures) newCacheDb
@@ -293,8 +327,8 @@ make' MakeOptions{..} ma@MakeActions{..} ms = do
       [] -> Nothing
       xss -> Just xss
 
-  buildModule :: QSem -> BuildPlan -> ModuleName -> Int -> FilePath -> [CST.ParserWarning] -> Either (NEL.NonEmpty CST.ParserError) Module -> [ModuleName] -> m ()
-  buildModule lock buildPlan moduleName cnt fp pwarnings mres deps = do
+  buildModule :: QSem -> (ProgressMessage -> m ()) -> BuildPlan -> ModuleName -> Int -> FilePath -> [CST.ParserWarning] -> Either (NEL.NonEmpty CST.ParserError) Module -> [ModuleName] -> m ()
+  buildModule lock reportProgress buildPlan moduleName cnt fp pwarnings mres deps = do
     result <- flip catchError (return . BuildJobFailed) $ do
       -- We need to wait for dependencies to be built, before checking if the current
       -- module should be rebuilt, so the first thing to do is to wait on the
@@ -322,14 +356,13 @@ make' MakeOptions{..} ma@MakeActions{..} ms = do
                   -- on any of exiting codegen targets, it will run the build process.
                   updated <- updateOutputTimestamp moduleName
                   if updated then do
-                    progress $ SkippingModule moduleName moduleIndex
+                    reportProgress $ SkippingModule moduleName moduleIndex
                     pure $ Just (exts, MultipleErrors [], Just (emptyDiff moduleName))
                   else
                     pure Nothing
                 | otherwise = pure Nothing
 
-          idx <- C.takeMVar (bpIndex buildPlan)
-          C.putMVar (bpIndex buildPlan) (idx + 1)
+          idx <- liftBase $ atomicModifyIORef' (bpIndex buildPlan) (\i -> (i + 1, i))
 
           (exts, warnings, diff) <- do
             let doBuild = do
@@ -355,7 +388,7 @@ make' MakeOptions{..} ma@MakeActions{..} ms = do
                     -- Force the externs and warnings to avoid retaining excess module
                     -- data after the module is finished compiling.
                     extsAndWarnings <- evaluate . force <=< listen $ do
-                      rebuildModuleWithIndex ma env checkEnv (Just (S.fromList deps)) externs m (Just (idx, cnt))
+                      rebuildModuleWithIndex ma { progress = reportProgress } env checkEnv (Just (S.fromList deps)) externs m (Just (idx, cnt))
                     liftBase $ traceMarkerIO $ T.unpack (runModuleName moduleName) <> " end"
                     return extsAndWarnings
                   diff <- liftBase . evaluate $ diffExterns exts <$> (snd <$> prevResult) <*> depsDiffs
