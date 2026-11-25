@@ -119,9 +119,10 @@ anyRuleApplies rules = anywhere (\js -> any (\rule -> isJust (rule js)) rules)
 buildExpander :: [AST] -> AST -> AST
 buildExpander asts
   | M.null vars = id
-  | otherwise = everywhere replace
+  | otherwise = expand
   where
   vars = M.fromListWith (\_ firstBound -> firstBound)
     [ (name, e) | VariableIntroduction _ name (Just (NoEffects, e)) <- asts ]
-  replace v@(Var _ var) = M.findWithDefault v var vars
-  replace other = other
+  expand v@(Var _ var) = M.findWithDefault v var vars
+  expand (App ss f args) = App ss (expand f) (map expand args)
+  expand other = other
