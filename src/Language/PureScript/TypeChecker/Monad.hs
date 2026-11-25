@@ -29,7 +29,7 @@ import Language.PureScript.Names (Ident(..), ModuleName, ProperName(..), ProperN
 import Language.PureScript.Pretty.Types (prettyPrintType)
 import Language.PureScript.Pretty.Values (prettyPrintValue)
 import Language.PureScript.TypeClassDictionaries (ClassInstances, InstanceContext, NamedDict, TypeClassDictionaryInScope(..), instancesByClass, singletonInstance)
-import Language.PureScript.Types (Constraint(..), SourceType, Type(..), srcKindedType, srcTypeVar)
+import Language.PureScript.Types (Constraint(..), SourceType, Type(..), everythingOnTypes, srcKindedType, srcTypeVar)
 import Text.PrettyPrint.Boxes (render)
 import Control.Monad.Supply.Class (MonadSupply)
 import Control.Monad.Writer (MonadWriter(..), censor)
@@ -132,7 +132,7 @@ instance Ord UnkLevel where
 
 -- | A substitution of unification variables for types.
 data Substitution = Substitution
-  { substType :: IM.IntMap SourceType
+  { substType :: IM.IntMap Solution
   -- ^ Type substitution
   , substUnsolved :: IM.IntMap (UnkLevel, SourceType)
   -- ^ Unsolved unification variables with their level (scope ordering) and kind
@@ -141,8 +141,16 @@ data Substitution = Substitution
   , substSolutions :: !Int
   }
 
+data Solution = Solution
+  { solutionIsGround :: !Bool
+  , solutionType :: SourceType
+  }
+
 insertSolution :: Unknown -> SourceType -> Substitution -> Substitution
-insertSolution u t sub = sub { substType = IM.insert u t (substType sub), substSolutions = substSolutions sub + 1 }
+insertSolution u t sub = sub { substType = IM.insert u (Solution (not (everythingOnTypes (||) isUnknown t)) t) (substType sub), substSolutions = substSolutions sub + 1 }
+  where
+  isUnknown TUnknown{} = True
+  isUnknown _ = False
 
 insertUnkName :: (MonadState CheckState m) => Unknown -> Text -> m ()
 insertUnkName u t = do
@@ -564,7 +572,7 @@ debugSubstitution (Substitution solved unsolved names _) =
   unsolved' =
     IM.filterWithKey (\k _ -> IM.notMember k solved) unsolved
 
-  go1 (u, ty) =
+  go1 (u, Solution _ ty) =
     "?" <> show u <> " = " <> debugType ty
 
   go2 (u, (_, k)) =

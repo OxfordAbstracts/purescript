@@ -31,7 +31,7 @@ import Language.PureScript.Crash (internalError)
 import Language.PureScript.Environment qualified as E
 import Language.PureScript.Errors (ErrorMessageHint(..), SimpleErrorMessage(..), SourceAnn, errorMessage, internalCompilerError, onErrorMessages, rethrow, warnWithPosition, withoutPosition)
 import Language.PureScript.TypeChecker.Kinds (elaborateKind, instantiateKind, unifyKinds')
-import Language.PureScript.TypeChecker.Monad (CheckState(..), Substitution(..), UnkLevel(..), Unknown, getLocalContext, guardWith, insertSolution, lookupUnkName, withErrorMessageHint, TypeCheckM)
+import Language.PureScript.TypeChecker.Monad (CheckState(..), Solution(..), Substitution(..), UnkLevel(..), Unknown, getLocalContext, guardWith, insertSolution, lookupUnkName, withErrorMessageHint, TypeCheckM)
 import Language.PureScript.TypeChecker.Skolems (newSkolemConstant, skolemize)
 import Language.PureScript.Types (Constraint(..), pattern REmptyKinded, RowListItem(..), SourceType, Type(..), WildcardData(..), alignRowsWith, everythingOnTypes, everywhereOnTypesM, rewriteTypesBottomUp, getAnnForType, mkForAll, rowFromList, srcTUnknown)
 
@@ -84,8 +84,9 @@ substituteType sub
   go (TUnknown _ u) =
     case IM.lookup u (substType sub) of
       Nothing -> Nothing
-      Just t@(TUnknown _ u1) | u1 == u -> Just t
-      Just t -> Just $! substituteType sub t
+      Just (Solution True t) -> Just t
+      Just (Solution _ t@(TUnknown _ u1)) | u1 == u -> Just t
+      Just (Solution _ t) -> Just $! substituteType sub t
   go _ = Nothing
 
 substituteTypeSince :: Substitution -> Substitution -> SourceType -> SourceType

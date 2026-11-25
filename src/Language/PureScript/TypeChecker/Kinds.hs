@@ -53,7 +53,7 @@ import Language.PureScript.Crash (HasCallStack, internalError)
 import Language.PureScript.Environment qualified as E
 import Language.PureScript.Errors
 import Language.PureScript.Names (pattern ByNullSourcePos, ModuleName, Name(..), ProperName(..), ProperNameType(..), Qualified(..), QualifiedBy(..), coerceProperName, mkQualified)
-import Language.PureScript.TypeChecker.Monad (CheckState(..), Substitution(..), UnkLevel(..), Unknown, bindLocalTypeVariables, insertSolution, debugType, getEnv, lookupTypeVariable, unsafeCheckCurrentModule, withErrorMessageHint, withFreshSubstitution, TypeCheckM)
+import Language.PureScript.TypeChecker.Monad (CheckState(..), Solution(..), Substitution(..), UnkLevel(..), Unknown, bindLocalTypeVariables, insertSolution, debugType, getEnv, lookupTypeVariable, unsafeCheckCurrentModule, withErrorMessageHint, withFreshSubstitution, TypeCheckM)
 import Language.PureScript.TypeChecker.Skolems (newSkolemConstant, newSkolemScope, skolemize)
 import Language.PureScript.TypeChecker.Synonyms (replaceAllTypeSynonyms)
 import Language.PureScript.Types
@@ -99,8 +99,9 @@ substituteType sub
       TUnknown _ u ->
         case IM.lookup u (substType sub) of
           Nothing -> Nothing
-          Just t@(TUnknown _ u1) | u1 == u -> Just t
-          Just t -> Just $! substituteType sub t
+          Just (Solution True t) -> Just t
+          Just (Solution _ t@(TUnknown _ u1)) | u1 == u -> Just t
+          Just (Solution _ t) -> Just $! substituteType sub t
       _ ->
         Nothing
 
