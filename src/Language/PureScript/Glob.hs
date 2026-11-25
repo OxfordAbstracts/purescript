@@ -2,7 +2,9 @@ module Language.PureScript.Glob where
 
 import Prelude
 
+import Control.Concurrent.Async.Chunked (forConcurrentlyChunked)
 import Control.Monad (when)
+import Data.Foldable (for_)
 import Data.List (nub, (\\))
 import Data.Text qualified as T
 import System.FilePath.Glob (glob)
@@ -33,12 +35,11 @@ inputGlobsFromFile globsFromFile = do
   pure $ foldMap toInputs mbInputsFromFile
 
 globWarningOnMisses :: (String -> IO ()) -> [FilePath] -> IO [FilePath]
-globWarningOnMisses warn = foldMap globWithWarning
-  where
-  globWithWarning pattern' = do
-    paths <- glob pattern'
+globWarningOnMisses warn patterns = do
+  matches <- forConcurrentlyChunked 8 patterns glob
+  for_ (zip patterns matches) $ \(pattern', paths) ->
     when (null paths) $ warn pattern'
-    return paths
+  pure (concat matches)
 
 warnFileTypeNotFound :: String -> String -> IO ()
 warnFileTypeNotFound pursCmd = hPutStrLn stderr . ("purs " <> pursCmd <> ": No files found using pattern: " ++)
