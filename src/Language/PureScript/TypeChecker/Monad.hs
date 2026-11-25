@@ -24,7 +24,7 @@ import Data.List.NonEmpty qualified as NEL
 
 import Language.PureScript.Crash (internalError)
 import Language.PureScript.Environment (Environment(..), NameKind(..), NameVisibility(..), TypeClassData(..), TypeKind(..))
-import Language.PureScript.Errors (Context, ErrorMessageHint, ExportSource, Expr, ImportDeclarationType, MultipleErrors, SimpleErrorMessage(..), SourceAnn, SourceSpan(..), addHint, errorMessage, positionedError, rethrow, warnWithPosition)
+import Language.PureScript.Errors (Context, ErrorMessageHint, ExportSource, Expr, ImportDeclarationType, MultipleErrors, SimpleErrorMessage(..), SourceAnn, SourceSpan(..), addHint, errorMessage, positionedError, warnWithPosition)
 import Language.PureScript.Names (Ident(..), ModuleName, ProperName(..), ProperNameType(..), Qualified(..), QualifiedBy(..), coerceProperName, disqualify, runIdent, runModuleName, showQualified, toMaybeModuleName)
 import Language.PureScript.Pretty.Types (prettyPrintType)
 import Language.PureScript.Pretty.Values (prettyPrintValue)
@@ -40,56 +40,56 @@ import Control.Monad (forM_, when, join, (<=<), guard)
 
 type TypeCheckResult a = (# (# MultipleErrors, MultipleErrors #) | (# a, CheckState, Int64#, MultipleErrors #) #)
 
-newtype TypeCheckM a = TypeCheckM { unTypeCheckM :: CheckState -> Int64# -> MultipleErrors -> TypeCheckResult a }
+newtype TypeCheckM a = TypeCheckM { unTypeCheckM :: [ErrorMessageHint] -> CheckState -> Int64# -> MultipleErrors -> TypeCheckResult a }
 
 instance Functor TypeCheckM where
-  fmap f (TypeCheckM m) = TypeCheckM $ \st n w -> case m st n w of
+  fmap f (TypeCheckM m) = TypeCheckM $ \hints st n w -> case m hints st n w of
     (# failure | #) -> (# failure | #)
     (# | (# a, st', n', w' #) #) -> (# | (# f a, st', n', w' #) #)
 
 instance Applicative TypeCheckM where
-  pure a = TypeCheckM $ \st n w -> (# | (# a, st, n, w #) #)
-  TypeCheckM mf <*> TypeCheckM ma = TypeCheckM $ \st n w -> case mf st n w of
+  pure a = TypeCheckM $ \_ st n w -> (# | (# a, st, n, w #) #)
+  TypeCheckM mf <*> TypeCheckM ma = TypeCheckM $ \hints st n w -> case mf hints st n w of
     (# failure | #) -> (# failure | #)
-    (# | (# f, st', n', w' #) #) -> case ma st' n' w' of
+    (# | (# f, st', n', w' #) #) -> case ma hints st' n' w' of
       (# failure | #) -> (# failure | #)
       (# | (# a, st'', n'', w'' #) #) -> (# | (# f a, st'', n'', w'' #) #)
-  TypeCheckM ma *> TypeCheckM mb = TypeCheckM $ \st n w -> case ma st n w of
+  TypeCheckM ma *> TypeCheckM mb = TypeCheckM $ \hints st n w -> case ma hints st n w of
     (# failure | #) -> (# failure | #)
-    (# | (# _, st', n', w' #) #) -> mb st' n' w'
+    (# | (# _, st', n', w' #) #) -> mb hints st' n' w'
 
 instance Monad TypeCheckM where
-  TypeCheckM m >>= k = TypeCheckM $ \st n w -> case m st n w of
+  TypeCheckM m >>= k = TypeCheckM $ \hints st n w -> case m hints st n w of
     (# failure | #) -> (# failure | #)
-    (# | (# a, st', n', w' #) #) -> unTypeCheckM (k a) st' n' w'
+    (# | (# a, st', n', w' #) #) -> unTypeCheckM (k a) hints st' n' w'
 
 instance MonadState CheckState TypeCheckM where
-  get = TypeCheckM $ \st n w -> (# | (# st, st, n, w #) #)
-  put st = TypeCheckM $ \_ n w -> (# | (# (), st, n, w #) #)
-  state f = TypeCheckM $ \st n w -> let r = f st in (# | (# fst r, snd r, n, w #) #)
+  get = TypeCheckM $ \_ st n w -> (# | (# st, st, n, w #) #)
+  put st = TypeCheckM $ \_ _ n w -> (# | (# (), st, n, w #) #)
+  state f = TypeCheckM $ \_ st n w -> let r = f st in (# | (# fst r, snd r, n, w #) #)
 
 instance MonadSupply TypeCheckM where
-  fresh = TypeCheckM $ \st n w -> (# | (# I64# n, st, n `plusInt64#` intToInt64# 1#, w #) #)
-  peek = TypeCheckM $ \st n w -> (# | (# I64# n, st, n, w #) #)
-  consumeUpTo (I64# m) = TypeCheckM $ \st n w -> (# | (# (), st, if isTrue# (m `gtInt64#` n) then m else n, w #) #)
+  fresh = TypeCheckM $ \_ st n w -> (# | (# I64# n, st, n `plusInt64#` intToInt64# 1#, w #) #)
+  peek = TypeCheckM $ \_ st n w -> (# | (# I64# n, st, n, w #) #)
+  consumeUpTo (I64# m) = TypeCheckM $ \_ st n w -> (# | (# (), st, if isTrue# (m `gtInt64#` n) then m else n, w #) #)
 
 instance MonadError MultipleErrors TypeCheckM where
-  throwError e = TypeCheckM $ \_ _ w -> (# (# e, w #) | #)
-  catchError (TypeCheckM m) handler = TypeCheckM $ \st n w -> case m st n w of
-    (# (# e, w' #) | #) -> unTypeCheckM (handler e) st n w'
+  throwError e = TypeCheckM $ \_ _ _ w -> (# (# e, w #) | #)
+  catchError (TypeCheckM m) handler = TypeCheckM $ \hints st n w -> case m hints st n w of
+    (# (# e, w' #) | #) -> unTypeCheckM (handler e) hints st n w'
     success -> success
 
 instance MonadWriter MultipleErrors TypeCheckM where
-  tell w' = TypeCheckM $ \st n w -> let wt = w <> w' in wt `seq` (# | (# (), st, n, wt #) #)
-  listen (TypeCheckM m) = TypeCheckM $ \st n w -> case m st n mempty of
+  tell w' = TypeCheckM $ \_ st n w -> let wt = w <> w' in wt `seq` (# | (# (), st, n, wt #) #)
+  listen (TypeCheckM m) = TypeCheckM $ \hints st n w -> case m hints st n mempty of
     (# (# e, w' #) | #) -> let wt = w <> w' in wt `seq` (# (# e, wt #) | #)
     (# | (# a, st', n', w' #) #) -> let wt = w <> w' in wt `seq` (# | (# (a, w'), st', n', wt #) #)
-  pass (TypeCheckM m) = TypeCheckM $ \st n w -> case m st n mempty of
+  pass (TypeCheckM m) = TypeCheckM $ \hints st n w -> case m hints st n mempty of
     (# (# e, w' #) | #) -> let wt = w <> w' in wt `seq` (# (# e, wt #) | #)
     (# | (# r, st', n', w' #) #) -> let wt = w <> snd r w' in wt `seq` (# | (# fst r, st', n', wt #) #)
 
 runTypeCheckM :: TypeCheckM a -> CheckState -> Int64 -> (Either MultipleErrors (a, CheckState, Int64), MultipleErrors)
-runTypeCheckM (TypeCheckM m) st (I64# n) = case m st n mempty of
+runTypeCheckM (TypeCheckM m) st (I64# n) = case m [] st n mempty of
   (# (# e, w #) | #) -> (Left e, w)
   (# | (# a, st', n', w #) #) -> (Right (a, st', I64# n'), w)
 
@@ -178,11 +178,6 @@ data CheckState = CheckState
   -- they are actually defined in or re-exported from the imported modules.
   , checkSubstitution :: Substitution
   -- ^ The current substitution
-  , checkHints :: [ErrorMessageHint]
-  -- ^ The current error message hint stack.
-  -- This goes into state, rather than using 'rethrow',
-  -- since this way, we can provide good error messages
-  -- during instance resolution.
   , checkConstructorImportsForCoercible :: S.Set (ModuleName, Qualified (ProperName 'ConstructorName))
   -- ^ Newtype constructors imports required to solve Coercible constraints.
   -- We have to keep track of them so that we don't emit unused import warnings.
@@ -192,7 +187,7 @@ data CheckState = CheckState
 
 -- | Create an empty @CheckState@
 emptyCheckState :: Environment -> CheckState
-emptyCheckState env = CheckState env 0 0 0 Nothing [] emptySubstitution [] mempty mempty Nothing
+emptyCheckState env = CheckState env 0 0 0 Nothing [] emptySubstitution mempty mempty Nothing
 
 -- | Unification variables
 type Unknown = Int
@@ -242,22 +237,17 @@ withScopedTypeVars mn ks ma = do
   bindTypes (M.fromList (map (\(name, k) -> (Qualified (ByModuleName mn) (ProperName name), (k, ScopedTypeVar))) ks)) ma
 
 withErrorMessageHint
-  :: (MonadState CheckState m, MonadError MultipleErrors m)
-  => ErrorMessageHint
-  -> m a
-  -> m a
-withErrorMessageHint hint action = do
-  orig <- get
-  modify $ \st -> st { checkHints = hint : checkHints st }
-  -- Need to use 'rethrow' anyway, since we have to handle regular errors
-  a <- rethrow (addHint hint) action
-  modify $ \st -> st { checkHints = checkHints orig }
-  return a
+  :: ErrorMessageHint
+  -> TypeCheckM a
+  -> TypeCheckM a
+withErrorMessageHint hint (TypeCheckM action) = TypeCheckM $ \hints st n w -> case action (hint : hints) st n w of
+  (# (# e, w' #) | #) -> (# (# addHint hint e, w' #) | #)
+  success -> success
 
 -- | These hints are added at the front, so the most nested hint occurs
 -- at the front, but the simplifier assumes the reverse order.
 getHints :: TypeCheckM [ErrorMessageHint]
-getHints = gets (reverse . checkHints)
+getHints = TypeCheckM $ \hints st n w -> (# | (# reverse hints, st, n, w #) #)
 
 rethrowWithPositionTC
   :: SourceSpan
