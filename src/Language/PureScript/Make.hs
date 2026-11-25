@@ -10,6 +10,7 @@ module Language.PureScript.Make
 
 import Prelude
 
+import Control.Concurrent.Async.Chunked (forConcurrentlyChunked)
 import Control.Concurrent.Lifted as C
 import Control.DeepSeq (force)
 import Control.Exception.Lifted (onException, bracket_, evaluate, finally)
@@ -30,7 +31,7 @@ import Data.List (foldl', sortOn)
 import Data.IntSet qualified as IS
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef)
 import Data.List.NonEmpty qualified as NEL
-import Data.Maybe (fromMaybe, mapMaybe)
+import Data.Maybe (catMaybes, fromMaybe, mapMaybe)
 import Data.Map qualified as M
 import Data.Set qualified as S
 import Data.Text qualified as T
@@ -426,14 +427,15 @@ inferForeignModules
    . MonadIO m
   => M.Map ModuleName (Either RebuildPolicy FilePath)
   -> m (M.Map ModuleName FilePath)
-inferForeignModules =
-    fmap (M.mapMaybe id) . traverse inferForeignModule
+inferForeignModules modules =
+    liftIO $ M.fromDistinctAscList . catMaybes <$>
+      forConcurrentlyChunked 64 (M.toAscList modules) (\(moduleName, path) -> fmap (moduleName,) <$> inferForeignModule path)
   where
-    inferForeignModule :: Either RebuildPolicy FilePath -> m (Maybe FilePath)
+    inferForeignModule :: Either RebuildPolicy FilePath -> IO (Maybe FilePath)
     inferForeignModule (Left _) = return Nothing
     inferForeignModule (Right path) = do
       let jsFile = replaceExtension path "js"
-      exists <- liftIO $ doesFileExist jsFile
+      exists <- doesFileExist jsFile
       if exists
         then return (Just jsFile)
         else return Nothing
