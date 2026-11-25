@@ -103,52 +103,7 @@ inlineCommonValues expander = convert
 
 inlineCommonOperators :: (AST -> AST) -> AST -> Maybe AST
 inlineCommonOperators expander = onSingleArgument . applyRules $
-  [ binary C.P_semiringNumber C.P_add Add
-  , binary C.P_semiringNumber C.P_mul Multiply
-
-  , binary C.P_ringNumber C.P_sub Subtract
-  , unary  C.P_ringNumber C.P_negate Negate
-
-  , binary C.P_euclideanRingNumber C.P_div Divide
-
-  , binary C.P_eqNumber C.P_eq EqualTo
-  , binary C.P_eqNumber C.P_notEq NotEqualTo
-  , binary C.P_eqInt C.P_eq EqualTo
-  , binary C.P_eqInt C.P_notEq NotEqualTo
-  , binary C.P_eqString C.P_eq EqualTo
-  , binary C.P_eqString C.P_notEq NotEqualTo
-  , binary C.P_eqChar C.P_eq EqualTo
-  , binary C.P_eqChar C.P_notEq NotEqualTo
-  , binary C.P_eqBoolean C.P_eq EqualTo
-  , binary C.P_eqBoolean C.P_notEq NotEqualTo
-
-  , binary C.P_ordBoolean C.P_lessThan LessThan
-  , binary C.P_ordBoolean C.P_lessThanOrEq LessThanOrEqualTo
-  , binary C.P_ordBoolean C.P_greaterThan GreaterThan
-  , binary C.P_ordBoolean C.P_greaterThanOrEq GreaterThanOrEqualTo
-  , binary C.P_ordChar C.P_lessThan LessThan
-  , binary C.P_ordChar C.P_lessThanOrEq LessThanOrEqualTo
-  , binary C.P_ordChar C.P_greaterThan GreaterThan
-  , binary C.P_ordChar C.P_greaterThanOrEq GreaterThanOrEqualTo
-  , binary C.P_ordInt C.P_lessThan LessThan
-  , binary C.P_ordInt C.P_lessThanOrEq LessThanOrEqualTo
-  , binary C.P_ordInt C.P_greaterThan GreaterThan
-  , binary C.P_ordInt C.P_greaterThanOrEq GreaterThanOrEqualTo
-  , binary C.P_ordNumber C.P_lessThan LessThan
-  , binary C.P_ordNumber C.P_lessThanOrEq LessThanOrEqualTo
-  , binary C.P_ordNumber C.P_greaterThan GreaterThan
-  , binary C.P_ordNumber C.P_greaterThanOrEq GreaterThanOrEqualTo
-  , binary C.P_ordString C.P_lessThan LessThan
-  , binary C.P_ordString C.P_lessThanOrEq LessThanOrEqualTo
-  , binary C.P_ordString C.P_greaterThan GreaterThan
-  , binary C.P_ordString C.P_greaterThanOrEq GreaterThanOrEqualTo
-
-  , binary C.P_semigroupString C.P_append Add
-
-  , binary C.P_heytingAlgebraBoolean C.P_conj And
-  , binary C.P_heytingAlgebraBoolean C.P_disj Or
-  , unary  C.P_heytingAlgebraBoolean C.P_not Not
-
+  [ dictOperator
   , binary' C.P_or BitwiseOr
   , binary' C.P_and BitwiseAnd
   , binary' C.P_xor BitwiseXor
@@ -184,20 +139,66 @@ inlineCommonOperators expander = onSingleArgument . applyRules $
     [ fn | i <- [0..maxArity], fn <- [ mkEffFn C.P_mkEffectFn i, runEffFn C.P_runEffectFn i ] ] ++
     [ fn | i <- [0..maxArity], fn <- [ mkEffFn C.P_mkSTFn i, runEffFn C.P_runSTFn i ] ]
 
-  binary :: (ModuleName, PSString) -> (ModuleName, PSString) -> BinaryOperator -> AST -> Maybe AST
-  binary dict fn op = convert where
-    convert :: AST -> Maybe AST
-    convert (App ss (App _ (expander -> App _ (Ref fn') [Ref dict']) [x]) [y]) | dict == dict', fn == fn' = Just $ Binary ss op x y
-    convert _ = Nothing
+  dictOperator :: AST -> Maybe AST
+  dictOperator (App ss (App _ (dictMethod -> Just method) [x]) [y]) = (\op -> Binary ss op x y) <$> lookup method binaryOperators
+  dictOperator (App ss (dictMethod -> Just method) [x]) = (\op -> Unary ss op x) <$> lookup method unaryOperators
+  dictOperator _ = Nothing
+
+  dictMethod :: AST -> Maybe ((ModuleName, PSString), (ModuleName, PSString))
+  dictMethod (expander -> App _ (Ref fn) [Ref dict]) = Just (dict, fn)
+  dictMethod _ = Nothing
+
+  binaryOperators :: [(((ModuleName, PSString), (ModuleName, PSString)), BinaryOperator)]
+  binaryOperators =
+    [ ((C.P_semiringNumber, C.P_add), Add)
+    , ((C.P_semiringNumber, C.P_mul), Multiply)
+    , ((C.P_ringNumber, C.P_sub), Subtract)
+    , ((C.P_euclideanRingNumber, C.P_div), Divide)
+    , ((C.P_eqNumber, C.P_eq), EqualTo)
+    , ((C.P_eqNumber, C.P_notEq), NotEqualTo)
+    , ((C.P_eqInt, C.P_eq), EqualTo)
+    , ((C.P_eqInt, C.P_notEq), NotEqualTo)
+    , ((C.P_eqString, C.P_eq), EqualTo)
+    , ((C.P_eqString, C.P_notEq), NotEqualTo)
+    , ((C.P_eqChar, C.P_eq), EqualTo)
+    , ((C.P_eqChar, C.P_notEq), NotEqualTo)
+    , ((C.P_eqBoolean, C.P_eq), EqualTo)
+    , ((C.P_eqBoolean, C.P_notEq), NotEqualTo)
+    , ((C.P_ordBoolean, C.P_lessThan), LessThan)
+    , ((C.P_ordBoolean, C.P_lessThanOrEq), LessThanOrEqualTo)
+    , ((C.P_ordBoolean, C.P_greaterThan), GreaterThan)
+    , ((C.P_ordBoolean, C.P_greaterThanOrEq), GreaterThanOrEqualTo)
+    , ((C.P_ordChar, C.P_lessThan), LessThan)
+    , ((C.P_ordChar, C.P_lessThanOrEq), LessThanOrEqualTo)
+    , ((C.P_ordChar, C.P_greaterThan), GreaterThan)
+    , ((C.P_ordChar, C.P_greaterThanOrEq), GreaterThanOrEqualTo)
+    , ((C.P_ordInt, C.P_lessThan), LessThan)
+    , ((C.P_ordInt, C.P_lessThanOrEq), LessThanOrEqualTo)
+    , ((C.P_ordInt, C.P_greaterThan), GreaterThan)
+    , ((C.P_ordInt, C.P_greaterThanOrEq), GreaterThanOrEqualTo)
+    , ((C.P_ordNumber, C.P_lessThan), LessThan)
+    , ((C.P_ordNumber, C.P_lessThanOrEq), LessThanOrEqualTo)
+    , ((C.P_ordNumber, C.P_greaterThan), GreaterThan)
+    , ((C.P_ordNumber, C.P_greaterThanOrEq), GreaterThanOrEqualTo)
+    , ((C.P_ordString, C.P_lessThan), LessThan)
+    , ((C.P_ordString, C.P_lessThanOrEq), LessThanOrEqualTo)
+    , ((C.P_ordString, C.P_greaterThan), GreaterThan)
+    , ((C.P_ordString, C.P_greaterThanOrEq), GreaterThanOrEqualTo)
+    , ((C.P_semigroupString, C.P_append), Add)
+    , ((C.P_heytingAlgebraBoolean, C.P_conj), And)
+    , ((C.P_heytingAlgebraBoolean, C.P_disj), Or)
+    ]
+
+  unaryOperators :: [(((ModuleName, PSString), (ModuleName, PSString)), UnaryOperator)]
+  unaryOperators =
+    [ ((C.P_ringNumber, C.P_negate), Negate)
+    , ((C.P_heytingAlgebraBoolean, C.P_not), Not)
+    ]
+
   binary' :: (ModuleName, PSString) -> BinaryOperator -> AST -> Maybe AST
   binary' fn op = convert where
     convert :: AST -> Maybe AST
     convert (App ss (App _ (Ref fn') [x]) [y]) | fn == fn' = Just $ Binary ss op x y
-    convert _ = Nothing
-  unary :: (ModuleName, PSString) -> (ModuleName, PSString) -> UnaryOperator -> AST -> Maybe AST
-  unary dict fn op = convert where
-    convert :: AST -> Maybe AST
-    convert (App ss (expander -> App _ (Ref fn') [Ref dict']) [x]) | dict == dict', fn == fn' = Just $ Unary ss op x
     convert _ = Nothing
   unary' :: (ModuleName, PSString) -> UnaryOperator -> AST -> Maybe AST
   unary' fn op = convert where
