@@ -13,6 +13,7 @@ module Language.PureScript.Make.BuildPlan
 
 import Prelude
 
+import Control.Concurrent.Async.Chunked (forConcurrentlyChunked)
 import Control.Concurrent.Async.Lifted qualified as A
 import Control.Concurrent.Lifted qualified as C
 import Control.Exception (evaluate)
@@ -187,7 +188,8 @@ construct
   -> m (BuildPlan, CacheDb)
 construct Options{..} MakeActions{..} cacheDb (sorted, graph) = do
   let sortedModuleNames = map (getModuleName . CST.resPartial) sorted
-  rebuildStatuses <- A.forConcurrently sortedModuleNames getRebuildStatus
+  cwd <- liftBase getCurrentDirectory
+  rebuildStatuses <- forConcurrentlyChunked 64 sortedModuleNames (getRebuildStatus cwd)
 
   -- Split modules into those that have to be rebuilt and those that have a valid
   -- prebuilt input. The Bool value in rebuildMap means if we may skip the
@@ -262,8 +264,8 @@ construct Options{..} MakeActions{..} cacheDb (sorted, graph) = do
       buildJob <- BuildJob <$> C.newEmptyMVar
       pure (M.insert moduleName buildJob prev)
 
-    getRebuildStatus :: ModuleName -> m RebuildStatus
-    getRebuildStatus moduleName = do
+    getRebuildStatus :: FilePath -> ModuleName -> m RebuildStatus
+    getRebuildStatus cwd moduleName = do
       inputInfo <- getInputTimestampsAndHashes moduleName
       case inputInfo of
         Left RebuildNever -> do
@@ -284,7 +286,6 @@ construct Options{..} MakeActions{..} cacheDb (sorted, graph) = do
             , rsNewCacheInfo = Nothing
             })
         Right cacheInfo -> do
-          cwd <- liftBase getCurrentDirectory
           (newCacheInfo, upToDate) <- checkChanged cacheDb moduleName cwd cacheInfo
           timestamp <- getOutputTimestamp moduleName
           pure (RebuildStatus
