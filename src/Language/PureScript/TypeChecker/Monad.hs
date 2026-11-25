@@ -1,4 +1,7 @@
 {-# LANGUAGE GADTs #-}
+{-# LANGUAGE MagicHash #-}
+{-# LANGUAGE UnboxedSums #-}
+{-# LANGUAGE UnboxedTuples #-}
 
 -- |
 -- Monads for type checking and type inference and associated data types
@@ -10,7 +13,6 @@ import Prelude
 import Control.Arrow (second)
 import Control.Monad.Error.Class (MonadError(..))
 import Control.Monad.State (MonadState(..), StateT(..), gets, modify)
-import Control.Monad.State.Strict qualified as StrictState
 
 import Data.Foldable (foldl')
 import Data.Maybe (fromMaybe)
@@ -29,31 +31,81 @@ import Language.PureScript.Pretty.Values (prettyPrintValue)
 import Language.PureScript.TypeClassDictionaries (ClassInstances, InstanceContext, NamedDict, TypeClassDictionaryInScope(..), instancesByClass, singletonInstance)
 import Language.PureScript.Types (Constraint(..), SourceType, Type(..), srcKindedType, srcTypeVar)
 import Text.PrettyPrint.Boxes (render)
-import Control.Monad.Supply (SupplyT (unSupplyT))
 import Control.Monad.Supply.Class (MonadSupply)
-import Control.Monad.Except (ExceptT, runExceptT)
-import Control.Monad.Trans.Writer.CPS qualified as SW
 import Control.Monad.Writer (MonadWriter(..), censor)
 import Control.Monad.Supply.Class qualified as Supply
-import Control.Monad.Identity (Identity(runIdentity))
+import GHC.Exts (Int64#, gtInt64#, intToInt64#, isTrue#, plusInt64#)
+import GHC.Int (Int64(..))
 import Control.Monad (forM_, when, join, (<=<), guard)
 
-newtype TypeCheckM a = TypeCheckM { unTypeCheckM :: StateT CheckState (SupplyT (ExceptT MultipleErrors (SW.Writer MultipleErrors))) a }
-  deriving newtype (Functor, Applicative, Monad, MonadSupply, MonadState CheckState, MonadWriter MultipleErrors, MonadError MultipleErrors)
+type TypeCheckResult a = (# (# MultipleErrors, MultipleErrors #) | (# a, CheckState, Int64#, MultipleErrors #) #)
+
+newtype TypeCheckM a = TypeCheckM { unTypeCheckM :: CheckState -> Int64# -> MultipleErrors -> TypeCheckResult a }
+
+instance Functor TypeCheckM where
+  fmap f (TypeCheckM m) = TypeCheckM $ \st n w -> case m st n w of
+    (# failure | #) -> (# failure | #)
+    (# | (# a, st', n', w' #) #) -> (# | (# f a, st', n', w' #) #)
+
+instance Applicative TypeCheckM where
+  pure a = TypeCheckM $ \st n w -> (# | (# a, st, n, w #) #)
+  TypeCheckM mf <*> TypeCheckM ma = TypeCheckM $ \st n w -> case mf st n w of
+    (# failure | #) -> (# failure | #)
+    (# | (# f, st', n', w' #) #) -> case ma st' n' w' of
+      (# failure | #) -> (# failure | #)
+      (# | (# a, st'', n'', w'' #) #) -> (# | (# f a, st'', n'', w'' #) #)
+  TypeCheckM ma *> TypeCheckM mb = TypeCheckM $ \st n w -> case ma st n w of
+    (# failure | #) -> (# failure | #)
+    (# | (# _, st', n', w' #) #) -> mb st' n' w'
+
+instance Monad TypeCheckM where
+  TypeCheckM m >>= k = TypeCheckM $ \st n w -> case m st n w of
+    (# failure | #) -> (# failure | #)
+    (# | (# a, st', n', w' #) #) -> unTypeCheckM (k a) st' n' w'
+
+instance MonadState CheckState TypeCheckM where
+  get = TypeCheckM $ \st n w -> (# | (# st, st, n, w #) #)
+  put st = TypeCheckM $ \_ n w -> (# | (# (), st, n, w #) #)
+  state f = TypeCheckM $ \st n w -> let r = f st in (# | (# fst r, snd r, n, w #) #)
+
+instance MonadSupply TypeCheckM where
+  fresh = TypeCheckM $ \st n w -> (# | (# I64# n, st, n `plusInt64#` intToInt64# 1#, w #) #)
+  peek = TypeCheckM $ \st n w -> (# | (# I64# n, st, n, w #) #)
+  consumeUpTo (I64# m) = TypeCheckM $ \st n w -> (# | (# (), st, if isTrue# (m `gtInt64#` n) then m else n, w #) #)
+
+instance MonadError MultipleErrors TypeCheckM where
+  throwError e = TypeCheckM $ \_ _ w -> (# (# e, w #) | #)
+  catchError (TypeCheckM m) handler = TypeCheckM $ \st n w -> case m st n w of
+    (# (# e, w' #) | #) -> unTypeCheckM (handler e) st n w'
+    success -> success
+
+instance MonadWriter MultipleErrors TypeCheckM where
+  tell w' = TypeCheckM $ \st n w -> let wt = w <> w' in wt `seq` (# | (# (), st, n, wt #) #)
+  listen (TypeCheckM m) = TypeCheckM $ \st n w -> case m st n mempty of
+    (# (# e, w' #) | #) -> let wt = w <> w' in wt `seq` (# (# e, wt #) | #)
+    (# | (# a, st', n', w' #) #) -> let wt = w <> w' in wt `seq` (# | (# (a, w'), st', n', wt #) #)
+  pass (TypeCheckM m) = TypeCheckM $ \st n w -> case m st n mempty of
+    (# (# e, w' #) | #) -> let wt = w <> w' in wt `seq` (# (# e, wt #) | #)
+    (# | (# r, st', n', w' #) #) -> let wt = w <> snd r w' in wt `seq` (# | (# fst r, st', n', wt #) #)
+
+runTypeCheckM :: TypeCheckM a -> CheckState -> Int64 -> (Either MultipleErrors (a, CheckState, Int64), MultipleErrors)
+runTypeCheckM (TypeCheckM m) st (I64# n) = case m st n mempty of
+  (# (# e, w #) | #) -> (Left e, w)
+  (# | (# a, st', n', w #) #) -> (Right (a, st', I64# n'), w)
 
 -- | Lift a TypeCheckM computation into another monad that satisfies all its constraints
 liftTypeCheckM ::
   (MonadSupply m, MonadError MultipleErrors m, MonadState CheckState m, MonadWriter MultipleErrors m) =>
   TypeCheckM a -> m a
-liftTypeCheckM (TypeCheckM m) = do
+liftTypeCheckM m = do
   st <- get
   freshId <- Supply.peek
-  let (result, errors) = runIdentity $ SW.runWriterT $ runExceptT $ flip StrictState.runStateT freshId $ unSupplyT $ runStateT m st
+  let (result, errors) = runTypeCheckM m st freshId
   tell errors
   case result of
     Left err ->
       throwError err
-    Right ((a, st'), freshId') -> do
+    Right (a, st', freshId') -> do
       put st'
       Supply.consumeUpTo freshId'
       return a
