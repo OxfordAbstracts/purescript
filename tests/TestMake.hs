@@ -7,6 +7,7 @@ import Prelude hiding (writeFile)
 
 import Language.PureScript qualified as P
 import Language.PureScript.CST qualified as CST
+import Language.PureScript.Make.HeaderCache qualified as HeaderCache
 import Language.PureScript.Make.IdeCache (IdeCachePopulation(..), finishIdeCachePopulation, ideCacheFile, prepareIdeCache, queryIdeCache, resolveIdeCacheEnabled, sqliteInit)
 import Database.SQLite.Simple (Only(..))
 
@@ -29,7 +30,7 @@ import System.FilePath ((</>))
 import System.Directory (createDirectory, doesFileExist, getModificationTime, removeDirectoryRecursive, removeFile, setModificationTime)
 import System.Environment (setEnv, unsetEnv)
 import System.IO.Error (isDoesNotExistError)
-import System.IO.UTF8 (readUTF8FilesT, readUTF8FileT, writeUTF8FileT)
+import System.IO.UTF8 (readUTF8FilesLazilyT, readUTF8FileT, writeUTF8FileT)
 
 import Test.Hspec (Spec, before_, it, shouldReturn)
 
@@ -165,6 +166,18 @@ spec = do
 
       removeFile mFFIPath
       compile [mPath] `shouldReturn` moduleNames ["Module"]
+
+    it "builds a module against an import it gained after it was built" $ do
+      let mAPath = modulePath "A"
+          mBPath = modulePath "B"
+          modulePaths = [mAPath, mBPath]
+
+      writeFile mAPath timestampA "module A where\nfoo = 0\n"
+      writeFile mBPath timestampB "module B where\nbar = 1\n"
+      compile modulePaths `shouldReturn` moduleNames ["A", "B"]
+
+      writeFile mAPath timestampC "module A where\nimport B (bar)\nfoo = bar\n"
+      compile modulePaths `shouldReturn` moduleNames ["A"]
 
     it "does not necessarily recompile modules which were not part of the previous batch" $ do
       let mAPath = modulePath "A"
@@ -792,9 +805,9 @@ compileWithOptions' ::
   IO (Either P.MultipleErrors [P.ExternsFile], Set P.ModuleName)
 compileWithOptions' opts adjust input = do
   recompiled <- newMVar Set.empty
-  moduleFiles <- readUTF8FilesT input
+  moduleFiles <- readUTF8FilesLazilyT input
   (makeResult, _) <- P.runMake opts $ do
-    ms <- CST.parseModulesFromFiles id moduleFiles
+    ms <- HeaderCache.parseModulesFromFiles modulesDir moduleFiles
     let filePathMap = M.fromList $ map (\(fp, pm) -> (P.getModuleName $ CST.resPartial pm, Right fp)) ms
     foreigns <- P.inferForeignModules filePathMap
     let makeActions = adjust $

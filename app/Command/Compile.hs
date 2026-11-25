@@ -17,13 +17,14 @@ import Language.PureScript.CST qualified as CST
 import Language.PureScript.Errors.JSON (JSONResult(..), toJSONErrors)
 import Language.PureScript.Glob (toInputGlobs, PSCGlobs(..), warnFileTypeNotFound)
 import Language.PureScript.Make (buildMakeActions, inferForeignModules, runMake)
+import Language.PureScript.Make.HeaderCache qualified as HeaderCache
 import Options.Applicative qualified as Opts
 import SharedCLI qualified
 import System.Console.ANSI qualified as ANSI
 import System.Exit (exitSuccess, exitFailure)
 import System.Directory (getCurrentDirectory)
 import System.IO (hPutStr, stderr, stdout)
-import System.IO.UTF8 (readUTF8FilesT)
+import System.IO.UTF8 (readUTF8FilesLazilyT)
 import Language.PureScript.Make.IdeCache (IdeCachePopulation(..), finishIdeCachePopulation, ideCacheEnvVar, prepareIdeCache, resolveIdeCacheEnabled)
 
 data PSCMakeOptions = PSCMakeOptions
@@ -72,9 +73,9 @@ compile PSCMakeOptions{..} = do
                              , "Usage: For basic information, try the `--help' option."
                              ]
     exitFailure
-  moduleFiles <- readUTF8FilesT input
+  moduleFiles <- readUTF8FilesLazilyT input
   (makeErrors, makeWarnings) <- runMake opts $ do
-    ms <- CST.parseModulesFromFiles id moduleFiles
+    ms <- HeaderCache.parseModulesFromFiles pscmOutputDir moduleFiles
     let filePathMap = M.fromList $ map (\(fp, pm) -> (P.getModuleName $ CST.resPartial pm, Right fp)) ms
     foreigns <- inferForeignModules filePathMap
     let makeActions = buildMakeActions pscmOutputDir filePathMap foreigns pscmUsePrefix

@@ -9,6 +9,7 @@ import Data.ByteString.UTF8 qualified as UTF8
 import Data.Text (Text)
 import Data.Text.Encoding qualified as TE
 import Protolude (ordNub)
+import System.IO.Unsafe (unsafeInterleaveIO)
 
 -- | Unfortunately ByteString's readFile does not convert line endings on
 -- Windows, so we have to do it ourselves
@@ -22,6 +23,10 @@ fixCRLF bytes
 readUTF8FilesT :: [FilePath] -> IO [(FilePath, Text)]
 readUTF8FilesT =
   traverse (\inFile -> (inFile, ) <$> readUTF8FileT inFile) . ordNub
+
+readUTF8FilesLazilyT :: [FilePath] -> IO [(FilePath, Text)]
+readUTF8FilesLazilyT =
+  traverse (\inFile -> (inFile, ) <$> unsafeInterleaveIO (readUTF8FileT inFile)) . ordNub
 
 readUTF8FileT :: FilePath -> IO Text
 readUTF8FileT inFile =

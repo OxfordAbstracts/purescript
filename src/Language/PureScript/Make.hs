@@ -260,6 +260,7 @@ make' MakeOptions{..} ma@MakeActions{..} ms = do
   totalModuleCount <- liftBase . evaluate $ length toBeRebuilt
   liftBase . evaluate $ foldl' (flip seq) () $
     withStrategy (parListChunk 32 rseq) [ transitiveDepRanks ! rank | (rank, _) <- toBeRebuilt ]
+  void $ forConcurrentlyChunked 64 toBeRebuilt (liftBase . evaluate . CST.resFull . snd)
   for_ toBeRebuilt $ \(rank, m) -> fork $ do
     let moduleName = getModuleName . CST.resPartial $ m
     buildModule lock reportProgress buildPlan moduleName totalModuleCount
