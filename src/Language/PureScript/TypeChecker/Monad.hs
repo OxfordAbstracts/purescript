@@ -69,8 +69,9 @@ instance Monad TypeCheckM where
 
 instance MonadState CheckState TypeCheckM where
   get = mkTypeCheckM $ \_ st n w -> (# | (# st, st, n, w #) #)
-  put st = mkTypeCheckM $ \_ _ n w -> (# | (# (), st, n, w #) #)
-  state f = mkTypeCheckM $ \_ st n w -> let r = f st in (# | (# fst r, snd r, n, w #) #)
+  put !st = mkTypeCheckM $ \_ _ n w -> (# | (# (), st, n, w #) #)
+  state f = mkTypeCheckM $ \_ st n w -> case f st of
+    (a, !st') -> (# | (# a, st', n, w #) #)
 
 instance MonadSupply TypeCheckM where
   fresh = mkTypeCheckM $ \_ st n w -> (# | (# I64# n, st, n `plusInt64#` intToInt64# 1#, w #) #)
