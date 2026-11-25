@@ -172,7 +172,9 @@ removeModules = flip Map.withoutKeys
 -- 2. Any path that isn't will be stored as an absolute path
 normaliseForCache :: FilePath -> FilePath -> FilePath
 normaliseForCache basePath fp =
-    if FilePath.isRelative fp then
+    if isNormalisedRelativePosixPath fp then
+      fp
+    else if FilePath.isRelative fp then
       FilePath.normalise fp
     else
       let relativePath = FilePath.makeRelative basePath fp in
@@ -183,3 +185,22 @@ normaliseForCache basePath fp =
         -- relative to the base that means it is not underneath
         -- the base path
         FilePath.normalise fp
+
+isNormalisedRelativePosixPath :: FilePath -> Bool
+isNormalisedRelativePosixPath = (FilePath.pathSeparators == "/" &&) . segmentStart
+  where
+  segmentStart = \case
+    [] -> False
+    '/' : _ -> False
+    '.' : rest -> afterLeadingDot rest
+    _ : rest -> withinSegment rest
+
+  afterLeadingDot = \case
+    [] -> False
+    '/' : _ -> False
+    _ : rest -> withinSegment rest
+
+  withinSegment = \case
+    [] -> True
+    '/' : rest -> segmentStart rest
+    _ : rest -> withinSegment rest
